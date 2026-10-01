@@ -1,0 +1,4 @@
+# Arguments for `audiolink pi` at boot (see `python3 audiolink.pyz pi --help`).
+# Ports are normally declared by the host (`audiolink host --expose PIPORT:PORT`);
+# add `--forward LPORT:PORT` here for static forwards.
+--stats 30

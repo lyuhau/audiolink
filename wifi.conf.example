@@ -1,0 +1,7 @@
+# Copy to wifi.conf and fill in your Wi-Fi details, then rebuild (python3 build_initramfs.py).
+# The Zero 2 W is 2.4 GHz only: if your router splits bands (e.g. "Name" and "Name_5"),
+# use the 2.4 GHz name. wifi.conf is gitignored.
+network={
+    ssid="YOUR_WIFI_NAME"
+    psk="YOUR_WIFI_PASSWORD"
+}

@@ -1,0 +1,19 @@
+# Secrets: never commit
+wifi.conf
+keys/
+
+# Downloaded / generated (rebuild with build_initramfs.py)
+firmware/
+firmware-nonfree/
+usbboot/
+cache/
+bootdir/
+dist/
+build/
+
+# Local environment and scratch output
+.venv/
+out/
+__pycache__/
+*.pyc
+.DS_Store
