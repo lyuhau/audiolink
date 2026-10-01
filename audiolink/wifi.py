@@ -144,7 +144,9 @@ class WifiManager:
         elif sec == "wpa3":
             self._wpa("set_network", nid, "key_mgmt", "SAE")
             self._wpa("set_network", nid, "ieee80211w", 2)
-            self._wpa("set_network", nid, "sae_password", '"%s"' % ent["sae_password"])
+            # Hex form: any bytes work, including quotes, newlines and non-ASCII.
+            self._wpa("set_network", nid, "sae_password",
+                      binascii.hexlify(ent["sae_password"].encode()).decode())
         if ent.get("hidden"):
             self._wpa("set_network", nid, "scan_ssid", 1)
         self._wpa("set_network", nid, "priority", priority)

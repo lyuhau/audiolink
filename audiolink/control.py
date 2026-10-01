@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import threading
+import time
 
 log = logging.getLogger("audiolink")
 
@@ -226,6 +227,30 @@ def join_flow(name, a, port, known_security=None):
     raise SystemExit("couldn't join %r: %s" % (name, r["reason"]))
 
 
+def startup_join(node, name, a, port):
+    """`audiolink host --wifi NAME`: before the daemon's logs start, wait for the Pi
+    and run the join flow. A failed join doesn't stop the daemon: the Pi stays on
+    (or falls back to) its saved networks."""
+    _line_buffered()
+    if not node.peer_alive:
+        print("waiting for the Pi to connect (plug it in)...", flush=True)
+    while not (node.peer_alive and node.peer_info):
+        time.sleep(0.25)
+    if "wifi" not in node.peer_info.get("caps", []):
+        print("this Pi's audiolink doesn't support Wi-Fi management (update it); ignoring --wifi")
+        return
+    try:
+        st = call("wifi.status", port=port)
+        if st["ssid"] == name:
+            print("the Pi is already on %r (IP %s)" % (name, st["ip"]))
+            return
+        join_flow(name, a, port)
+    except SystemExit as e:
+        if isinstance(e.code, str):
+            print(e.code)
+        print("continuing; the Pi stays on its saved networks. Retry with: audiolink wifi join %r" % name)
+
+
 def _joined(r):
     print("joined %r (%s), Pi IP %s; saved" % (r["ssid"], SEC_LABEL.get(r.get("security"), "?"), r["ip"]))
 
@@ -255,11 +280,15 @@ def pick_flow(a, port):
     return join_flow(choice["ssid"], a, port, known_security=choice["security"])
 
 
-def wifi_command(a):
+def _line_buffered():
     try:
-        sys.stdout.reconfigure(line_buffering=True)   # keep prints in order with errors
+        sys.stdout.reconfigure(line_buffering=True)   # keep prints in order with logs/errors
     except AttributeError:
         pass
+
+
+def wifi_command(a):
+    _line_buffered()
     port = a.control_port
     peer = call("peer", port=port)
     if not peer["connected"]:

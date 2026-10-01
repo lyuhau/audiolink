@@ -1,6 +1,7 @@
 """audiolink command line.
 
   audiolink host --expose 2222:22            Mac/PC: Pi listens on 2222, connections reach local sshd
+  audiolink host --wifi NAME --expose ...    same, after first putting the Pi on Wi-Fi NAME
   audiolink host --allow 22                  Mac/PC: let the Pi's own --forward streams reach local sshd
   audiolink host --forward 8080:pi-lan:80    Mac/PC: tunnel local :8080 to a host on the Pi's side
   audiolink pi --forward 2222:22             Pi: expose the host's port 22 as Pi port 2222
@@ -18,6 +19,7 @@
 import argparse
 import collections
 import logging
+import logging.handlers
 import sys
 import threading
 import time
@@ -76,6 +78,8 @@ def main(argv=None):
         p.add_argument("--stats", type=float, default=0, help="log stats every N seconds")
         p.add_argument("-v", "--verbose", action="store_true")
     roles["host"].add_argument("--expose", action="append", default=[], metavar="PIPORT:[HOST:]PORT")
+    roles["host"].add_argument("--wifi", metavar="NAME",
+                               help="first put the Pi on this Wi-Fi network (prompts if needed)")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
     for p in (roles["host"], w):
         p.add_argument("--control-port", type=int, default=None, help="local control port (default 47800)")
@@ -95,8 +99,17 @@ def main(argv=None):
         a.control_port = port
         return control.wifi_command(a)
 
-    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if a.verbose else logging.INFO)
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
+    startup_wifi = a.cmd == "host" and a.wifi
+    if startup_wifi:
+        # Hold log output back while the Wi-Fi prompts own the terminal.
+        held = logging.handlers.MemoryHandler(100000, flushLevel=logging.CRITICAL + 1, target=console)
+        root.addHandler(held)
+    else:
+        root.addHandler(console)
     allow = [x for spec in a.allow for x in spec.split(",") if x]
     if a.cmd == "host":
         node = Node("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
@@ -113,6 +126,16 @@ def main(argv=None):
         from .audio import run_portaudio
         run_portaudio(node.link, a.out_device, a.in_device)
         control.serve(node, port)
+        if startup_wifi:
+            try:
+                control.startup_join(node, a.wifi, a, port)
+            except KeyboardInterrupt:
+                print()
+                return 130
+            finally:
+                held.flush()
+                root.removeHandler(held)
+                root.addHandler(console)
     log.info("audiolink %s %s up (session %08x); allow=%s%s", __version__, a.cmd, node.link.session,
              ",".join("%s:%d" % t for t in sorted(node.allow)) or "none",
              "; expose=" + ",".join("pi:%d->%s:%d" % (p, h, tp) for p, (h, tp) in node.expose)
