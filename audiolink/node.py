@@ -13,7 +13,10 @@ Messages (all reliable, in order):
   OPEN   "host:port" for a new stream id
   DATA   bytes for a stream
   CLOSE  sender is done writing (half-close); a stream ends when both sides close
+  CTRL   JSON request {"op", "args"} or reply {"ok", "result"|"error"}; the stream id
+         field carries the request id. Fragmented: first byte 1 = more follows, 0 = last.
 """
+import itertools
 import json
 import logging
 import queue
@@ -22,7 +25,7 @@ import threading
 import time
 
 from . import PROTOCOL_VERSION, __version__
-from .protocol import MAX_PAYLOAD, T_CLOSE, T_DATA, T_HELLO, T_OPEN, Link
+from .protocol import MAX_PAYLOAD, T_CLOSE, T_CTRL, T_DATA, T_HELLO, T_OPEN, Link
 
 log = logging.getLogger("audiolink")
 
@@ -55,12 +58,16 @@ class Stream:
 
 
 class Node:
-    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535"):
+    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", ctrl_handlers=None):
         self.role = role
         self.expose = list(expose)                      # host: [(pi_port, (host, port))]
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
-        self.caps = ["streams", "expose"]
+        self.ctrl_handlers = dict(ctrl_handlers or {})  # "wifi" -> fn(op, args) (Pi side)
+        self.caps = ["streams", "expose"] + sorted(self.ctrl_handlers)
+        self.requests = {}                              # id -> [Event, reply]
+        self.req_ids = itertools.count(1)
+        self.ctrl_frags = {}                            # id -> bytearray being reassembled
         self.peer_info = None
         self.peer_alive = False
         self.streams = {}
@@ -75,6 +82,7 @@ class Node:
     def on_up(self):
         self.peer_alive = True
         self._close_all()
+        self._fail_requests("link restarted")
         hello = {"v": PROTOCOL_VERSION, "role": self.role, "version": __version__, "caps": self.caps,
                  "expose": [[p, h, tp] for p, (h, tp) in self.expose]}
         self.link.send(T_HELLO, 0, json.dumps(hello).encode())
@@ -89,6 +97,12 @@ class Node:
                      ",".join(info.get("caps", [])))
             if self.role == "pi":
                 self._apply_expose(info.get("expose", []))
+            return
+        if typ == T_CTRL:
+            buf = self.ctrl_frags.setdefault(sid, bytearray())
+            buf += payload[1:]
+            if payload[:1] == b"\x00":
+                self._on_ctrl(sid, json.loads(bytes(self.ctrl_frags.pop(sid)).decode()))
             return
         if typ == T_OPEN:
             st = Stream(sid)
@@ -106,6 +120,58 @@ class Node:
         elif typ == T_CLOSE:
             st.wq.put(None)
 
+    # ---- control requests (request/reply over the link)
+    def request(self, op, args=None, timeout=60):
+        """Host: send a control request to the Pi and wait for its reply."""
+        if not self.peer_alive:
+            raise RuntimeError("the Pi is not connected")
+        rid = next(self.req_ids) & 0xFFFF or next(self.req_ids)
+        ent = self.requests[rid] = [threading.Event(), None]
+        self._send_ctrl(rid, {"op": op, "args": args or {}})
+        if not ent[0].wait(timeout):
+            self.requests.pop(rid, None)
+            raise TimeoutError("no reply from the Pi to %r" % op)
+        reply = self.requests.pop(rid)[1]
+        if not reply.get("ok"):
+            raise RuntimeError(reply.get("error", "request failed"))
+        return reply.get("result")
+
+    def _send_ctrl(self, rid, obj):
+        data = json.dumps(obj).encode()
+        step = MAX_PAYLOAD - 1
+        for i in range(0, max(len(data), 1), step):
+            more = i + step < len(data)
+            self.link.send(T_CTRL, rid, (b"\x01" if more else b"\x00") + data[i:i + step])
+
+    def _on_ctrl(self, rid, msg):
+        if "op" in msg:                       # a request from the peer
+            threading.Thread(target=self._serve_ctrl, args=(rid, msg), daemon=True).start()
+        else:                                 # a reply to one of ours
+            ent = self.requests.get(rid)
+            if ent:
+                ent[1] = msg
+                ent[0].set()
+
+    def _serve_ctrl(self, rid, msg):
+        area, _, op = msg["op"].partition(".")
+        handler = self.ctrl_handlers.get(area)
+        try:
+            if handler is None:
+                raise ValueError("%s does not support %r" % (self.role, msg["op"]))
+            reply = {"ok": True, "result": handler(op, msg.get("args", {}))}
+        except Exception as e:
+            log.warning("control %s failed: %s", msg["op"], e)
+            reply = {"ok": False, "error": str(e)}
+        self._send_ctrl(rid, reply)
+
+    def _fail_requests(self, why):
+        for rid in list(self.requests):
+            ent = self.requests.get(rid)
+            if ent:
+                ent[1] = {"ok": False, "error": why}
+                ent[0].set()
+        self.ctrl_frags.clear()
+
     def _watchdog(self):
         while True:
             time.sleep(1)
@@ -114,6 +180,7 @@ class Node:
                             " and exposed ports" if self.role == "pi" else "")
                 self.peer_alive = False
                 self._close_all()
+                self._fail_requests("the Pi disconnected")
                 if self.role == "pi":
                     self._apply_expose([])
                 # Start a fresh session so both sides resync when the peer returns.

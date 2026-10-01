@@ -41,8 +41,8 @@ RTO = 0.4                            # retransmit timeout, seconds
 KEEPALIVE = 0.2                      # send an ack at least this often
 DGRAM_QUEUE = 64                     # datagrams beyond this are dropped
 
-T_ACK, T_DATA, T_OPEN, T_CLOSE, T_HELLO, T_DGRAM = 0, 1, 2, 3, 4, 5
-RELIABLE = {T_DATA, T_OPEN, T_CLOSE, T_HELLO}
+T_ACK, T_DATA, T_OPEN, T_CLOSE, T_HELLO, T_DGRAM, T_CTRL = 0, 1, 2, 3, 4, 5, 6
+RELIABLE = {T_DATA, T_OPEN, T_CLOSE, T_HELLO, T_CTRL}
 
 log = logging.getLogger("audiolink")
 

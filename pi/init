@@ -103,8 +103,9 @@ wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
 udhcpc -i wlan0 -b -s /usr/share/udhcpc/default.script -x hostname:audiopi
 EOF
 chmod +x /root/wifi-up.sh
-# Touch /etc/nowifi (or rebuild without wifi.conf) to skip Wi-Fi at boot.
-if [ -s /etc/wpa_supplicant/wpa_supplicant.conf ] && [ ! -e /etc/nowifi ]; then
+# Touch /etc/nowifi to skip Wi-Fi at boot.
+# Saved networks are loaded by audiolink (`audiolink wifi ...` on the host).
+if [ ! -e /etc/nowifi ]; then
     /root/wifi-up.sh >/var/log/wifi.log 2>&1
 fi
 

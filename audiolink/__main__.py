@@ -5,6 +5,9 @@
   audiolink host --forward 8080:pi-lan:80    Mac/PC: tunnel local :8080 to a host on the Pi's side
   audiolink pi --forward 2222:22             Pi: expose the host's port 22 as Pi port 2222
   audiolink list-devices                     show audio devices (host side)
+  audiolink wifi                             pick a network for the Pi from a list
+  audiolink wifi join NAME                   join (detects the security type, asks only if needed)
+  audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
 
 --forward LPORT:[HOST:]PORT  listen on LPORT here; each connection asks the peer to
                              connect to HOST:PORT (HOST defaults to the peer's 127.0.0.1)
@@ -55,6 +58,16 @@ def main(argv=None):
     ap.add_argument("--version", action="version", version="audiolink " + __version__)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list-devices", help="list audio devices")
+    w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)")
+    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget"],
+                   help="omit to pick a network from a list")
+    w.add_argument("name", nargs="?", help="network name for join/forget")
+    w.add_argument("--security", choices=["open", "owe", "wpa2", "wpa3"],
+                   help="join: skip detection (needed for hidden networks)")
+    w.add_argument("--open", action="store_true", help="join: same as --security open")
+    w.add_argument("--hidden", action="store_true", help="join: network doesn't broadcast its name")
+    w.add_argument("--reenter", action="store_true", help="join: ask for the password even if saved")
+    w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
     roles = {"host": sub.add_parser("host", help="run on the Mac/PC the Pi is plugged into"),
              "pi": sub.add_parser("pi", help="run on the Pi")}
     for name, p in roles.items():
@@ -64,14 +77,23 @@ def main(argv=None):
         p.add_argument("-v", "--verbose", action="store_true")
     roles["host"].add_argument("--expose", action="append", default=[], metavar="PIPORT:[HOST:]PORT")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
+    for p in (roles["host"], w):
+        p.add_argument("--control-port", type=int, default=None, help="local control port (default 47800)")
     roles["host"].add_argument("--in-device", help="input device name (substring)")
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
+    roles["pi"].add_argument("--wifi-store", default="/var/lib/audiolink/networks.json",
+                             help="where saved Wi-Fi networks are kept")
     roles["pi"].add_argument("--expose-ports", default="1024-65535", metavar="LO-HI",
                              help="ports the host may ask the Pi to expose")
     a = ap.parse_args(argv)
 
     if a.cmd == "list-devices":
         return list_devices()
+    from . import control
+    port = getattr(a, "control_port", None) or control.DEFAULT_PORT
+    if a.cmd == "wifi":
+        a.control_port = port
+        return control.wifi_command(a)
 
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
@@ -79,7 +101,9 @@ def main(argv=None):
     if a.cmd == "host":
         node = Node("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
     else:
-        node = Node("pi", allow=allow, expose_ports=a.expose_ports)
+        from .wifi import WifiManager
+        wifi = WifiManager(a.wifi_store)
+        node = Node("pi", allow=allow, expose_ports=a.expose_ports, ctrl_handlers={"wifi": wifi.handle})
     for spec in a.forward:
         node.forward(*parse_forward(spec))
     if a.cmd == "pi":
@@ -88,6 +112,7 @@ def main(argv=None):
     else:
         from .audio import run_portaudio
         run_portaudio(node.link, a.out_device, a.in_device)
+        control.serve(node, port)
     log.info("audiolink %s %s up (session %08x); allow=%s%s", __version__, a.cmd, node.link.session,
              ",".join("%s:%d" % t for t in sorted(node.allow)) or "none",
              "; expose=" + ",".join("pi:%d->%s:%d" % (p, h, tp) for p, (h, tp) in node.expose)
