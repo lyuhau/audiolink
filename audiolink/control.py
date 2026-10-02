@@ -31,7 +31,8 @@ def serve(node, port=DEFAULT_PORT):
             try:
                 req = json.loads(conn.makefile("r").readline())
                 if req["op"] == "peer":
-                    reply = {"ok": True, "result": {"connected": node.peer_alive, "peer": node.peer_info}}
+                    reply = {"ok": True, "result": {"connected": node.peer_alive, "peer": node.peer_info,
+                                                    "proxy_port": getattr(node, "proxy_port", None)}}
                 else:
                     reply = {"ok": True, "result": node.request(req["op"], req.get("args"), timeout=90)}
             except Exception as e:
@@ -253,6 +254,89 @@ def startup_join(node, name, a, port):
 
 def _joined(r):
     print("joined %r (%s), Pi IP %s; saved" % (r["ssid"], SEC_LABEL.get(r.get("security"), "?"), r["ip"]))
+    _internet_hint(r)
+
+
+def _internet_hint(r):
+    if r.get("internet") == "portal":
+        print("this network has a login page (captive portal); run: audiolink wifi portal")
+    elif r.get("internet") == "offline":
+        print("note: the Pi has no internet on this network (%s)" % r.get("detail", "no response"))
+
+
+# ---- `audiolink wifi portal`
+def _find_browser():
+    """A Chromium-family browser, which can run as a separate instance with its own
+    proxy (no system or main-profile settings touched). Returns (kind, path)."""
+    if sys.platform == "darwin":
+        for app in ("Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium"):
+            for base in ("/Applications", os.path.expanduser("~/Applications")):
+                if os.path.isdir(os.path.join(base, app + ".app")):
+                    return "mac-app", app
+    elif sys.platform == "win32":
+        roots = [os.environ.get(k, "") for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
+        for rel in (r"Google\Chrome\Application\chrome.exe", r"Microsoft\Edge\Application\msedge.exe",
+                    r"BraveSoftware\Brave-Browser\Application\brave.exe"):
+            for root in roots:
+                path = os.path.join(root, rel)
+                if root and os.path.isfile(path):
+                    return "exe", path
+    return None, None
+
+
+def _open_browser(url, proxy_port):
+    import subprocess
+    from .portaudio import _cache_dir
+    profile = str(_cache_dir() / "portal-browser")
+    args = ["--user-data-dir=" + profile, "--proxy-server=http://127.0.0.1:%d" % proxy_port,
+            "--no-first-run", "--no-default-browser-check", "--new-window", url]
+    kind, browser = _find_browser()
+    if kind == "mac-app":
+        subprocess.Popen(["open", "-na", browser, "--args"] + args)
+    elif kind == "exe":
+        subprocess.Popen([browser] + args)
+    else:
+        return None
+    return browser
+
+
+def portal_flow(port):
+    peer = call("peer", port=port)
+    if "proxy" not in (peer["peer"] or {}).get("caps", []):
+        raise SystemExit("this Pi's audiolink can't proxy a browser (update it)")
+    if not peer.get("proxy_port"):
+        raise SystemExit("the host was started with --proxy-port 0; restart it with a proxy port")
+    st = call("wifi.status", port=port)
+    if not st["ssid"]:
+        raise SystemExit("the Pi isn't on a Wi-Fi network; join one first (audiolink wifi)")
+    r = call("wifi.check", port=port)
+    if r["internet"] == "online":
+        print("the Pi is already online on %r; no login needed" % st["ssid"])
+        return
+    if r["internet"] == "offline":
+        print("the Pi gets no response from the internet on %r (%s); trying the login page anyway"
+              % (st["ssid"], r.get("detail", "")))
+    url = r.get("portal_url") or "http://captive.apple.com/hotspot-detect.html"
+    browser = _open_browser(url, peer["proxy_port"])
+    if browser:
+        print("opened a separate %s window that browses as the Pi." % browser)
+        print("log in to %r there; your normal browser and network settings are untouched." % st["ssid"])
+    else:
+        print("no Chrome/Edge/Brave found. In any browser, set an HTTP proxy of 127.0.0.1:%d"
+              % peer["proxy_port"])
+        print("(that browses as the Pi), then open: %s" % url)
+    print("waiting for the Pi to get online (Ctrl-C to stop waiting)...", flush=True)
+    deadline = time.monotonic() + 15 * 60
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(3)
+            if call("wifi.check", port=port)["internet"] == "online":
+                print("the Pi is online. You can close that browser window.")
+                return
+    except KeyboardInterrupt:
+        print()
+        raise SystemExit("stopped waiting; check later with: audiolink wifi status")
+    raise SystemExit("still not online after 15 minutes")
 
 
 def pick_flow(a, port):
@@ -308,7 +392,10 @@ def wifi_command(a):
     elif a.action == "status":
         st = call("wifi.status", port=port)
         if st["ssid"]:
-            print("connected to %r (%s), IP %s" % (st["ssid"], _band(st["freq"]), st["ip"] or "none yet"))
+            print("connected to %r (%s), IP %s, internet: %s" % (st["ssid"], _band(st["freq"]),
+                  st["ip"] or "none yet", st.get("internet", "?")))
+            if st.get("internet") == "portal":
+                print("this network has a login page (captive portal); run: audiolink wifi portal")
         else:
             print("not connected (state: %s)" % st["state"])
         print("saved networks: %s" % (", ".join(st["saved"]) or "none"))
@@ -323,6 +410,8 @@ def wifi_command(a):
         if not a.name:
             raise SystemExit("usage: audiolink wifi join NAME")
         join_flow(a.name, a, port)
+    elif a.action == "portal":
+        portal_flow(port)
     elif a.action == "forget":
         if not a.name:
             raise SystemExit("usage: audiolink wifi forget NAME")

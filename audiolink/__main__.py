@@ -9,6 +9,7 @@
   audiolink wifi                             pick a network for the Pi from a list
   audiolink wifi join NAME                   join (detects the security type, asks only if needed)
   audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
+  audiolink wifi portal                      log the Pi in to a captive portal from a browser here
 
 --forward LPORT:[HOST:]PORT  listen on LPORT here; each connection asks the peer to
                              connect to HOST:PORT (HOST defaults to the peer's 127.0.0.1)
@@ -61,7 +62,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list-devices", help="list audio devices")
     w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)")
-    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget"],
+    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal"],
                    help="omit to pick a network from a list")
     w.add_argument("name", nargs="?", help="network name for join/forget")
     w.add_argument("--security", choices=["open", "owe", "wpa2", "wpa3"],
@@ -78,6 +79,8 @@ def main(argv=None):
         p.add_argument("--stats", type=float, default=0, help="log stats every N seconds")
         p.add_argument("-v", "--verbose", action="store_true")
     roles["host"].add_argument("--expose", action="append", default=[], metavar="PIPORT:[HOST:]PORT")
+    roles["host"].add_argument("--proxy-port", type=int, default=47801,
+                               help="local HTTP proxy that browses as the Pi (0 = off)")
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
@@ -114,9 +117,12 @@ def main(argv=None):
     if a.cmd == "host":
         node = Node("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
     else:
+        from . import proxy
         from .wifi import WifiManager
         wifi = WifiManager(a.wifi_store)
-        node = Node("pi", allow=allow, expose_ports=a.expose_ports, ctrl_handlers={"wifi": wifi.handle})
+        proxy.serve()
+        node = Node("pi", allow=allow + ["127.0.0.1:%d" % proxy.PROXY_PORT], expose_ports=a.expose_ports,
+                    ctrl_handlers={"wifi": wifi.handle}, extra_caps=["proxy"])
     for spec in a.forward:
         node.forward(*parse_forward(spec))
     if a.cmd == "pi":
@@ -126,6 +132,10 @@ def main(argv=None):
         from .audio import run_portaudio
         run_portaudio(node.link, a.out_device, a.in_device)
         control.serve(node, port)
+        node.proxy_port = a.proxy_port
+        if a.proxy_port:
+            # Browse as the Pi (captive portals): local HTTP proxy -> Pi's proxy.
+            node.forward(a.proxy_port, ("127.0.0.1", 3128), bind="127.0.0.1")
         if startup_wifi:
             try:
                 control.startup_join(node, a.wifi, a, port)

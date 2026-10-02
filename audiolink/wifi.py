@@ -36,6 +36,32 @@ def derive_psk(ssid, password):
     return hashlib.pbkdf2_hmac("sha1", password.encode(), ssid.encode(), 4096, 32).hex()
 
 
+CHECK_HOST, CHECK_PATH = "captive.apple.com", "/hotspot-detect.html"
+
+
+def connectivity(timeout=6):
+    """Captive-portal check, the way Apple devices do it: fetch a page that says
+    "Success" on the open internet. Anything else (a redirect or another page)
+    means a portal is in the way. Redirects are not followed."""
+    import http.client
+    try:
+        conn = http.client.HTTPConnection(CHECK_HOST, 80, timeout=timeout)
+        conn.request("GET", CHECK_PATH, headers={"User-Agent": "CaptiveNetworkSupport wispr"})
+        r = conn.getresponse()
+        body = r.read(65536).decode("latin-1", "replace")
+        conn.close()
+    except (OSError, http.client.HTTPException) as e:
+        return {"internet": "offline", "detail": str(e)}
+    if r.status == 200 and "<title>success</title>" in body.lower():
+        return {"internet": "online"}
+    url = r.getheader("Location") if 300 <= r.status < 400 else None
+    if not url:
+        m = re.search(r"""url=['"]?([^'" >]+)""", body, re.I) or \
+            re.search(r"""(?:href|action)=['"](https?://[^'"]+)""", body, re.I)
+        url = m.group(1) if m else None
+    return {"internet": "portal", "portal_url": url or "http://%s%s" % (CHECK_HOST, CHECK_PATH)}
+
+
 def classify(flags):
     """wpa_supplicant scan flags -> open | owe | wpa2 | wpa3 | wpa2/wpa3 | wep | enterprise."""
     if "EAP" in flags:
@@ -193,7 +219,7 @@ class WifiManager:
     # ---- operations (called from control requests)
     def handle(self, op, args):
         fn = {"scan": self.scan, "status": self.status, "list": self.list,
-              "join": self.join, "forget": self.forget}.get(op)
+              "join": self.join, "forget": self.forget, "check": self.check}.get(op)
         if fn is None:
             raise ValueError("unknown wifi operation %r" % op)
         with self.lock:
@@ -222,12 +248,19 @@ class WifiManager:
             self._scan_cache = (time.monotonic(), results)
         return [dict(n, saved=n["ssid"] in self.saved) for n in results]
 
+    def check(self):
+        if not self._ip():
+            return {"internet": "offline", "detail": "no IP address on Wi-Fi"}
+        return connectivity()
+
     def status(self):
         st = self._status()
         connected = st.get("wpa_state") == "COMPLETED"
-        return {"state": st.get("wpa_state"), "ssid": st.get("ssid") if connected else None,
-                "freq": int(st["freq"]) if connected and st.get("freq") else None,
-                "ip": self._ip(), "saved": sorted(self.saved)}
+        ip = self._ip()
+        return dict({"state": st.get("wpa_state"), "ssid": st.get("ssid") if connected else None,
+                     "freq": int(st["freq"]) if connected and st.get("freq") else None,
+                     "ip": ip, "saved": sorted(self.saved)},
+                    **(connectivity() if connected and ip else {"internet": "offline"}))
 
     def list(self):
         return [{"ssid": s, "last_used": e.get("last_used"), "security": security_of(e),
@@ -280,7 +313,8 @@ class WifiManager:
             self._reprioritize()
             self._wpa("enable_network", "all")
             log.info("wifi: joined and saved %r (%s)", ssid, ip)
-            return {"joined": True, "ssid": ssid, "ip": ip, "security": security_of(ent)}
+            return dict({"joined": True, "ssid": ssid, "ip": ip, "security": security_of(ent)},
+                        **connectivity())
 
         # Failed: drop the attempt and go back to the saved networks.
         self._wpa("remove_network", nid)

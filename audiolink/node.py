@@ -58,13 +58,14 @@ class Stream:
 
 
 class Node:
-    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", ctrl_handlers=None):
+    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", ctrl_handlers=None,
+                 extra_caps=()):
         self.role = role
         self.expose = list(expose)                      # host: [(pi_port, (host, port))]
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
         self.ctrl_handlers = dict(ctrl_handlers or {})  # "wifi" -> fn(op, args) (Pi side)
-        self.caps = ["streams", "expose"] + sorted(self.ctrl_handlers)
+        self.caps = ["streams", "expose"] + sorted(self.ctrl_handlers) + list(extra_caps)
         self.requests = {}                              # id -> [Event, reply]
         self.req_ids = itertools.count(1)
         self.ctrl_frags = {}                            # id -> bytearray being reassembled
