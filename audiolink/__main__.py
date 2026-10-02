@@ -10,6 +10,7 @@
   audiolink wifi join NAME                   join (detects the security type, asks only if needed)
   audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
   audiolink wifi portal                      log the Pi in to a captive portal from a browser here
+  audiolink wifi check                       exit 0 = Pi online, 2 = captive portal, 3 = offline
 
 --forward LPORT:[HOST:]PORT  listen on LPORT here; each connection asks the peer to
                              connect to HOST:PORT (HOST defaults to the peer's 127.0.0.1)
@@ -29,6 +30,35 @@ from . import __version__
 from .node import Node, parse_forward
 
 log = logging.getLogger("audiolink")
+
+
+class LogGate(logging.Handler):
+    """Passes records to the console, or holds them while a prompt owns the terminal.
+    (pause/resume, not hold/release: logging.Handler uses acquire/release itself.)"""
+
+    def __init__(self, target):
+        super().__init__()
+        self.target, self.held, self.depth = target, [], 0
+        self.glock = threading.RLock()
+
+    def emit(self, record):
+        with self.glock:
+            if self.depth:
+                self.held.append(record)
+            else:
+                self.target.handle(record)
+
+    def pause(self):
+        with self.glock:
+            self.depth += 1
+
+    def resume(self):
+        with self.glock:
+            self.depth = max(0, self.depth - 1)
+            if not self.depth:
+                for record in self.held:
+                    self.target.handle(record)
+                self.held = []
 
 
 def report(node, interval):
@@ -62,7 +92,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list-devices", help="list audio devices")
     w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)")
-    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal"],
+    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check"],
                    help="omit to pick a network from a list")
     w.add_argument("name", nargs="?", help="network name for join/forget")
     w.add_argument("--security", choices=["open", "owe", "wpa2", "wpa3"],
@@ -70,6 +100,8 @@ def main(argv=None):
     w.add_argument("--open", action="store_true", help="join: same as --security open")
     w.add_argument("--hidden", action="store_true", help="join: network doesn't broadcast its name")
     w.add_argument("--reenter", action="store_true", help="join: ask for the password even if saved")
+    w.add_argument("--portal", action="store_true", help="join: open a captive portal login without asking")
+    w.add_argument("--no-portal", action="store_true", help="join: never offer a captive portal login")
     w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
     roles = {"host": sub.add_parser("host", help="run on the Mac/PC the Pi is plugged into"),
              "pi": sub.add_parser("pi", help="run on the Pi")}
@@ -107,12 +139,10 @@ def main(argv=None):
     console = logging.StreamHandler()
     console.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
     startup_wifi = a.cmd == "host" and a.wifi
+    gate = LogGate(console)
+    root.addHandler(gate)
     if startup_wifi:
-        # Hold log output back while the Wi-Fi prompts own the terminal.
-        held = logging.handlers.MemoryHandler(100000, flushLevel=logging.CRITICAL + 1, target=console)
-        root.addHandler(held)
-    else:
-        root.addHandler(console)
+        gate.pause()             # the Wi-Fi prompts own the terminal until startup is done
     allow = [x for spec in a.allow for x in spec.split(",") if x]
     if a.cmd == "host":
         node = Node("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
@@ -120,9 +150,11 @@ def main(argv=None):
         from . import proxy
         from .wifi import WifiManager
         wifi = WifiManager(a.wifi_store)
-        proxy.serve()
+        proxy.serve(on_request=wifi.note_demand)
         node = Node("pi", allow=allow + ["127.0.0.1:%d" % proxy.PROXY_PORT], expose_ports=a.expose_ports,
-                    ctrl_handlers={"wifi": wifi.handle}, extra_caps=["proxy"])
+                    ctrl_handlers={"wifi": wifi.handle}, extra_caps=["proxy", "events"])
+        wifi.emit = node.send_event
+        node.up_hooks.append(wifi.announce)
     for spec in a.forward:
         node.forward(*parse_forward(spec))
     if a.cmd == "pi":
@@ -136,6 +168,7 @@ def main(argv=None):
         if a.proxy_port:
             # Browse as the Pi (captive portals): local HTTP proxy -> Pi's proxy.
             node.forward(a.proxy_port, ("127.0.0.1", 3128), bind="127.0.0.1")
+        watcher = control.PortalWatcher(node, port, gate)
         if startup_wifi:
             try:
                 control.startup_join(node, a.wifi, a, port)
@@ -143,9 +176,8 @@ def main(argv=None):
                 print()
                 return 130
             finally:
-                held.flush()
-                root.removeHandler(held)
-                root.addHandler(console)
+                gate.resume()
+        watcher.start(skip_initial=bool(startup_wifi))
     log.info("audiolink %s %s up (session %08x); allow=%s%s", __version__, a.cmd, node.link.session,
              ",".join("%s:%d" % t for t in sorted(node.allow)) or "none",
              "; expose=" + ",".join("pi:%d->%s:%d" % (p, h, tp) for p, (h, tp) in node.expose)

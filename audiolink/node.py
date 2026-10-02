@@ -13,8 +13,9 @@ Messages (all reliable, in order):
   OPEN   "host:port" for a new stream id
   DATA   bytes for a stream
   CLOSE  sender is done writing (half-close); a stream ends when both sides close
-  CTRL   JSON request {"op", "args"} or reply {"ok", "result"|"error"}; the stream id
-         field carries the request id. Fragmented: first byte 1 = more follows, 0 = last.
+  CTRL   JSON request {"op", "args"}, reply {"ok", "result"|"error"} (stream id field =
+         request id), or one-way event {"event", "data"} (stream id 0). Fragmented: first
+         byte 1 = more follows, 0 = last.
 """
 import itertools
 import json
@@ -65,6 +66,8 @@ class Node:
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
         self.ctrl_handlers = dict(ctrl_handlers or {})  # "wifi" -> fn(op, args) (Pi side)
+        self.on_event = None                            # fn(name, data) for peer events
+        self.up_hooks = []                              # run (in a thread) on every link-up
         self.caps = ["streams", "expose"] + sorted(self.ctrl_handlers) + list(extra_caps)
         self.requests = {}                              # id -> [Event, reply]
         self.req_ids = itertools.count(1)
@@ -84,6 +87,8 @@ class Node:
         self.peer_alive = True
         self._close_all()
         self._fail_requests("link restarted")
+        for hook in self.up_hooks:
+            threading.Thread(target=hook, daemon=True).start()
         hello = {"v": PROTOCOL_VERSION, "role": self.role, "version": __version__, "caps": self.caps,
                  "expose": [[p, h, tp] for p, (h, tp) in self.expose]}
         self.link.send(T_HELLO, 0, json.dumps(hello).encode())
@@ -144,8 +149,17 @@ class Node:
             more = i + step < len(data)
             self.link.send(T_CTRL, rid, (b"\x01" if more else b"\x00") + data[i:i + step])
 
+    def send_event(self, name, data=None):
+        """One-way notification to the peer (dropped if no peer is connected)."""
+        if self.peer_alive:
+            self._send_ctrl(0, {"event": name, "data": data})
+
     def _on_ctrl(self, rid, msg):
-        if "op" in msg:                       # a request from the peer
+        if "event" in msg:
+            if self.on_event:
+                threading.Thread(target=self.on_event, args=(msg["event"], msg.get("data")),
+                                 daemon=True).start()
+        elif "op" in msg:                     # a request from the peer
             threading.Thread(target=self._serve_ctrl, args=(rid, msg), daemon=True).start()
         else:                                 # a reply to one of ours
             ent = self.requests.get(rid)

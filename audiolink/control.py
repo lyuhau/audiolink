@@ -30,7 +30,10 @@ def serve(node, port=DEFAULT_PORT):
         with conn:
             try:
                 req = json.loads(conn.makefile("r").readline())
-                if req["op"] == "peer":
+                if req["op"] == "portal_active":
+                    node.portal_active_until = time.monotonic() + 30
+                    reply = {"ok": True, "result": None}
+                elif req["op"] == "peer":
                     reply = {"ok": True, "result": {"connected": node.peer_alive, "peer": node.peer_info,
                                                     "proxy_port": getattr(node, "proxy_port", None)}}
                 else:
@@ -167,7 +170,7 @@ def join_flow(name, a, port, known_security=None):
     if name in saved and not security and not getattr(a, "reenter", False):
         r = attempt(use_saved=True)
         if r["joined"]:
-            return _joined(r)
+            return _joined(r, a, port)
         if r["code"] != "auth_failed":
             raise SystemExit("couldn't join %r: %s" % (name, r["reason"]))
         print("the saved password for %r was rejected (changed?)" % name)
@@ -219,7 +222,7 @@ def join_flow(name, a, port, known_security=None):
         pw, can_retry = ask.password(name, security, retry) if needs_pw else (None, False)
         r = attempt(password=pw, security=security, hidden=hidden)
         if r["joined"]:
-            return _joined(r)
+            return _joined(r, a, port)
         if r["code"] == "auth_failed" and can_retry:
             print("password incorrect; try again")
             retry = True
@@ -244,6 +247,8 @@ def startup_join(node, name, a, port):
         st = call("wifi.status", port=port)
         if st["ssid"] == name:
             print("the Pi is already on %r (IP %s)" % (name, st["ip"]))
+            if st.get("internet") == "portal":
+                offer_portal(a, port)
             return
         join_flow(name, a, port)
     except SystemExit as e:
@@ -252,16 +257,30 @@ def startup_join(node, name, a, port):
         print("continuing; the Pi stays on its saved networks. Retry with: audiolink wifi join %r" % name)
 
 
-def _joined(r):
+def _joined(r, a, port):
     print("joined %r (%s), Pi IP %s; saved" % (r["ssid"], SEC_LABEL.get(r.get("security"), "?"), r["ip"]))
-    _internet_hint(r)
-
-
-def _internet_hint(r):
     if r.get("internet") == "portal":
-        print("this network has a login page (captive portal); run: audiolink wifi portal")
+        offer_portal(a, port)
     elif r.get("internet") == "offline":
         print("note: the Pi has no internet on this network (%s)" % r.get("detail", "no response"))
+
+
+def offer_portal(a, port, wait=True):
+    """A captive portal is in the way: open the login page if asked to (--portal) or
+    if the user says yes; otherwise say how to do it later. Returns True if opened."""
+    if getattr(a, "no_portal", False) or (not getattr(a, "portal", False) and not sys.stdin.isatty()):
+        print("this network has a login page (captive portal); open it with: audiolink wifi portal")
+        return False
+    if not getattr(a, "portal", False):
+        try:
+            ans = input("this network has a login page (captive portal). Open it now? [Y/n] ")
+        except EOFError:
+            ans = "n"
+        if ans.strip().lower().startswith("n"):
+            print("ok; open it later with: audiolink wifi portal")
+            return False
+    portal_flow(port, wait=wait)
+    return True
 
 
 # ---- `audiolink wifi portal`
@@ -300,7 +319,10 @@ def _open_browser(url, proxy_port):
     return browser
 
 
-def portal_flow(port):
+def portal_flow(port, wait=True):
+    """Open the portal's login page in a browser that browses as the Pi. wait=True
+    polls until the Pi is online; the daemon uses wait=False (its connectivity
+    events report when the Pi gets online)."""
     peer = call("peer", port=port)
     if "proxy" not in (peer["peer"] or {}).get("caps", []):
         raise SystemExit("this Pi's audiolink can't proxy a browser (update it)")
@@ -317,6 +339,7 @@ def portal_flow(port):
         print("the Pi gets no response from the internet on %r (%s); trying the login page anyway"
               % (st["ssid"], r.get("detail", "")))
     url = r.get("portal_url") or "http://captive.apple.com/hotspot-detect.html"
+    call("portal_active", port=port)        # the login window's own requests aren't "demand"
     browser = _open_browser(url, peer["proxy_port"])
     if browser:
         print("opened a separate %s window that browses as the Pi." % browser)
@@ -325,11 +348,14 @@ def portal_flow(port):
         print("no Chrome/Edge/Brave found. In any browser, set an HTTP proxy of 127.0.0.1:%d"
               % peer["proxy_port"])
         print("(that browses as the Pi), then open: %s" % url)
+    if not wait:
+        return
     print("waiting for the Pi to get online (Ctrl-C to stop waiting)...", flush=True)
     deadline = time.monotonic() + 15 * 60
     try:
         while time.monotonic() < deadline:
             time.sleep(3)
+            call("portal_active", port=port)
             if call("wifi.check", port=port)["internet"] == "online":
                 print("the Pi is online. You can close that browser window.")
                 return
@@ -412,8 +438,90 @@ def wifi_command(a):
         join_flow(a.name, a, port)
     elif a.action == "portal":
         portal_flow(port)
+    elif a.action == "check":
+        r = call("wifi.check", port=port)
+        print("internet: %s%s" % (r["internet"], " on %r" % r["ssid"] if r.get("ssid") else ""))
+        raise SystemExit({"online": 0, "portal": 2}.get(r["internet"], 3))
     elif a.action == "forget":
         if not a.name:
             raise SystemExit("usage: audiolink wifi forget NAME")
         call("wifi.forget", {"ssid": a.name}, port=port)
         print("forgot %r" % a.name)
+
+
+# ---- daemon side: react to the Pi's connectivity events
+class PortalWatcher:
+    """In the host daemon. When the Pi lands behind a captive portal (joined one, or
+    its login expired): warn, and if there's a terminal, offer to open the login
+    page. If the user declines, stay quiet until something needs the Pi's internet,
+    then ask again. Without a terminal, only log."""
+
+    def __init__(self, node, port, gate):
+        self.node, self.port, self.gate = node, port, gate
+        self.interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        self.state = None
+        self.declined = False
+        self.ready = False              # no prompts until startup (`--wifi`) is done
+        self.prompt_lock = threading.Lock()
+        node.portal_active_until = 0.0
+        node.on_event = self.on_event
+
+    def start(self, skip_initial=False):
+        """skip_initial: startup (`--wifi`) already offered the login, so treat the
+        answer as given and only ask again on demand."""
+        self.ready = True
+        if self.state and self.state["internet"] == "portal":
+            if skip_initial:
+                self.declined = True
+            else:
+                self._portal_blocking(first=True)
+
+    def on_event(self, name, data):
+        if name == "internet":
+            prev, self.state = self.state, data
+            if data["internet"] == "online":
+                if prev and prev["internet"] != "online":
+                    log.info("the Pi is online%s", " on %r" % data["ssid"] if data.get("ssid") else "")
+                self.declined = False
+            elif data["internet"] == "portal" and self.ready and \
+                    not (prev and prev["internet"] == "portal" and prev.get("ssid") == data.get("ssid")):
+                self._portal_blocking(first=True, expired=bool(prev and prev["internet"] == "online"))
+        elif name == "portal_needed" and self.ready:
+            self.state = data
+            if time.monotonic() < self.node.portal_active_until:
+                return                          # it's the login window itself
+            self._portal_blocking(first=False)
+
+    def _portal_blocking(self, first, expired=False):
+        ssid = self.state.get("ssid")
+        if first:
+            log.warning("the Pi's Wi-Fi %r %s a captive portal login", ssid,
+                        "login expired; it needs" if expired else "needs")
+        else:
+            log.warning("something needs the Pi's internet, but %r is waiting for a captive portal "
+                        "login; run: audiolink wifi portal", ssid)
+        # Ask when it first happens; after a "no", ask again only on demand.
+        if not self.interactive or (first and self.declined) or (not first and not self.declined):
+            return
+        if not self.prompt_lock.acquire(blocking=False):
+            return
+        self.gate.pause()
+        try:
+            try:
+                ans = input("open the login page for %r now? [Y/n] " % ssid)
+            except EOFError:
+                ans = "n"
+            if ans.strip().lower().startswith("n"):
+                self.declined = True
+                print("ok; open it later with: audiolink wifi portal (I'll ask again when "
+                      "something needs the Pi's internet)", flush=True)
+            else:
+                self.declined = False
+                try:
+                    portal_flow(self.port, wait=False)
+                except SystemExit as e:
+                    if isinstance(e.code, str):
+                        print(e.code, flush=True)
+        finally:
+            self.gate.resume()
+            self.prompt_lock.release()

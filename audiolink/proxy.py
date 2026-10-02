@@ -40,7 +40,8 @@ def _splice(a, b):
     t.join()
 
 
-def _handle(client):
+def _handle(client, on_request):
+    on_request()
     with client:
         try:
             client.settimeout(30)
@@ -85,7 +86,9 @@ def _handle(client):
                 pass
 
 
-def serve(port=PROXY_PORT):
+def serve(port=PROXY_PORT, on_request=lambda: None):
+    """on_request() runs for every proxied connection (used to notice demand for
+    the Pi's internet while a captive portal is blocking it)."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
@@ -94,7 +97,7 @@ def serve(port=PROXY_PORT):
     def loop():
         while True:
             conn, _ = srv.accept()
-            threading.Thread(target=_handle, args=(conn,), daemon=True).start()
+            threading.Thread(target=_handle, args=(conn, on_request), daemon=True).start()
 
     threading.Thread(target=loop, daemon=True).start()
     log.info("proxy for browsing as the Pi on 127.0.0.1:%d", port)

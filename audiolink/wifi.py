@@ -105,7 +105,11 @@ class WifiManager:
         self.lock = threading.Lock()          # one operation at a time
         self.saved = self._load()
         self._scan_cache = (0.0, [])
+        self.emit = lambda name, data=None: None    # set by the caller: sends events to the host
+        self.internet = None                        # last connectivity state, with "ssid"
+        self._last_demand = 0.0
         threading.Thread(target=self._load_into_supplicant, daemon=True).start()
+        threading.Thread(target=self._monitor, daemon=True).start()
 
     # ---- store
     def _load(self):
@@ -216,6 +220,48 @@ class WifiManager:
             self._wpa("enable_network", "all")
         log.info("wifi: %d saved network(s) loaded", len(self.saved))
 
+    # ---- connectivity monitor (portal logins expire; networks come and go)
+    def _probe(self):
+        st = self._status()
+        ip = self._ip()
+        if st.get("wpa_state") != "COMPLETED" or not ip:
+            return {"internet": "offline", "ssid": None, "detail": "not connected"}
+        return dict(connectivity(), ssid=st.get("ssid"))
+
+    def _set_internet(self, state):
+        prev, self.internet = self.internet, state
+        if prev is None or (prev["internet"], prev.get("ssid")) != (state["internet"], state.get("ssid")):
+            log.info("wifi: internet %s%s", state["internet"],
+                     " on %r" % state["ssid"] if state.get("ssid") else "")
+            self.emit("internet", state)
+
+    def _monitor(self):
+        time.sleep(5)
+        while True:
+            state = None
+            if self.lock.acquire(blocking=False):   # skip while a join is in progress
+                try:
+                    state = self._probe()
+                    self._set_internet(state)
+                except Exception as e:
+                    log.debug("wifi monitor: %s", e)
+                finally:
+                    self.lock.release()
+            time.sleep(15 if state and state["internet"] == "portal" else 60)
+
+    def announce(self):
+        """Link-up hook: tell a (new) host the current state."""
+        if self.internet:
+            self.emit("internet", self.internet)
+
+    def note_demand(self):
+        """Something tried to use the Pi's internet (proxy request). If a portal is
+        in the way, tell the host, at most once a minute."""
+        now = time.monotonic()
+        if self.internet and self.internet["internet"] == "portal" and now - self._last_demand > 60:
+            self._last_demand = now
+            self.emit("portal_needed", self.internet)
+
     # ---- operations (called from control requests)
     def handle(self, op, args):
         fn = {"scan": self.scan, "status": self.status, "list": self.list,
@@ -249,9 +295,9 @@ class WifiManager:
         return [dict(n, saved=n["ssid"] in self.saved) for n in results]
 
     def check(self):
-        if not self._ip():
-            return {"internet": "offline", "detail": "no IP address on Wi-Fi"}
-        return connectivity()
+        state = self._probe()
+        self._set_internet(state)
+        return state
 
     def status(self):
         st = self._status()
@@ -313,8 +359,9 @@ class WifiManager:
             self._reprioritize()
             self._wpa("enable_network", "all")
             log.info("wifi: joined and saved %r (%s)", ssid, ip)
-            return dict({"joined": True, "ssid": ssid, "ip": ip, "security": security_of(ent)},
-                        **connectivity())
+            conn = dict(connectivity(), ssid=ssid)
+            self._set_internet(conn)
+            return dict(conn, joined=True, ip=ip, security=security_of(ent))
 
         # Failed: drop the attempt and go back to the saved networks.
         self._wpa("remove_network", nid)
