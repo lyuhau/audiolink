@@ -14,6 +14,8 @@ import subprocess
 import threading
 import time
 
+from . import Service
+
 log = logging.getLogger("audiolink")
 
 IFACE = "wlan0"
@@ -394,3 +396,23 @@ class WifiManager:
         if nid is not None:
             self._wpa("remove_network", nid)
         return {"forgotten": ssid}
+
+
+class WifiService(Service):
+    """Pi side: Wi-Fi management requests ("wifi.<op>") from the host, and
+    connectivity events ("internet", "portal_needed") pushed to it."""
+    name = "wifi"
+    caps = ("wifi",)
+
+    def __init__(self, store_path):
+        self.manager = WifiManager(store_path)
+
+    def attach(self, session):
+        super().attach(session)
+        self.manager.emit = session.send_event
+
+    def on_up(self):
+        threading.Thread(target=self.manager.announce, daemon=True).start()
+
+    def handle(self, op, args):
+        return self.manager.handle(op, args)

@@ -1,0 +1,62 @@
+"""Local control port of a running `audiolink host`, and call() for its clients.
+
+The host daemon owns the audio device, so other commands (e.g. `audiolink wifi`)
+talk to it over 127.0.0.1 with one JSON request and one JSON reply per connection.
+Requests named in local_ops are answered by the daemon itself; anything else
+("wifi.scan", ...) is forwarded to the Pi over the session.
+"""
+import json
+import logging
+import os
+import socket
+import threading
+
+log = logging.getLogger("audiolink")
+
+DEFAULT_PORT = int(os.environ.get("AUDIOLINK_CONTROL_PORT", "47800"))
+
+
+def serve(session, port=DEFAULT_PORT, local_ops=None):
+    """local_ops: {op: fn(args) -> result} handled in the daemon."""
+    local_ops = local_ops or {}
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(("127.0.0.1", port))
+    except OSError as e:
+        log.warning("control port 127.0.0.1:%d unavailable (%s); `audiolink wifi` won't work", port, e)
+        return
+    srv.listen(4)
+
+    def handle(conn):
+        with conn:
+            try:
+                req = json.loads(conn.makefile("r").readline())
+                if req["op"] in local_ops:
+                    result = local_ops[req["op"]](req.get("args") or {})
+                else:
+                    result = session.request(req["op"], req.get("args"), timeout=90)
+                reply = {"ok": True, "result": result}
+            except Exception as e:
+                reply = {"ok": False, "error": str(e)}
+            conn.sendall((json.dumps(reply) + "\n").encode())
+
+    def loop():
+        while True:
+            conn, _ = srv.accept()
+            threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def call(op, args=None, port=DEFAULT_PORT):
+    try:
+        conn = socket.create_connection(("127.0.0.1", port), timeout=120)
+    except OSError:
+        raise SystemExit("can't reach a running `audiolink host` on 127.0.0.1:%d; start it first" % port)
+    with conn:
+        conn.sendall((json.dumps({"op": op, "args": args or {}}) + "\n").encode())
+        reply = json.loads(conn.makefile("r").readline())
+    if not reply.get("ok"):
+        raise SystemExit("error: " + reply.get("error", "failed"))
+    return reply["result"]

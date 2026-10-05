@@ -96,7 +96,8 @@ def _bundled_name():
     return None
 
 
-def _cache_dir():
+def cache_dir():
+    """Per-user cache directory for audiolink (extracted libraries, browser profile)."""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     elif sys.platform == "darwin":
@@ -114,7 +115,7 @@ def _load():
             return ctypes.CDLL(str(here))
         data = pkgutil.get_data(__package__, "_lib/" + name)  # running from a .pyz
         if data:
-            dest = _cache_dir() / hashlib.sha256(data).hexdigest()[:16] / name
+            dest = cache_dir() / hashlib.sha256(data).hexdigest()[:16] / name
             if not dest.is_file():
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 tmp = dest.with_suffix(".tmp")

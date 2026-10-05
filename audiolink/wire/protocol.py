@@ -25,7 +25,7 @@ import threading
 import time
 import zlib
 
-from . import PROTOCOL_VERSION
+from .. import PROTOCOL_VERSION
 
 RATE, CHANNELS = 48000, 2
 FRAME_BYTES = CHANNELS * 2           # one PCM frame

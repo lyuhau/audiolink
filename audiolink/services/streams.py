@@ -1,4 +1,4 @@
-"""TCP streams multiplexed over the link.
+"""TCP streams multiplexed over the session.
 
 Either side can:
   forward  listen on a local TCP port; each connection asks the peer to connect
@@ -9,28 +9,19 @@ The host can also:
            target; sent in the HELLO, so the Pi re-applies it on every link-up.
 
 Messages (all reliable, in order):
-  HELLO  JSON {"v", "role", "version", "caps", "expose"}, sent whenever the link comes up
   OPEN   "host:port" for a new stream id
   DATA   bytes for a stream
   CLOSE  sender is done writing (half-close); a stream ends when both sides close
-  CTRL   JSON request {"op", "args"}, reply {"ok", "result"|"error"} (stream id field =
-         request id), or one-way event {"event", "data"} (stream id 0). Fragmented: first
-         byte 1 = more follows, 0 = last.
 """
-import itertools
-import json
 import logging
 import queue
 import socket
 import threading
-import time
 
-from . import PROTOCOL_VERSION, __version__
-from .protocol import MAX_PAYLOAD, T_CLOSE, T_CTRL, T_DATA, T_HELLO, T_OPEN, Link
+from ..wire.protocol import MAX_PAYLOAD, T_CLOSE, T_DATA, T_OPEN
+from . import Service
 
 log = logging.getLogger("audiolink")
-
-PEER_TIMEOUT = 5.0      # seconds without frames before the peer is considered gone
 
 
 def parse_target(spec, default_host="127.0.0.1"):
@@ -58,58 +49,39 @@ class Stream:
         self.closed_tx = self.closed_rx = False
 
 
-class Node:
-    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", ctrl_handlers=None,
-                 extra_caps=()):
+class Streams(Service):
+    name = "streams"
+    caps = ("streams", "expose")
+    msg_types = (T_OPEN, T_DATA, T_CLOSE)
+
+    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535"):
         self.role = role
         self.expose = list(expose)                      # host: [(pi_port, (host, port))]
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
-        self.ctrl_handlers = dict(ctrl_handlers or {})  # "wifi" -> fn(op, args) (Pi side)
-        self.on_event = None                            # fn(name, data) for peer events
-        self.up_hooks = []                              # run (in a thread) on every link-up
-        self.caps = ["streams", "expose"] + sorted(self.ctrl_handlers) + list(extra_caps)
-        self.requests = {}                              # id -> [Event, reply]
-        self.req_ids = itertools.count(1)
-        self.ctrl_frags = {}                            # id -> bytearray being reassembled
-        self.peer_info = None
-        self.peer_alive = False
         self.streams = {}
         self.listeners = {}                             # port -> (socket, target, exposed)
         self.lock = threading.Lock()
         self.llock = threading.RLock()                  # guards listeners
         self.next_sid = 1 if role == "pi" else 2        # odd/even: no id clashes
-        self.link = Link(self.on_message, self.on_datagram, self.on_up)
-        threading.Thread(target=self._watchdog, daemon=True).start()
 
-    # ---- link callbacks (parser thread; must not block for long)
+    # ---- session hooks
+    def hello(self):
+        return {"expose": [[p, h, tp] for p, (h, tp) in self.expose]}
+
+    def on_peer_hello(self, info):
+        if self.role == "pi":
+            self._apply_expose(info.get("expose", []))
+
     def on_up(self):
-        self.peer_alive = True
         self._close_all()
-        self._fail_requests("link restarted")
-        for hook in self.up_hooks:
-            threading.Thread(target=hook, daemon=True).start()
-        hello = {"v": PROTOCOL_VERSION, "role": self.role, "version": __version__, "caps": self.caps,
-                 "expose": [[p, h, tp] for p, (h, tp) in self.expose]}
-        self.link.send(T_HELLO, 0, json.dumps(hello).encode())
 
-    def on_datagram(self, sid, payload):
-        pass  # phase 3 (IP packets) will hook in here
+    def on_down(self):
+        self._close_all()
+        if self.role == "pi":
+            self._apply_expose([])
 
     def on_message(self, typ, sid, payload):
-        if typ == T_HELLO:
-            self.peer_info = info = json.loads(payload.decode())
-            log.info("peer: %s %s, caps=%s", info.get("role"), info.get("version"),
-                     ",".join(info.get("caps", [])))
-            if self.role == "pi":
-                self._apply_expose(info.get("expose", []))
-            return
-        if typ == T_CTRL:
-            buf = self.ctrl_frags.setdefault(sid, bytearray())
-            buf += payload[1:]
-            if payload[:1] == b"\x00":
-                self._on_ctrl(sid, json.loads(bytes(self.ctrl_frags.pop(sid)).decode()))
-            return
         if typ == T_OPEN:
             st = Stream(sid)
             with self.lock:
@@ -125,81 +97,6 @@ class Node:
             st.wq.put(payload)
         elif typ == T_CLOSE:
             st.wq.put(None)
-
-    # ---- control requests (request/reply over the link)
-    def request(self, op, args=None, timeout=60):
-        """Host: send a control request to the Pi and wait for its reply."""
-        if not self.peer_alive:
-            raise RuntimeError("the Pi is not connected")
-        rid = next(self.req_ids) & 0xFFFF or next(self.req_ids)
-        ent = self.requests[rid] = [threading.Event(), None]
-        self._send_ctrl(rid, {"op": op, "args": args or {}})
-        if not ent[0].wait(timeout):
-            self.requests.pop(rid, None)
-            raise TimeoutError("no reply from the Pi to %r" % op)
-        reply = self.requests.pop(rid)[1]
-        if not reply.get("ok"):
-            raise RuntimeError(reply.get("error", "request failed"))
-        return reply.get("result")
-
-    def _send_ctrl(self, rid, obj):
-        data = json.dumps(obj).encode()
-        step = MAX_PAYLOAD - 1
-        for i in range(0, max(len(data), 1), step):
-            more = i + step < len(data)
-            self.link.send(T_CTRL, rid, (b"\x01" if more else b"\x00") + data[i:i + step])
-
-    def send_event(self, name, data=None):
-        """One-way notification to the peer (dropped if no peer is connected)."""
-        if self.peer_alive:
-            self._send_ctrl(0, {"event": name, "data": data})
-
-    def _on_ctrl(self, rid, msg):
-        if "event" in msg:
-            if self.on_event:
-                threading.Thread(target=self.on_event, args=(msg["event"], msg.get("data")),
-                                 daemon=True).start()
-        elif "op" in msg:                     # a request from the peer
-            threading.Thread(target=self._serve_ctrl, args=(rid, msg), daemon=True).start()
-        else:                                 # a reply to one of ours
-            ent = self.requests.get(rid)
-            if ent:
-                ent[1] = msg
-                ent[0].set()
-
-    def _serve_ctrl(self, rid, msg):
-        area, _, op = msg["op"].partition(".")
-        handler = self.ctrl_handlers.get(area)
-        try:
-            if handler is None:
-                raise ValueError("%s does not support %r" % (self.role, msg["op"]))
-            reply = {"ok": True, "result": handler(op, msg.get("args", {}))}
-        except Exception as e:
-            log.warning("control %s failed: %s", msg["op"], e)
-            reply = {"ok": False, "error": str(e)}
-        self._send_ctrl(rid, reply)
-
-    def _fail_requests(self, why):
-        for rid in list(self.requests):
-            ent = self.requests.get(rid)
-            if ent:
-                ent[1] = {"ok": False, "error": why}
-                ent[0].set()
-        self.ctrl_frags.clear()
-
-    def _watchdog(self):
-        while True:
-            time.sleep(1)
-            if self.peer_alive and time.monotonic() - self.link.last_rx > PEER_TIMEOUT:
-                log.warning("peer silent for %.0fs; closing streams%s", PEER_TIMEOUT,
-                            " and exposed ports" if self.role == "pi" else "")
-                self.peer_alive = False
-                self._close_all()
-                self._fail_requests("the Pi disconnected")
-                if self.role == "pi":
-                    self._apply_expose([])
-                # Start a fresh session so both sides resync when the peer returns.
-                self.link.restart()
 
     def _close_all(self):
         with self.lock:
@@ -245,9 +142,10 @@ class Node:
     # ---- per-stream pumps
     def _connect_and_pump(self, st, target):
         host, port = target
+        link = self.session.link
         if target not in self.allow:
             log.warning("stream %d: %s:%d not allowed (use --allow or --expose)", st.sid, host, port)
-            self.link.send(T_CLOSE, st.sid)
+            link.send(T_CLOSE, st.sid)
             return
         try:
             st.sock = socket.create_connection(target, timeout=5)
@@ -255,7 +153,7 @@ class Node:
             st.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError as e:
             log.warning("stream %d: connect to %s:%d failed: %s", st.sid, host, port, e)
-            self.link.send(T_CLOSE, st.sid)
+            link.send(T_CLOSE, st.sid)
             return
         log.info("stream %d: connected to %s:%d", st.sid, host, port)
         threading.Thread(target=self._reader, args=(st,), daemon=True).start()
@@ -263,16 +161,17 @@ class Node:
 
     def _reader(self, st):
         """socket -> link"""
+        link = self.session.link
         try:
             while True:
                 data = st.sock.recv(MAX_PAYLOAD)
                 if not data:
                     break
-                self.link.stats["tcp_tx_bytes"] += len(data)
-                self.link.send(T_DATA, st.sid, data)
+                link.stats["tcp_tx_bytes"] += len(data)
+                link.send(T_DATA, st.sid, data)
         except OSError:
             pass
-        self.link.send(T_CLOSE, st.sid)
+        link.send(T_CLOSE, st.sid)
         st.closed_tx = True
         self._maybe_finish(st)
 
@@ -284,7 +183,7 @@ class Node:
                 if data is None:
                     break
                 st.sock.sendall(data)
-                self.link.stats["tcp_rx_bytes"] += len(data)
+                self.session.link.stats["tcp_rx_bytes"] += len(data)
             st.sock.shutdown(socket.SHUT_WR)
         except OSError:
             pass
@@ -317,7 +216,7 @@ class Node:
                     sock, addr = srv.accept()
                 except OSError:
                     return                                  # listener closed
-                if not self.peer_alive:
+                if not self.session.peer_alive:
                     sock.close()                            # nobody on the other end
                     continue
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -327,7 +226,7 @@ class Node:
                     st = Stream(sid, sock)
                     self.streams[sid] = st
                 log.info("stream %d: %s:%d -> peer %s:%d", sid, addr[0], addr[1], *target)
-                self.link.send(T_OPEN, sid, ("%s:%d" % target).encode())
+                self.session.link.send(T_OPEN, sid, ("%s:%d" % target).encode())
                 threading.Thread(target=self._reader, args=(st,), daemon=True).start()
                 threading.Thread(target=self._writer, args=(st,), daemon=True).start()
 

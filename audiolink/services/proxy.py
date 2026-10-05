@@ -12,6 +12,8 @@ import socket
 import threading
 from urllib.parse import urlsplit
 
+from . import Service
+
 log = logging.getLogger("audiolink")
 
 PROXY_PORT = 3128
@@ -101,3 +103,13 @@ def serve(port=PROXY_PORT, on_request=lambda: None):
 
     threading.Thread(target=loop, daemon=True).start()
     log.info("proxy for browsing as the Pi on 127.0.0.1:%d", port)
+
+
+class ProxyService(Service):
+    """Pi side: runs the proxy; the host reaches it with an ordinary stream to
+    127.0.0.1:PROXY_PORT (which the Pi's stream policy has to allow)."""
+    caps = ("proxy",)
+    target = ("127.0.0.1", PROXY_PORT)
+
+    def __init__(self, on_request=lambda: None):
+        serve(on_request=on_request)

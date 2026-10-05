@@ -21,63 +21,35 @@
 import argparse
 import collections
 import logging
-import logging.handlers
 import sys
 import threading
 import time
 
 from . import __version__
-from .node import Node, parse_forward
+from .services.streams import Streams, parse_forward
+from .session import Session
 
 log = logging.getLogger("audiolink")
 
 
-class LogGate(logging.Handler):
-    """Passes records to the console, or holds them while a prompt owns the terminal.
-    (pause/resume, not hold/release: logging.Handler uses acquire/release itself.)"""
-
-    def __init__(self, target):
-        super().__init__()
-        self.target, self.held, self.depth = target, [], 0
-        self.glock = threading.RLock()
-
-    def emit(self, record):
-        with self.glock:
-            if self.depth:
-                self.held.append(record)
-            else:
-                self.target.handle(record)
-
-    def pause(self):
-        with self.glock:
-            self.depth += 1
-
-    def resume(self):
-        with self.glock:
-            self.depth = max(0, self.depth - 1)
-            if not self.depth:
-                for record in self.held:
-                    self.target.handle(record)
-                self.held = []
-
-
-def report(node, interval):
+def report(session, streams, interval):
     last = collections.Counter()
+    link = session.link
     while True:
         time.sleep(interval)
-        s = node.link.stats.copy()
+        s = link.stats.copy()
         rate = {k: (s[k] - last[k]) / interval for k in ("tcp_tx_bytes", "tcp_rx_bytes")}
         last = s
-        with node.link.cv:
-            inflight = len(node.link.unacked)
+        with link.cv:
+            inflight = len(link.unacked)
         log.info("streams=%d inflight=%d tcp_out=%.1fKB/s tcp_in=%.1fKB/s | %s",
-                 len(node.streams), inflight, rate["tcp_tx_bytes"] / 1e3, rate["tcp_rx_bytes"] / 1e3,
+                 len(streams.streams), inflight, rate["tcp_tx_bytes"] / 1e3, rate["tcp_rx_bytes"] / 1e3,
                  " ".join("%s=%s" % kv for kv in sorted(s.items()) if not kv[0].startswith("tcp_")))
 
 
 def list_devices():
-    from . import portaudio
-    from .audio import DEVICE_HINTS
+    from .wire import portaudio
+    from .wire.host_audio import DEVICE_HINTS
     for d in portaudio.devices():
         mark = "*" if any(h in d["name"].lower() for h in DEVICE_HINTS) else " "
         print("%s %3d  %-40s %-20s in=%d out=%d" % (mark, d["index"], d["name"], d["hostapi"],
@@ -128,67 +100,86 @@ def main(argv=None):
 
     if a.cmd == "list-devices":
         return list_devices()
-    from . import control
+    from .host import control
     port = getattr(a, "control_port", None) or control.DEFAULT_PORT
     if a.cmd == "wifi":
+        from .host.wifi_cli import wifi_command
         a.control_port = port
-        return control.wifi_command(a)
+        return wifi_command(a)
 
+    from .host.ui import LogGate
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if a.verbose else logging.INFO)
     console = logging.StreamHandler()
     console.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
-    startup_wifi = a.cmd == "host" and a.wifi
     gate = LogGate(console)
     root.addHandler(gate)
-    if startup_wifi:
-        gate.pause()             # the Wi-Fi prompts own the terminal until startup is done
     allow = [x for spec in a.allow for x in spec.split(",") if x]
-    if a.cmd == "host":
-        node = Node("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
-    else:
-        from . import proxy
-        from .wifi import WifiManager
-        wifi = WifiManager(a.wifi_store)
-        proxy.serve(on_request=wifi.note_demand)
-        node = Node("pi", allow=allow + ["127.0.0.1:%d" % proxy.PROXY_PORT], expose_ports=a.expose_ports,
-                    ctrl_handlers={"wifi": wifi.handle}, extra_caps=["proxy", "events"])
-        wifi.emit = node.send_event
-        node.up_hooks.append(wifi.announce)
-    for spec in a.forward:
-        node.forward(*parse_forward(spec))
-    if a.cmd == "pi":
-        from .audio import run_alsa
-        run_alsa(node.link, a.device)
-    else:
-        from .audio import run_portaudio
-        run_portaudio(node.link, a.out_device, a.in_device)
-        control.serve(node, port)
-        node.proxy_port = a.proxy_port
-        if a.proxy_port:
-            # Browse as the Pi (captive portals): local HTTP proxy -> Pi's proxy.
-            node.forward(a.proxy_port, ("127.0.0.1", 3128), bind="127.0.0.1")
-        watcher = control.PortalWatcher(node, port, gate)
-        if startup_wifi:
-            try:
-                control.startup_join(node, a.wifi, a, port)
-            except KeyboardInterrupt:
-                print()
-                return 130
-            finally:
-                gate.resume()
-        watcher.start(skip_initial=bool(startup_wifi))
-    log.info("audiolink %s %s up (session %08x); allow=%s%s", __version__, a.cmd, node.link.session,
-             ",".join("%s:%d" % t for t in sorted(node.allow)) or "none",
-             "; expose=" + ",".join("pi:%d->%s:%d" % (p, h, tp) for p, (h, tp) in node.expose)
-             if node.expose else "")
+    run = run_host if a.cmd == "host" else run_pi
+    session, streams = run(a, allow, port, gate)
+    if session is None:
+        return 130
+    log.info("audiolink %s %s up (session %08x); allow=%s%s", __version__, a.cmd, session.link.session,
+             ",".join("%s:%d" % t for t in sorted(streams.allow)) or "none",
+             "; expose=" + ",".join("pi:%d->%s:%d" % (p, h, tp) for p, (h, tp) in streams.expose)
+             if streams.expose else "")
     if a.stats:
-        threading.Thread(target=report, args=(node, a.stats), daemon=True).start()
+        threading.Thread(target=report, args=(session, streams, a.stats), daemon=True).start()
     try:
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
         return 0
+
+
+def run_pi(a, allow, port, gate):
+    """The Pi: Wi-Fi management, the browse-as-the-Pi proxy, streams; ALSA audio."""
+    from .services.proxy import ProxyService
+    from .services.wifi import WifiService
+    from .wire.alsa import run_alsa
+    wifi = WifiService(a.wifi_store)
+    proxy = ProxyService(on_request=wifi.manager.note_demand)
+    streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
+    session = Session("pi", [streams, wifi, proxy])
+    for spec in a.forward:
+        streams.forward(*parse_forward(spec))
+    run_alsa(session.link, a.device)
+    return session, streams
+
+
+def run_host(a, allow, port, gate):
+    """The host: streams (+ --expose), the control port, portal handling; PortAudio."""
+    from .host import control
+    from .host.portal import PortalWatcher
+    from .host.wifi_cli import startup_join
+    from .services.proxy import PROXY_PORT
+    from .wire.host_audio import run_portaudio
+    startup_wifi = bool(a.wifi)
+    if startup_wifi:
+        gate.pause()             # the Wi-Fi prompts own the terminal until startup is done
+    streams = Streams("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
+    watcher = PortalWatcher(port, gate)
+    session = Session("host", [streams, watcher])
+    for spec in a.forward:
+        streams.forward(*parse_forward(spec))
+    run_portaudio(session.link, a.out_device, a.in_device)
+    local_ops = {"peer": lambda args: {"connected": session.peer_alive, "peer": session.peer_info,
+                                       "proxy_port": a.proxy_port}}
+    local_ops.update(watcher.local_ops())
+    control.serve(session, port, local_ops)
+    if a.proxy_port:
+        # Browse as the Pi (captive portals): local HTTP proxy -> Pi's proxy.
+        streams.forward(a.proxy_port, ("127.0.0.1", PROXY_PORT), bind="127.0.0.1")
+    if startup_wifi:
+        try:
+            startup_join(session, a.wifi, a, port)
+        except KeyboardInterrupt:
+            print()
+            return None, None
+        finally:
+            gate.resume()
+    watcher.start(skip_initial=startup_wifi)
+    return session, streams
 
 
 if __name__ == "__main__":
