@@ -1,0 +1,10 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Lets `audiolink add` find this Pi on the local network (services/pairing.py). -->
+<service-group>
+  <name replace-wildcards="yes">%h</name>
+  <service>
+    <type>_audiolink._tcp</type>
+    <port>47900</port>
+  </service>
+</service-group>

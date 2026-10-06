@@ -4,13 +4,33 @@ Joining works out the network's security from the Pi's scan and asks only for wh
 missing; it suggests near-misses (5 GHz twins, other-case names) and re-prompts on a
 wrong password. Requests go through the running host daemon (control.call).
 """
+import os
 import time
 
 from .control import call
 from .portal import offer_portal, portal_flow
-from .ui import SEC_LABEL, Prompter, line_buffered
+from ..ui import Prompter, line_buffered
 
+SEC_LABEL = {"open": "open", "owe": "open+", "wpa2": "WPA2", "wpa3": "WPA3", "wpa2/wpa3": "WPA2/3",
+             "wep": "WEP", "enterprise": "802.1X"}
 FIVE_GHZ_SUFFIXES = ("_5g", "-5g", "_5ghz", "-5ghz", " 5g", "_5", "-5", " 5ghz", ".5g")
+
+
+def wifi_password(ask, ssid, security, retry=False):
+    """Returns (password, can_retry): from --password-stdin, $AUDIOLINK_WIFI_PASSWORD
+    (first try only), or a prompt that enforces WPA2's 8-63 characters."""
+    if ask.stdin_pw is not None:
+        return ask.stdin_pw, False
+    env = os.environ.get("AUDIOLINK_WIFI_PASSWORD")
+    if env and not retry:
+        return env, False
+    while True:
+        pw = ask.secret("%s password for %r: " % (SEC_LABEL.get(security, security), ssid))
+        if security in ("wpa2", "wpa2/wpa3") and not 8 <= len(pw) <= 63:
+            print("WPA2 passwords are 8-63 characters; try again")
+            continue
+        if pw:
+            return pw, True
 
 
 def _band(freq):
@@ -40,7 +60,7 @@ def _suggest(name, nets):
 
 def join_flow(name, a, port, known_security=None):
     """Work out what kind of network NAME is, ask only for what's needed, then join."""
-    ask = Prompter(a)
+    ask = Prompter(a, "--security, --hidden, --password-stdin")
     saved = {n["ssid"]: n for n in call("wifi.list", port=port)}
     security = getattr(a, "security", None) or ("open" if getattr(a, "open", False) else None) \
         or known_security
@@ -103,7 +123,7 @@ def join_flow(name, a, port, known_security=None):
         print("note: WPA3 can't use a derived key, so the Pi will save this password itself")
     retry = False
     for _ in range(3):
-        pw, can_retry = ask.password(name, security, retry) if needs_pw else (None, False)
+        pw, can_retry = wifi_password(ask, name, security, retry) if needs_pw else (None, False)
         r = attempt(password=pw, security=security, hidden=hidden)
         if r["joined"]:
             return _joined(r, a, port)
@@ -163,7 +183,7 @@ def pick_flow(a, port):
             tags.append("connected")
         opts.append(("%-32s %4d dBm  %s" % (n["ssid"][:32], n["signal"], ", ".join(tags)), n))
     opts.append(("(hidden network: type its name)", None))
-    choice = Prompter(a).choose("Join which network?", opts)
+    choice = Prompter(a, "--security, --hidden, --password-stdin").choose("Join which network?", opts)
     if choice is None:
         name = Prompter._input("Network name: ").strip()
         a.hidden = True

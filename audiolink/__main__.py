@@ -11,7 +11,8 @@
   audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
   audiolink wifi portal                      log the Pi in to a captive portal from a browser here
   audiolink wifi check                       exit 0 = Pi online, 2 = captive portal, 3 = offline
-  audiolink add [CODE]                       add a Pi: the one plugged in here, or by connect code
+  audiolink add [CODE]                       add a Pi: plugged in here, on the network, or by code
+  audiolink pairing code PI                  a one-time code for adding PI on another machine
   audiolink pis                              list the Pis this machine knows
   audiolink share|forget PI                  print a Pi's connect code / forget it
   audiolink rename PI NEW [--on-pi]          rename here (or on the Pi itself)
@@ -92,6 +93,12 @@ def main(argv=None):
     add.add_argument("code", nargs="?", help="a connect code (al1-...) someone shared")
     add.add_argument("--name", help="what to call it on this machine")
     add.add_argument("--no-lookup", action="store_true", help="don't look its name up on the DHT")
+    add.add_argument("--at", action="append", metavar="ADDRESS", help="try a Pi at this address")
+    add.add_argument("--pairing-code", metavar="CODE", help="the 6-digit code (instead of being asked)")
+    prg = sub.add_parser("pairing", help="pairing codes for adding a Pi on another machine")
+    prg.add_argument("action", choices=["code"])
+    prg.add_argument("pi")
+    prg.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     sub.add_parser("pis", help="list the Pis this machine knows")
     for cmd, helptext in (("share", "print a Pi's connect code"), ("forget", "forget a Pi")):
         sub.add_parser(cmd, help=helptext).add_argument("name")
@@ -122,7 +129,7 @@ def main(argv=None):
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
-    for p in (roles["host"], w, dsc, add, ren):
+    for p in (roles["host"], w, dsc, add, ren, prg):
         p.add_argument("--control-port", type=int, default=None, help="local control port (default 47800)")
     roles["host"].add_argument("--in-device", help="input device name (substring)")
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
@@ -135,6 +142,9 @@ def main(argv=None):
 
     if a.cmd == "list-devices":
         return list_devices()
+    if a.cmd == "pairing":
+        from .client.pairing import code_command
+        return code_command(a)
     if a.cmd in ("add", "pis", "share", "forget", "rename", "ssh-config"):
         from .client import pis
         return getattr(pis, a.cmd.replace("-", "_") + "_command")(a)
@@ -153,7 +163,7 @@ def main(argv=None):
         a.control_port = port
         return discovery_command(a)
 
-    from .host.ui import LogGate
+    from .ui import LogGate
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if a.verbose else logging.INFO)
     console = logging.StreamHandler()
@@ -182,6 +192,7 @@ def run_pi(a, allow, port, gate):
     """The Pi: identity, Wi-Fi management, the browse-as-the-Pi proxy, discovery, streams; ALSA audio."""
     from .services.discovery import DiscoveryService
     from .services.identity import IdentityService
+    from .services.pairing import PairingService
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
     from .wire.alsa import run_alsa
@@ -189,7 +200,8 @@ def run_pi(a, allow, port, gate):
     proxy = ProxyService(on_request=wifi.manager.note_demand)
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
     identity = IdentityService(a.state_dir)
-    session = Session("pi", [streams, wifi, proxy, identity, DiscoveryService(identity)])
+    session = Session("pi", [streams, wifi, proxy, identity, DiscoveryService(identity),
+                             PairingService(identity)])
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
     run_alsa(session.link, a.device)

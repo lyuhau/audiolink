@@ -1,6 +1,5 @@
-"""Terminal plumbing for the host: pausing logs, asking questions, output order."""
+"""Terminal plumbing shared by the commands: pausing logs, asking questions, output order."""
 import logging
-import os
 import sys
 import threading
 
@@ -41,15 +40,12 @@ def line_buffered():
         pass
 
 
-SEC_LABEL = {"open": "open", "owe": "open+", "wpa2": "WPA2", "wpa3": "WPA3", "wpa2/wpa3": "WPA2/3",
-             "wep": "WEP", "enterprise": "802.1X"}
-
-
 class Prompter:
     """Interactive questions, or clear errors when there's no terminal to ask on."""
 
-    def __init__(self, a):
+    def __init__(self, a, flags_hint=""):
         self.a = a
+        self.flags_hint = flags_hint    # options that answer the questions up front
         self.tty = sys.stdin.isatty()
         self.stdin_pw = None
         if getattr(a, "password_stdin", False):
@@ -65,8 +61,8 @@ class Prompter:
 
     def need_tty(self, what):
         if not self.tty:
-            raise SystemExit("%s (no terminal to ask on; see --security, --hidden, --password-stdin)"
-                             % what.rstrip(" ?:"))
+            raise SystemExit("%s (no terminal to ask on%s)" % (
+                what.rstrip(" ?:"), "; see " + self.flags_hint if self.flags_hint else ""))
 
     def yes(self, question, default=False):
         self.need_tty(question)
@@ -82,24 +78,16 @@ class Prompter:
             if ans.isdigit() and 1 <= int(ans) <= len(options):
                 return options[int(ans) - 1][1]
 
-    def password(self, ssid, security, retry=False):
-        """Returns (password, can_retry)."""
-        if self.stdin_pw is not None:
-            return self.stdin_pw, False
-        env = os.environ.get("AUDIOLINK_WIFI_PASSWORD")
-        if env and not retry:
-            return env, False
+    def text(self, prompt):
+        self.need_tty(prompt)
+        return self._input(prompt)
+
+    def secret(self, prompt):
+        """Typed without echo; "cancelled" on Ctrl-C / EOF."""
         import getpass
-        self.need_tty("%r needs a password" % ssid)
-        while True:
-            try:
-                pw = getpass.getpass("%s password for %r: " % (SEC_LABEL.get(security, security), ssid))
-            except (EOFError, KeyboardInterrupt):
-                print()
-                raise SystemExit("cancelled")
-            if security in ("wpa2", "wpa2/wpa3") and not 8 <= len(pw) <= 63:
-                print("WPA2 passwords are 8-63 characters; try again")
-                continue
-            if not pw:
-                continue
-            return pw, True
+        self.need_tty(prompt)
+        try:
+            return getpass.getpass(prompt)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise SystemExit("cancelled")

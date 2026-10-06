@@ -169,3 +169,75 @@ def open_sealed(secret, blob):
     if not hmac.compare_digest(tag, hmac.new(mac, nonce + ct, hashlib.sha256).digest()[:16]):
         return None
     return chacha20(enc, nonce, ct)
+
+
+# ---------------------------------------------------------------- SPAKE2 (RFC 9382)
+# Password-authenticated key exchange: both sides end up with the same key only if
+# they used the same password, an eavesdropper learns nothing that lets them test
+# guesses offline, and an active attacker gets one guess per attempt. Built on the
+# edwards25519 group above. M and N are RFC 9382's points for this curve, hashed onto
+# it from a fixed seed so that nobody knows their discrete logs.
+SPAKE2_M = bytes.fromhex("d048032c6ea0b6d697ddc2e86bda85a33adac920f1bf18e1b0c6d166a5cecdaf")
+SPAKE2_N = bytes.fromhex("d3bfb518f44f3430f29d0c92af503865a1ed3281dc69b35dd868ba85f886c4ab")
+_IDENTITY = (0, 1, 1, 0)
+_COFACTOR = 8
+
+
+def _neg(P):
+    return ((-P[0]) % _p, P[1], P[2], (-P[3]) % _p)
+
+
+def _is_identity(P):
+    return _equal(P, _IDENTITY)
+
+
+def _lp(b):
+    """Length-prefixed (8-byte little-endian length), as RFC 9382 builds its transcript."""
+    return len(b).to_bytes(8, "little") + b
+
+
+def _hkdf(key, info, length=32):
+    prk = hmac.new(b"\0" * 32, key, hashlib.sha256).digest()
+    out, block = b"", b""
+    for i in range((length + 31) // 32):
+        block = hmac.new(prk, block + info + bytes([i + 1]), hashlib.sha256).digest()
+        out += block
+    return out[:length]
+
+
+class Spake2:
+    """One side of an exchange. role "A" is the side that speaks first (the new
+    machine), "B" the responder (the Pi). Usage:
+        a = Spake2("A", pw, ida, idb); b = Spake2("B", pw, ida, idb)
+        ka, conf_a, expect_b = a.finish(b.msg);  kb, conf_b, expect_a = b.finish(a.msg)
+        each side sends its confirmation and checks the other's (hmac.compare_digest)."""
+
+    def __init__(self, role, password, id_a=b"", id_b=b"", context=b"audiolink pairing"):
+        self.role, self.id_a, self.id_b = role, id_a, id_b
+        self.w = int.from_bytes(hashlib.pbkdf2_hmac("sha256", password.encode(), context, 20000, 64),
+                                "little") % _L
+        self.x = int.from_bytes(os.urandom(64), "little") % _L
+        mask = _decode(SPAKE2_M if role == "A" else SPAKE2_N)
+        self.msg = _encode(_add(_mul(self.x, _G), _mul(self.w, mask)))
+
+    def finish(self, peer_msg):
+        """-> (shared key, our confirmation, the peer's expected confirmation)."""
+        try:
+            P = _decode(peer_msg)
+        except ValueError:
+            raise ValueError("invalid SPAKE2 message")
+        if _is_identity(_mul(_COFACTOR, P)):            # identity or a small-order point
+            raise ValueError("invalid SPAKE2 message")
+        unmask = _decode(SPAKE2_N if self.role == "A" else SPAKE2_M)
+        K = _mul(_COFACTOR * self.x, _add(P, _neg(_mul(self.w, unmask))))
+        if _is_identity(K):
+            raise ValueError("invalid SPAKE2 message")
+        X, Y = (self.msg, peer_msg) if self.role == "A" else (peer_msg, self.msg)
+        tt = b"".join(_lp(v) for v in (self.id_a, self.id_b, X, Y, _encode(K),
+                                         self.w.to_bytes(32, "little")))
+        h = hashlib.sha256(tt).digest()
+        ke, ka = h[:16], h[16:]
+        kc = _hkdf(ka, b"ConfirmationKeys")
+        conf_a = hmac.new(kc[:16], tt, hashlib.sha256).digest()
+        conf_b = hmac.new(kc[16:], tt, hashlib.sha256).digest()
+        return (ke, conf_a, conf_b) if self.role == "A" else (ke, conf_b, conf_a)

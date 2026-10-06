@@ -249,6 +249,7 @@ def main():
     tree.file("root/start-audiolink.sh", (ROOT / "pi/start-audiolink.sh").read_bytes(), 0o755)
     tree.file("etc/audiolink.args", (ROOT / "pi/audiolink.args").read_bytes())
     tree.file("etc/avahi/avahi-daemon.conf", (ROOT / "pi/avahi/avahi-daemon.conf").read_bytes())
+    tree.file("etc/avahi/services/audiolink.service", (ROOT / "pi/avahi/audiolink.service").read_bytes())
     # Users that package install scripts would normally create (we don't run those).
     for path, line in (("etc/passwd", b"avahi:x:86:86:Avahi:/run/avahi-daemon:/sbin/nologin\n"),
                        ("etc/group", b"avahi:x:86:\n")):

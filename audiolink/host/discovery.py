@@ -4,7 +4,7 @@ The Pi owns its identity (services/identity.py) and publishes its own record
 (services/discovery.py); these commands just steer it through the running host.
 """
 from .control import call
-from .ui import line_buffered
+from ..ui import line_buffered
 
 
 def discovery_command(a):

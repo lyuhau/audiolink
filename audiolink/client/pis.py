@@ -3,7 +3,8 @@
 add tries the ways a Pi can be reached, in order:
   1. USB: a Pi plugged into this machine (through the running `audiolink host`);
      physical possession is the trust, so no code is needed
-  2. (next) the local network, then the Pi's own setup network, with a pairing code
+  2. the network: Pis found over mDNS on the local network, or on the Pi's own setup
+     network, or at --at ADDRESS; claimed Pis need a fresh pairing code (client/pairing.py)
   3. a connect code someone shared: `audiolink add al1-...`
 The first machine to add a Pi claims it.
 """
@@ -92,12 +93,21 @@ def _add_code(a):
 
 
 def add_command(a):
-    entry = _add_code(a) if a.code else _add_usb(a)
+    from ..ui import Prompter, line_buffered
+    from .pairing import add_over_network
+    line_buffered()
+    if a.code:
+        entry = _add_code(a)
+    else:
+        entry = None if a.at else _add_usb(a)
+        if entry is None:
+            print("looking for Pis on the network...", flush=True)
+            entry = add_over_network(a, Prompter(a, "--pairing-code, --at"))
     if entry is None:
-        raise SystemExit("no Pi is plugged into this machine (or `audiolink host` isn't running).\n"
-                         "pairing over the local network / the Pi's setup network is coming next;\n"
-                         "meanwhile, on a machine that knows the Pi: audiolink share NAME, then here:\n"
-                         "  audiolink add al1-...")
+        raise SystemExit("no new Pi found: none plugged in here (with `audiolink host` running), none\n"
+                         "answering on this network (try --at ADDRESS if multicast is blocked here),\n"
+                         "and none in setup mode. Or paste a code from a machine that knows it:\n"
+                         "  audiolink add al1-...   (there: audiolink share NAME)")
     print("connect with:  %s connect %s PORT   (or: audiolink ssh-config)" % (_launcher(), entry["alias"]))
 
 

@@ -5,6 +5,8 @@ from pathlib import Path
 
 
 def config_dir():
+    if os.environ.get("AUDIOLINK_CONFIG_DIR"):         # e.g. to act as a second machine
+        return Path(os.environ["AUDIOLINK_CONFIG_DIR"])
     if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     elif sys.platform == "win32":
