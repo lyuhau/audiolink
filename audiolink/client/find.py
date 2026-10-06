@@ -1,8 +1,9 @@
 """Finding and reaching a Pi from any machine (no daemon needed).
 
-`audiolink find CODE`          look the Pi's record up on the DHT and decrypt it
-`audiolink connect CODE PORT`  stdin/stdout <-> the Pi's port, for an ssh ProxyCommand;
+`audiolink find PI`            look the Pi's record up on the DHT and decrypt it
+`audiolink connect PI PORT`    stdin/stdout <-> the Pi's port, for an ssh ProxyCommand;
                                tries the last address found before a DHT lookup
+PI is a name from `audiolink pis` (alias or the Pi's own name) or a connect code.
 `audiolink dht-size`           estimate how many DHT nodes answer
 """
 import json
@@ -13,6 +14,7 @@ import threading
 import time
 
 from ..paths import cache_dir
+from . import keyring
 
 
 def _cache_file():
@@ -35,6 +37,15 @@ def _remember(pub, rec):
     data[pub.hex()] = rec
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(data))
+    keyring.update(pub.hex(), last_record=rec, name=rec.get("name"))
+
+
+def code_for(pi):
+    """A connect code for a name from the keyring, or a code given directly."""
+    try:
+        return keyring.resolve(pi)["code"]
+    except KeyError:
+        raise SystemExit("no Pi called %r here (see: audiolink pis), and it isn't a connect code" % pi)
 
 
 def lookup(code):
@@ -61,8 +72,9 @@ def lookup(code):
 
 
 def find_command(a):
+    code = code_for(a.pi)
     try:
-        rec, took = lookup(a.code)
+        rec, took = lookup(code)
     except ValueError as e:
         raise SystemExit(str(e))
     if not rec:
@@ -84,10 +96,11 @@ def _try_connect(ips, port, timeout=3):
 
 
 def connect_command(a):
-    """stdin/stdout <-> the Pi's port: for `ssh -o ProxyCommand='audiolink connect CODE %p'`."""
+    """stdin/stdout <-> the Pi's port: for `ssh -o ProxyCommand='audiolink connect PI %p'`."""
     from ..discovery.record import parse_code
+    code = code_for(a.pi)
     try:
-        pub, _ = parse_code(a.code)
+        pub, _ = parse_code(code)
     except ValueError as e:
         raise SystemExit(str(e))
     sock = None
@@ -96,7 +109,7 @@ def connect_command(a):
         sock = _try_connect(cached.get("lan", []), a.port)
     if sock is None:
         sys.stderr.write("audiolink: looking up the Pi on the DHT...\n")
-        rec, _ = lookup(a.code)
+        rec, _ = lookup(code)
         if not rec:
             raise SystemExit("audiolink: the Pi's record wasn't found on the DHT")
         sock = _try_connect(rec.get("lan", []), a.port)

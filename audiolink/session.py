@@ -1,8 +1,9 @@
 """Session: one live conversation with the peer over the link, hosting services.
 
 The session owns what every feature shares:
-  HELLO    JSON {"v", "role", "version", "caps", ...service fields}, sent whenever the
-           link comes up (new peer, or the peer restarted)
+  HELLO    JSON {"v", "role", "version", "caps", "time", ...service fields}, sent whenever
+           the link comes up (new peer, or the peer restarted). The Pi has no real-time
+           clock, so it adopts the host's "time" (session.now()).
   liveness the peer is considered gone after PEER_TIMEOUT seconds of silence; the link
            then restarts with a new session id so both sides resync when it returns
   CTRL     JSON request {"op", "args"}, reply {"ok", "result"|"error"} (stream id field =
@@ -33,6 +34,7 @@ class Session:
         self.by_type = {}
         self.peer_info = None
         self.peer_alive = False
+        self.clock_offset = 0.0                         # Pi: host's clock minus ours
         self.requests = {}                              # id -> [Event, reply]
         self.req_ids = itertools.count(1)
         self.ctrl_frags = {}                            # id -> bytearray being reassembled
@@ -50,6 +52,10 @@ class Session:
             self.by_type[t] = svc
         return svc
 
+    def now(self):
+        """Wall-clock time; on the Pi, the host's clock (the Pi has none of its own)."""
+        return time.time() + self.clock_offset
+
     @property
     def caps(self):
         caps = ["events"]
@@ -64,7 +70,7 @@ class Session:
     def on_up(self):
         self.peer_alive = True
         self._fail_requests("link restarted")
-        hello = {"v": PROTOCOL_VERSION, "role": self.role, "version": __version__}
+        hello = {"v": PROTOCOL_VERSION, "role": self.role, "version": __version__, "time": time.time()}
         for svc in self.services:
             svc.on_up()
             hello.update(svc.hello())
@@ -77,6 +83,8 @@ class Session:
     def on_message(self, typ, sid, payload):
         if typ == T_HELLO:
             self.peer_info = info = json.loads(payload.decode())
+            if self.role == "pi" and info.get("role") == "host" and info.get("time"):
+                self.clock_offset = info["time"] - time.time()
             log.info("peer: %s %s, caps=%s", info.get("role"), info.get("version"),
                      ",".join(info.get("caps", [])))
             for svc in self.services:
@@ -140,7 +148,11 @@ class Session:
         except Exception as e:
             log.warning("control %s failed: %s", msg["op"], e)
             reply = {"ok": False, "error": str(e)}
-        self._send_ctrl(rid, reply)
+        try:
+            self._send_ctrl(rid, reply)
+        except (TypeError, ValueError) as e:        # unencodable result: still answer
+            log.warning("control %s: bad reply: %s", msg["op"], e)
+            self._send_ctrl(rid, {"ok": False, "error": "%s returned an unencodable reply" % msg["op"]})
 
     def _fail_requests(self, why):
         for rid in list(self.requests):

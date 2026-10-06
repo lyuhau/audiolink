@@ -11,9 +11,14 @@
   audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
   audiolink wifi portal                      log the Pi in to a captive portal from a browser here
   audiolink wifi check                       exit 0 = Pi online, 2 = captive portal, 3 = offline
-  audiolink discovery enable|code|status      publish where the Pi is on the BitTorrent DHT
-  audiolink find CODE                        (any machine) look the Pi up by its connect code
-  audiolink connect CODE PORT                (any machine) ssh ProxyCommand: find the Pi, connect
+  audiolink add [CODE]                       add a Pi: the one plugged in here, or by connect code
+  audiolink pis                              list the Pis this machine knows
+  audiolink share|forget PI                  print a Pi's connect code / forget it
+  audiolink rename PI NEW [--on-pi]          rename here (or on the Pi itself)
+  audiolink ssh-config                       ~/.ssh/config entries: then just `ssh PI`
+  audiolink find PI                          (any machine) where is it? (DHT lookup)
+  audiolink connect PI PORT                  (any machine) ssh ProxyCommand: find the Pi, connect
+  audiolink discovery enable|disable|status  whether the plugged-in Pi publishes on the DHT
   audiolink dht-size                         estimate how many DHT nodes are out there
 
 --forward LPORT:[HOST:]PORT  listen on LPORT here; each connection asks the peer to
@@ -31,6 +36,7 @@ import time
 
 from . import __version__
 from .services.streams import Streams, parse_forward
+from .paths import PI_STATE_DIR
 from .session import Session
 
 log = logging.getLogger("audiolink")
@@ -79,13 +85,27 @@ def main(argv=None):
     w.add_argument("--portal", action="store_true", help="join: open a captive portal login without asking")
     w.add_argument("--no-portal", action="store_true", help="join: never offer a captive portal login")
     w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
-    dsc = sub.add_parser("discovery", help="find the Pi from anywhere via the BitTorrent DHT")
+    dsc = sub.add_parser("discovery", help="whether the plugged-in Pi publishes on the DHT")
     dsc.add_argument("action", nargs="?", default="status",
                      choices=["enable", "disable", "code", "status", "publish"])
-    fnd = sub.add_parser("find", help="look the Pi up by its connect code")
-    fnd.add_argument("code")
+    add = sub.add_parser("add", help="add a Pi: the one plugged in here, or by connect code")
+    add.add_argument("code", nargs="?", help="a connect code (al1-...) someone shared")
+    add.add_argument("--name", help="what to call it on this machine")
+    add.add_argument("--no-lookup", action="store_true", help="don't look its name up on the DHT")
+    sub.add_parser("pis", help="list the Pis this machine knows")
+    for cmd, helptext in (("share", "print a Pi's connect code"), ("forget", "forget a Pi")):
+        sub.add_parser(cmd, help=helptext).add_argument("name")
+    ren = sub.add_parser("rename", help="rename a Pi on this machine (or on the Pi: --on-pi)")
+    ren.add_argument("name")
+    ren.add_argument("new")
+    ren.add_argument("--on-pi", action="store_true", help="rename the Pi itself (it must be plugged in here)")
+    sshc = sub.add_parser("ssh-config", help="print ~/.ssh/config entries for known Pis")
+    sshc.add_argument("--user", help="login user on the host behind the Pi (default: you)")
+    sshc.add_argument("--port", type=int, default=2222, help="Pi port to use when unknown")
+    fnd = sub.add_parser("find", help="look a Pi up on the DHT")
+    fnd.add_argument("pi", help="name (see `audiolink pis`) or connect code")
     con = sub.add_parser("connect", help="pipe stdin/stdout to a Pi port (ssh ProxyCommand)")
-    con.add_argument("code")
+    con.add_argument("pi", help="name (see `audiolink pis`) or connect code")
     con.add_argument("port", type=int)
     size = sub.add_parser("dht-size", help="estimate the size of the BitTorrent DHT")
     size.add_argument("--samples", type=int, default=8)
@@ -102,10 +122,11 @@ def main(argv=None):
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
-    for p in (roles["host"], w, dsc):
+    for p in (roles["host"], w, dsc, add, ren):
         p.add_argument("--control-port", type=int, default=None, help="local control port (default 47800)")
     roles["host"].add_argument("--in-device", help="input device name (substring)")
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
+    roles["pi"].add_argument("--state-dir", default=PI_STATE_DIR, help="where the Pi keeps its identity")
     roles["pi"].add_argument("--wifi-store", default="/var/lib/audiolink/networks.json",
                              help="where saved Wi-Fi networks are kept")
     roles["pi"].add_argument("--expose-ports", default="1024-65535", metavar="LO-HI",
@@ -114,6 +135,9 @@ def main(argv=None):
 
     if a.cmd == "list-devices":
         return list_devices()
+    if a.cmd in ("add", "pis", "share", "forget", "rename", "ssh-config"):
+        from .client import pis
+        return getattr(pis, a.cmd.replace("-", "_") + "_command")(a)
     if a.cmd in ("find", "connect", "dht-size"):
         from .client import find
         return {"find": find.find_command, "connect": find.connect_command,
@@ -155,15 +179,17 @@ def main(argv=None):
 
 
 def run_pi(a, allow, port, gate):
-    """The Pi: Wi-Fi management, the browse-as-the-Pi proxy, discovery, streams; ALSA audio."""
+    """The Pi: identity, Wi-Fi management, the browse-as-the-Pi proxy, discovery, streams; ALSA audio."""
     from .services.discovery import DiscoveryService
+    from .services.identity import IdentityService
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
     from .wire.alsa import run_alsa
     wifi = WifiService(a.wifi_store)
     proxy = ProxyService(on_request=wifi.manager.note_demand)
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
-    session = Session("pi", [streams, wifi, proxy, DiscoveryService()])
+    identity = IdentityService(a.state_dir)
+    session = Session("pi", [streams, wifi, proxy, identity, DiscoveryService(identity)])
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
     run_alsa(session.link, a.device)
@@ -171,9 +197,9 @@ def run_pi(a, allow, port, gate):
 
 
 def run_host(a, allow, port, gate):
-    """The host: streams (+ --expose), the control port, portal handling; PortAudio."""
+    """The host: streams (+ --expose), the control port, portal handling, identity custody; PortAudio."""
     from .host import control
-    from .host.discovery import HostDiscovery
+    from .host.identity import HostIdentity
     from .host.portal import PortalWatcher
     from .host.wifi_cli import startup_join
     from .services.proxy import PROXY_PORT
@@ -183,7 +209,7 @@ def run_host(a, allow, port, gate):
         gate.pause()             # the Wi-Fi prompts own the terminal until startup is done
     streams = Streams("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
     watcher = PortalWatcher(port, gate)
-    session = Session("host", [streams, watcher, HostDiscovery()])
+    session = Session("host", [streams, watcher, HostIdentity()])
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
     run_portaudio(session.link, a.out_device, a.in_device)

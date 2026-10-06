@@ -1,11 +1,12 @@
 """Pi side: publish where the Pi is as a signed, encrypted record on the Mainline DHT.
 
-The host owns the identity (the Pi has no persistent storage yet) and pushes it with
-"discovery.configure", along with its clock: the Pi has no real-time clock, and BEP 44
-sequence numbers (we use the timestamp) must keep increasing across restarts.
+The record is signed with the Pi's own identity (services/identity.py) and sealed
+with its read secret. BEP 44 sequence numbers must keep increasing across restarts,
+and we use the timestamp for them; the Pi has no real-time clock, so it waits until
+a host has told it the time (session.now()).
 
-Publishes once the Pi is online, again whenever the record's contents change, and
-every REPUBLISH seconds (DHT nodes drop items after a few hours).
+Publishes once the Pi is online and discoverable, again whenever the record's
+contents change, and every REPUBLISH seconds (DHT nodes drop items after a few hours).
 """
 import logging
 import threading
@@ -17,82 +18,75 @@ log = logging.getLogger("audiolink")
 
 REPUBLISH = 30 * 60
 CHECK_EVERY = 30
+CLOCK_SANE = 1_700_000_000      # 2023: anything earlier means nobody has told us the time
 
 
 class DiscoveryService(Service):
     name = "discovery"
     caps = ("discovery",)
 
-    def __init__(self, hostname="audiopi"):
-        self.hostname = hostname
-        self.identity = None
-        self.clock_offset = 0.0
+    def __init__(self, identity):
+        self.identity = identity
         self.last = {"published": None}
         self.wake = threading.Event()
         self.dht = None
+        identity.subscribe(self.republish)
         threading.Thread(target=self._loop, daemon=True).start()
 
-    def now(self):
-        return time.time() + self.clock_offset
+    def republish(self):
+        self.last["content"] = None
+        self.wake.set()
+
+    def on_peer_hello(self, info):
+        self.wake.set()                 # the host may have just given us the time
 
     # ---- control requests from the host
     def handle(self, op, args):
-        if op == "configure":
-            if args.get("seed"):
-                self.identity = {"seed": args["seed"], "secret": args["secret"]}
-                self.clock_offset = args["time"] - time.time()
-                log.info("discovery: configured; publishing when online")
-            else:
-                self.identity = None
-                log.info("discovery: disabled")
-            self.last["content"] = None
-            self.wake.set()
-            return {"ok": True}
         if op == "status":
-            return dict(self.last, enabled=bool(self.identity), now=self.now())
+            public = {k: v for k, v in self.last.items() if k != "content"}     # content is internal
+            return dict(public, enabled=self.identity.data["discoverable"], now=self.session.now(),
+                        clock_known=self.session.now() > CLOCK_SANE)
         if op == "publish":
-            self.last["content"] = None
-            self.wake.set()
+            self.republish()
             return {"ok": True}
         raise ValueError("unknown discovery operation %r" % op)
 
     # ---- publishing
     def _current(self):
-        """(lan ips, ssid, ports) as the record should describe them, or None if offline."""
+        """What the record should say, or None if there's nothing to publish yet."""
+        if not self.identity.data["discoverable"] or self.session.now() < CLOCK_SANE:
+            return None
         wifi = self.session.by_name.get("wifi")
         conn = wifi.connection() if wifi else None
         if not conn or conn["internet"] != "online":
             return None
         streams = self.session.by_name.get("streams")
         ports = streams.ports() if streams else []
-        return ([conn["ip"]] if conn["ip"] else []), conn["ssid"], ports
+        return (self.identity.public(), self.identity.data["name"],
+                [conn["ip"]] if conn["ip"] else [], conn["ssid"], ports)
 
     def _loop(self):
         from ..discovery.dht import DHT
-        from ..crypto import ed25519_public
         from ..discovery.record import SALT, make_record
         while True:
             self.wake.wait(CHECK_EVERY)
             self.wake.clear()
-            if not self.identity:
-                continue
             cur = self._current()
             if cur is None:
                 continue
-            due = self.last.get("published") is None or self.now() - self.last["published"] > REPUBLISH
+            due = self.last.get("published") is None or self.session.now() - self.last["published"] > REPUBLISH
             if cur == self.last.get("content") and not due:
                 continue
             try:
-                seed = bytes.fromhex(self.identity["seed"])
-                secret = bytes.fromhex(self.identity["secret"])
-                lan, ssid, ports = cur
-                rec, blob = make_record(secret, self.hostname, lan, ssid, ports, ts=self.now())
+                seed, secret = self.identity.keys()
+                pub, name, lan, ssid, ports = cur
+                rec, blob = make_record(secret, name, lan, ssid, ports, ts=self.session.now())
                 self.dht = self.dht or DHT()
                 t0 = time.monotonic()
-                stored = self.dht.put(seed, ed25519_public(seed), blob, seq=rec["ts"], salt=SALT)
+                stored = self.dht.put(seed, pub, blob, seq=rec["ts"], salt=SALT)
                 took = time.monotonic() - t0
                 if stored:
-                    self.last.update(published=self.now(), content=cur, record=rec, nodes=stored,
+                    self.last.update(published=self.session.now(), content=cur, record=rec, nodes=stored,
                                      took=round(took, 1), error=None)
                     log.info("discovery: published %s (%d DHT nodes, %.1fs)", rec, stored, took)
                 else:

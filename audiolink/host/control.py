@@ -39,7 +39,10 @@ def serve(session, port=DEFAULT_PORT, local_ops=None):
                 reply = {"ok": True, "result": result}
             except Exception as e:
                 reply = {"ok": False, "error": str(e)}
-            conn.sendall((json.dumps(reply) + "\n").encode())
+            try:
+                conn.sendall((json.dumps(reply) + "\n").encode())
+            except OSError:
+                pass                    # the caller gave up waiting
 
     def loop():
         while True:

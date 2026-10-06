@@ -1,0 +1,137 @@
+"""Pi side: the Pi's own identity, created the first time audiolink runs on it.
+
+identity.json (in the Pi's state directory):
+  seed, secret   signing key and read secret (the "connect code" is pub + secret)
+  name           advertised name; default adjective-noun from the board serial
+  claimed        False until the first machine adds it ("first to claim owns it")
+  discoverable   publish the discovery record on the DHT
+
+Requests arrive over the audio link, i.e. from the machine the Pi is physically
+plugged into, so they're trusted. If the state directory is in RAM (no SD card yet)
+the identity is lost at reboot; the host that added the Pi keeps a copy ("custody")
+and restores it (host/identity.py).
+"""
+import json
+import logging
+import os
+import threading
+from pathlib import Path
+
+from ..crypto import ed25519_public
+from ..discovery.record import code_for, new_identity
+from ..names import NAME_RE, name_for
+from ..paths import is_persistent
+from . import Service
+
+log = logging.getLogger("audiolink")
+
+
+
+def board_serial():
+    """The SoC serial (unique per board), else the Wi-Fi MAC, else None."""
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("Serial"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    try:
+        return Path("/sys/class/net/wlan0/address").read_text().strip()
+    except OSError:
+        return None
+
+
+class IdentityService(Service):
+    name = "identity"
+    caps = ("identity",)
+
+    def __init__(self, state_dir):
+        self.path = Path(state_dir) / "identity.json"
+        self.persistent = is_persistent(state_dir)
+        self.serial = board_serial() or os.urandom(8).hex()
+        self.lock = threading.Lock()
+        self.listeners = []
+        self.data = self._load()
+        if not self.data:
+            self.data = dict(new_identity(), name=name_for(self.serial), claimed=False, discoverable=True)
+            self._save()
+            log.info("identity: new identity, name %s%s", self.data["name"],
+                     "" if self.persistent else " (in RAM: lost at reboot unless a host keeps custody)")
+
+    # ---- storage
+    def _load(self):
+        try:
+            with open(self.path) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return None
+
+    def _save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            json.dump(self.data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+
+    def _changed(self):
+        self._save()
+        for fn in self.listeners:
+            fn()
+        if getattr(self, "session", None):
+            self.session.send_event("identity", self.info())    # host refreshes its custody copy
+
+    # ---- for other services
+    def subscribe(self, fn):
+        """fn() runs whenever the identity, name or flags change."""
+        self.listeners.append(fn)
+
+    def keys(self):
+        return bytes.fromhex(self.data["seed"]), bytes.fromhex(self.data["secret"])
+
+    def public(self):
+        return ed25519_public(bytes.fromhex(self.data["seed"]))
+
+    def info(self):
+        pub = self.public()
+        return {"name": self.data["name"], "serial": self.serial, "pub": pub.hex(), "tag": pub.hex()[:4],
+                "claimed": self.data["claimed"], "discoverable": self.data["discoverable"],
+                "persistent": self.persistent}
+
+    # ---- session hooks
+    def hello(self):
+        return {"identity": self.info()}
+
+    def handle(self, op, args):
+        with self.lock:
+            if op == "info":
+                return self.info()
+            if op == "code":
+                return {"code": code_for(self.data)}
+            if op == "claim":
+                first = not self.data["claimed"]
+                self.data["claimed"] = True
+                self._changed()
+                return {"first": first}
+            if op == "rename":
+                name = args.get("name", "").strip().lower()
+                if not NAME_RE.match(name):
+                    raise ValueError("names are 1-32 lowercase letters, digits and dashes")
+                self.data["name"] = name
+                self._changed()
+                return self.info()
+            if op == "set_discoverable":
+                self.data["discoverable"] = bool(args.get("on"))
+                self._changed()
+                return self.info()
+            if op == "export":
+                return dict(self.data)
+            if op == "restore":
+                self.data = {k: args[k] for k in ("seed", "secret", "name", "claimed", "discoverable")}
+                self._changed()
+                log.info("identity: restored %s from the host's custody copy", self.data["name"])
+                return self.info()
+        raise ValueError("unknown identity operation %r" % op)
