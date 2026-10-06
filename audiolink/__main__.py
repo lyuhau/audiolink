@@ -11,6 +11,7 @@
   audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
   audiolink wifi portal                      log the Pi in to a captive portal from a browser here
   audiolink wifi check                       exit 0 = Pi online, 2 = captive portal, 3 = offline
+  audiolink wifi ap on|off|status            the Pi's own setup network (normally automatic)
   audiolink add [CODE]                       add a Pi: plugged in here, on the network, or by code
   audiolink pairing code PI                  a one-time code for adding PI on another machine
   audiolink pis                              list the Pis this machine knows
@@ -75,9 +76,9 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list-devices", help="list audio devices")
     w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)")
-    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check"],
+    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check", "ap"],
                    help="omit to pick a network from a list")
-    w.add_argument("name", nargs="?", help="network name for join/forget")
+    w.add_argument("name", nargs="?", help="network name for join/forget; on|off|status for ap")
     w.add_argument("--security", choices=["open", "owe", "wpa2", "wpa3"],
                    help="join: skip detection (needed for hidden networks)")
     w.add_argument("--open", action="store_true", help="join: same as --security open")
@@ -193,6 +194,7 @@ def run_pi(a, allow, port, gate):
     from .services.discovery import DiscoveryService
     from .services.identity import IdentityService
     from .services.pairing import PairingService
+    from .services.setup_ap import SetupApService
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
     from .wire.alsa import run_alsa
@@ -201,7 +203,7 @@ def run_pi(a, allow, port, gate):
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
     identity = IdentityService(a.state_dir)
     session = Session("pi", [streams, wifi, proxy, identity, DiscoveryService(identity),
-                             PairingService(identity)])
+                             PairingService(identity), SetupApService(wifi, identity)])
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
     run_alsa(session.link, a.device)

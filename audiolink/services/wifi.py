@@ -19,6 +19,7 @@ from . import Service
 log = logging.getLogger("audiolink")
 
 IFACE = "wlan0"
+SUPPLICANT = ["wpa_supplicant", "-B", "-i", IFACE, "-c", "/etc/wpa_supplicant/wpa_supplicant.conf"]
 DHCP = ["udhcpc", "-i", IFACE, "-b", "-t", "10", "-s", "/usr/share/udhcpc/default.script",
         "-x", "hostname:audiopi"]
 
@@ -263,6 +264,42 @@ class WifiManager:
         if self.internet and self.internet["internet"] == "portal" and now - self._last_demand > 60:
             self._last_demand = now
             self.emit("portal_needed", self.internet)
+
+    # ---- handing the radio to the setup network (services/setup_ap.py) and back
+    def associated(self):
+        """True while connected to a Wi-Fi network as a client."""
+        try:
+            return self._status().get("wpa_state") == "COMPLETED"
+        except Exception:
+            return False
+
+    def suspend(self):
+        """Stop client-mode Wi-Fi (wpa_supplicant, DHCP) so the radio can be used
+        for something else."""
+        with self.lock:
+            subprocess.run(["killall", "-q", "udhcpc"])
+            try:
+                self._wpa("terminate")
+            except Exception:
+                pass
+            for _ in range(50):         # terminate is asynchronous: wait until it lets go
+                if subprocess.run(["pidof", "wpa_supplicant"], capture_output=True).returncode != 0:
+                    break
+                time.sleep(0.1)
+            else:
+                subprocess.run(["killall", "-q", "-9", "wpa_supplicant"])
+            subprocess.run(["ip", "addr", "flush", "dev", IFACE])
+        self._set_internet({"internet": "offline", "ssid": None, "detail": "Wi-Fi suspended"})
+        log.info("wifi: client mode suspended")
+
+    def resume(self):
+        """Back to client mode: restart wpa_supplicant with the saved networks, and DHCP."""
+        subprocess.run(["ip", "addr", "flush", "dev", IFACE])
+        subprocess.run(SUPPLICANT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._load_into_supplicant()
+        with self.lock:
+            self._restart_dhcp()
+        log.info("wifi: client mode resumed")
 
     # ---- operations (called from control requests)
     def handle(self, op, args):

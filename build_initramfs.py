@@ -27,7 +27,7 @@ ARCH = "aarch64"
 WIFI_COUNTRY = "US"
 PACKAGES = [
     "alpine-baselayout", "busybox", "busybox-binsh", "musl", "dropbear",
-    "wpa_supplicant", "alsa-utils", "python3", "busybox-extras", "iw", "avahi",
+    "wpa_supplicant", "alsa-utils", "python3", "busybox-extras", "iw", "avahi", "hostapd",
 ]
 KMODS = [
     "dwc2", "libcomposite", "usb_f_ecm", "usb_f_uac2", "brcmfmac",

@@ -233,6 +233,18 @@ def wifi_command(a):
         if not a.name:
             raise SystemExit("usage: audiolink wifi join NAME")
         join_flow(a.name, a, port)
+    elif a.action == "ap":
+        sub = a.name or "status"
+        if sub not in ("on", "off", "status"):
+            raise SystemExit("usage: audiolink wifi ap on|off|status")
+        if sub == "on":
+            print("switching the Pi's Wi-Fi to its setup network (client Wi-Fi pauses)...", flush=True)
+        st = call("setup_ap." + sub, port=port)
+        if st["active"]:
+            print("setup network %r is up; the Pi is at %s there (%s)" % (st["ssid"], st["address"], st["mode"]))
+        else:
+            print("setup network is off (%s): it starts by itself when the Pi has no host and no Wi-Fi"
+                  % st["mode"])
     elif a.action == "portal":
         portal_flow(port)
     elif a.action == "check":
