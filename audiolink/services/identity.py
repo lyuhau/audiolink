@@ -7,9 +7,10 @@ identity.json (in the Pi's state directory):
   discoverable   publish the discovery record on the DHT
 
 Requests arrive over the audio link, i.e. from the machine the Pi is physically
-plugged into, so they're trusted. If the state directory is in RAM (no SD card yet)
-the identity is lost at reboot; the host that added the Pi keeps a copy ("custody")
-and restores it (host/identity.py).
+plugged into, so they're trusted. The host that added the Pi keeps a copy ("custody")
+and restores it whenever the Pi comes up with a fresh identity (host/identity.py):
+after every reboot if the state directory is in RAM (no SD card), and once when a
+Pi first gets a card. A restore never replaces an established identity on a card.
 """
 import json
 import logging
@@ -53,6 +54,7 @@ class IdentityService(Service):
         self.lock = threading.Lock()
         self.listeners = []
         self.data = self._load()
+        self.fresh = not self.data          # created this run, nothing has happened to it yet
         if not self.data:
             self.data = dict(new_identity(), name=name_for(self.serial), claimed=False, discoverable=True)
             self._save()
@@ -78,6 +80,7 @@ class IdentityService(Service):
         os.replace(tmp, self.path)
 
     def _changed(self):
+        self.fresh = False
         self._save()
         for fn in self.listeners:
             fn()
@@ -99,7 +102,7 @@ class IdentityService(Service):
         pub = self.public()
         return {"name": self.data["name"], "serial": self.serial, "pub": pub.hex(), "tag": pub.hex()[:4],
                 "claimed": self.data["claimed"], "discoverable": self.data["discoverable"],
-                "persistent": self.persistent}
+                "persistent": self.persistent, "fresh": self.fresh}
 
     # ---- session hooks
     def hello(self):
@@ -130,6 +133,8 @@ class IdentityService(Service):
             if op == "export":
                 return dict(self.data)
             if op == "restore":
+                if self.persistent and not self.fresh and args.get("seed") != self.data["seed"]:
+                    raise ValueError("this Pi keeps its own identity on its SD card; not replacing it")
                 self.data = {k: args[k] for k in ("seed", "secret", "name", "claimed", "discoverable")}
                 self._changed()
                 log.info("identity: restored %s from the host's custody copy", self.data["name"])

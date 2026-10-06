@@ -90,6 +90,21 @@ EOF
     dropbear -R -E -p 22 2>>/var/log/dropbear.log
 fi
 
+# ---- SD card: keep /var/lib/audiolink (identity, saved networks) on it ----
+# The card's FAT partition holds the boot files; state goes in its audiolink/ folder.
+# No card (booted over USB with rpiboot): state stays in RAM, as before.
+for i in $(seq 1 10); do [ -e /dev/mmcblk0p1 ] && break; sleep 0.2; done
+mkdir -p /boot
+if mount -t vfat -o rw,noatime,flush,fmask=0177,dmask=0077,quiet /dev/mmcblk0p1 /boot; then
+    mkdir -p /boot/audiolink
+    # The image's seed (dev: networks from wifi.conf) only fills in what the card lacks.
+    for f in /var/lib/audiolink/*; do
+        [ -e "$f" ] && [ ! -e "/boot/audiolink/${f##*/}" ] && cp "$f" /boot/audiolink/
+    done
+    mount --bind /boot/audiolink /var/lib/audiolink || mkdir -p /var/lib/audiolink
+fi
+mkdir -p /var/lib/audiolink
+
 # ---- audiolink (before Wi-Fi: the audio link doesn't need it) ----
 /root/start-audiolink.sh $(grep -v '^#' /etc/audiolink.args)
 

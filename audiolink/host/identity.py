@@ -3,8 +3,9 @@
 When a Pi connects over USB (and whenever its identity changes):
   - if this machine knows it (keyring), refresh what we know (name, last seen) and,
     while the Pi has no persistent storage, keep the custody copy current;
-  - if the Pi lost its identity at reboot (RAM only) and we hold custody for its
-    board serial, restore it, so its code and name survive;
+  - if the Pi has a fresh identity (it lost its own at a RAM-only reboot, or just
+    got an SD card) and we hold custody for its board serial, restore it, so its
+    code and name survive;
   - one-time migration: before Pis owned their identity, the host kept one in
     discovery.json; hand that to the Pi so existing connect codes keep working.
 """
@@ -57,12 +58,12 @@ class HostIdentity(Service):
         if entry is None:
             return                      # not added on this machine: nothing to do
         custody = entry.get("custody")
-        if custody and not ident["persistent"] and ident["pub"] != pub:
+        if custody and ident["pub"] != pub and (not ident["persistent"] or ident.get("fresh")):
             ident = req("identity.restore", custody)
             log.info("identity: restored %s's identity from this host's custody copy", ident["name"])
         if ident["pub"] != pub:
             return                      # a different identity on a known board (e.g. reflashed)
         fields = {"name": ident["name"]}
-        if custody and not ident["persistent"]:
-            fields["custody"] = req("identity.export")      # keep name/flags current
+        if custody:
+            fields["custody"] = req("identity.export")      # keep name/flags current (also a backup)
         keyring.update(pub, last_seen=int(time.time()), **fields)
