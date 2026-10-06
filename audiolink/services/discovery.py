@@ -60,17 +60,16 @@ class DiscoveryService(Service):
     def _current(self):
         """(lan ips, ssid, ports) as the record should describe them, or None if offline."""
         wifi = self.session.by_name.get("wifi")
-        state = wifi.manager.internet if wifi else None
-        if not state or state.get("internet") != "online":
+        conn = wifi.connection() if wifi else None
+        if not conn or conn["internet"] != "online":
             return None
-        ip = wifi.manager._ip()
         streams = self.session.by_name.get("streams")
-        ports = sorted(streams.listeners) if streams else []
-        return ([ip] if ip else []), state.get("ssid"), ports
+        ports = streams.ports() if streams else []
+        return ([conn["ip"]] if conn["ip"] else []), conn["ssid"], ports
 
     def _loop(self):
         from ..discovery.dht import DHT
-        from ..discovery.crypto import ed25519_public
+        from ..crypto import ed25519_public
         from ..discovery.record import SALT, make_record
         while True:
             self.wake.wait(CHECK_EVERY)

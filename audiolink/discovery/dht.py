@@ -19,7 +19,7 @@ import statistics
 import threading
 import time
 
-from .crypto import ed25519_sign, ed25519_verify
+from ..crypto import ed25519_sign, ed25519_verify
 
 log = logging.getLogger("audiolink")
 

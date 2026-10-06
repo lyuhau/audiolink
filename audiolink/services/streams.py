@@ -65,6 +65,11 @@ class Streams(Service):
         self.llock = threading.RLock()                  # guards listeners
         self.next_sid = 1 if role == "pi" else 2        # odd/even: no id clashes
 
+    def ports(self):
+        """Local ports currently listening (static forwards and exposes)."""
+        with self.llock:
+            return sorted(self.listeners)
+
     # ---- session hooks
     def hello(self):
         return {"expose": [[p, h, tp] for p, (h, tp) in self.expose]}

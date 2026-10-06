@@ -13,7 +13,7 @@ import threading
 import time
 
 from ..services import Service
-from ..wire.portaudio import cache_dir
+from ..paths import cache_dir
 from .control import call
 
 log = logging.getLogger("audiolink")

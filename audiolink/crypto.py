@@ -1,4 +1,4 @@
-"""Small pure-Python crypto for discovery records (no compiled dependencies).
+"""Small pure-Python crypto shared by discovery and pairing (no compiled dependencies).
 
 ed25519   RFC 8032 signatures; BEP 44 (signed DHT items) requires them. Slow next
           to a C library, but records are signed about twice an hour.

@@ -4,7 +4,7 @@ import subprocess
 import threading
 import time
 
-from .protocol import CHANNELS, CHUNK, CHUNK_FRAMES, RATE
+from .protocol import CHANNELS, CHUNK, RATE
 
 log = logging.getLogger("audiolink")
 

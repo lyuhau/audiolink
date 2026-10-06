@@ -115,9 +115,9 @@ def main(argv=None):
     if a.cmd == "list-devices":
         return list_devices()
     if a.cmd in ("find", "connect", "dht-size"):
-        from .host import discovery_cli
-        return {"find": discovery_cli.find_command, "connect": discovery_cli.connect_command,
-                "dht-size": discovery_cli.dht_size_command}[a.cmd](a)
+        from .client import find
+        return {"find": find.find_command, "connect": find.connect_command,
+                "dht-size": find.dht_size_command}[a.cmd](a)
     from .host import control
     port = getattr(a, "control_port", None) or control.DEFAULT_PORT
     if a.cmd == "wifi":
@@ -125,7 +125,7 @@ def main(argv=None):
         a.control_port = port
         return wifi_command(a)
     if a.cmd == "discovery":
-        from .host.discovery_cli import discovery_command
+        from .host.discovery import discovery_command
         a.control_port = port
         return discovery_command(a)
 
@@ -173,7 +173,7 @@ def run_pi(a, allow, port, gate):
 def run_host(a, allow, port, gate):
     """The host: streams (+ --expose), the control port, portal handling; PortAudio."""
     from .host import control
-    from .host.discovery_cli import HostDiscovery
+    from .host.discovery import HostDiscovery
     from .host.portal import PortalWatcher
     from .host.wifi_cli import startup_join
     from .services.proxy import PROXY_PORT

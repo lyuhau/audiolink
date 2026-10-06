@@ -416,3 +416,9 @@ class WifiService(Service):
 
     def handle(self, op, args):
         return self.manager.handle(op, args)
+
+    def connection(self):
+        """{"ip", "ssid", "internet"} as last seen (no network calls)."""
+        state = self.manager.internet or {}
+        return {"ip": self.manager._ip(), "ssid": state.get("ssid"),
+                "internet": state.get("internet", "offline")}

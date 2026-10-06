@@ -12,11 +12,12 @@ directory when running from a .pyz), then from the system as a fallback.
 import ctypes
 import ctypes.util
 import hashlib
-import os
 import pkgutil
 from array import array
 import sys
 from pathlib import Path
+
+from ..paths import cache_dir
 
 paFloat32 = 0x00000001
 paInt16 = 0x00000008
@@ -94,17 +95,6 @@ def _bundled_name():
         return "libportaudioarm64.dll" if platform.machine().lower() in ("arm64", "aarch64") \
             else "libportaudio64bit.dll"
     return None
-
-
-def cache_dir():
-    """Per-user cache directory for audiolink (extracted libraries, browser profile)."""
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    elif sys.platform == "darwin":
-        base = os.path.expanduser("~/Library/Caches")
-    else:
-        base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return Path(base) / "audiolink"
 
 
 def _load():

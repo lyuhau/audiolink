@@ -12,7 +12,7 @@ import json
 import os
 import time
 
-from .crypto import ed25519_public, open_sealed, seal
+from ..crypto import ed25519_public, open_sealed, seal
 
 SALT = b"audiolink-v1"
 CODE_PREFIX = "al1-"
