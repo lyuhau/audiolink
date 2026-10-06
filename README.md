@@ -1,0 +1,126 @@
+# audiolink
+
+Network connections over a USB sound card. A Raspberry Pi Zero 2 W plugs into a
+computer (the **host**) and shows up as an ordinary USB audio device; audiolink
+carries TCP streams through the audio samples, bit-exact, at about 1.5 Mbps each
+way. The Pi's other side is Wi-Fi, so machines on the network (**clients**) can
+reach services on the host, such as SSH, without the host having any network
+setup, drivers or admin rights.
+
+```
+client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audiolink host) ──► sshd, ...
+```
+
+- **No admin, no drivers, no install** on the host: it's a sound card, and
+  audiolink is one file (`.pyz` for any Python 3.9+, or a single binary).
+- **The host decides what's reachable** (`--expose 2222:22`); everything else is denied.
+- **Find the Pi from anywhere:** it publishes a signed, encrypted record on the
+  BitTorrent DHT; clients holding its code look it up.
+- **Pairing like Bluetooth:** USB is trusted; over the network, the first machine
+  claims an unclaimed Pi, and later ones use a one-time 6-digit code (SPAKE2, so
+  the code never crosses the network).
+- **Wi-Fi managed from the host,** including captive portals (logged in from a
+  browser that browses *as the Pi*), and a setup network the Pi creates when it
+  has nowhere else to go. Changes made over the network are confirm-or-revert.
+- **Pure standard-library Python;** the only native code is the bundled PortAudio.
+
+> Status: early. Tested with macOS hosts and a Pi Zero 2 W booted over USB with
+> `rpiboot`. Windows builds exist but are untested on hardware; SD-card images and
+> a relay for reaching the Pi from other networks are next.
+
+## Downloads
+
+Each [release](../../releases) has:
+
+| File | Use it on |
+|---|---|
+| `audiolink-VER.pyz` | any machine with Python 3.9+: `python3 audiolink-VER.pyz ...` (macOS's built-in `/usr/bin/python3` works) |
+| `audiolink-VER-macos-arm64`, `-macos-x86_64` | Macs without Python |
+| `audiolink-VER-windows-x64.exe` | Windows |
+| `audiolink-pi-VER.zip` | the Pi's boot files |
+| `SHA256SUMS` | checksums |
+
+The binaries aren't code-signed yet:
+- **macOS:** the first run of a downloaded binary is blocked; allow it in System
+  Settings → Privacy & Security, or run `xattr -d com.apple.quarantine audiolink-*`.
+  The `.pyz` isn't affected.
+- **Windows:** SmartScreen warns about an unknown publisher; choose "Run anyway".
+
+## Quick start
+
+1. **Boot the Pi.** For now, with no SD card: build or download the boot files
+   and serve them with Raspberry Pi's [`rpiboot`](https://github.com/raspberrypi/usbboot)
+   (`rpiboot -d bootdir`); see *Development*. The Pi appears as an audio device.
+2. **On the host** (the machine the Pi is plugged into):
+   ```
+   audiolink host --expose 2222:22          # Pi port 2222 -> this machine's sshd
+   audiolink add                            # remember this Pi (named e.g. green-rowan)
+   audiolink wifi                           # pick a Wi-Fi network for the Pi
+   ```
+3. **On a client** on the same network:
+   ```
+   ssh -p 2222 you@audiopi.local            # mDNS (one Pi per network for now)
+   audiolink ssh-config >> ~/.ssh/config    # or: then just `ssh green-rowan`, from anywhere it's reachable
+   ```
+
+## Commands
+
+| Command | |
+|---|---|
+| `audiolink host [--expose PIPORT:PORT] [--wifi NAME]` | run on the host; keeps the link up, reconnects on its own |
+| `audiolink add [CODE] [--at ADDR] [--pairing-code N]` | add a Pi: over USB, found on the network, or by connect code |
+| `audiolink pis` / `share PI` / `forget PI` / `rename PI NEW [--on-pi]` | the Pis this machine knows |
+| `audiolink pairing code PI` | a one-time code for adding PI on another machine |
+| `audiolink find PI` / `connect PI PORT` | look a Pi up on the DHT / pipe to it (ssh `ProxyCommand`) |
+| `audiolink ssh-config` | `~/.ssh/config` entries for known Pis |
+| `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap\|confirm]` | the Pi's Wi-Fi |
+| `audiolink discovery [enable\|disable\|status]` | whether the Pi publishes on the DHT |
+| `audiolink list-devices` / `dht-size` | audio devices / how big the DHT is |
+
+`audiolink --help` and `audiolink COMMAND --help` have the details.
+
+## How it works
+
+- **Wire:** 48 kHz / 16-bit / stereo PCM is a 192 KB/s byte pipe each way when
+  nothing resamples or mixes it (audiolink opens the devices directly; on
+  Windows in WASAPI exclusive mode). Frames carry a sync word and CRC; a
+  go-back-N sliding window retransmits anything lost.
+- **Session:** a HELLO exchange (version, capabilities, the host's clock), a
+  control channel (requests, replies, events) and services on top: TCP streams,
+  Wi-Fi, identity, pairing, discovery, the setup network.
+- **Identity:** each Pi has an ed25519 key and a read secret; its connect code
+  (`al1-...`) is the public key plus the secret, enough to find and read its DHT
+  record but not to forge it. Without an SD card, the host keeps a custody copy
+  and restores it after reboots.
+
+Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
+`build_initramfs.py` builds the Pi's RAM-only Alpine image.
+
+## Security notes
+
+- Exposed ports are reachable by anyone who can reach the Pi; they're protected by
+  the service itself (e.g. SSH authentication).
+- Claiming an unclaimed Pi over the network trusts the first claimant; use USB for
+  a guaranteed-safe first contact.
+- The setup network is open; pairing over it is protected by SPAKE2, and Wi-Fi
+  passwords sent over the network are encrypted with the Pi's read secret.
+
+## Development
+
+```
+sh fetch_firmware.sh                  # pinned Pi firmware, kernel modules, Wi-Fi firmware
+python3 build_initramfs.py --dev      # bootdir/: dev image (+ USB ethernet, SSH with keys/, wifi.conf)
+rpiboot -d bootdir                    # boot the Pi over USB (see patches/ for macOS fixes)
+python3 build_pyz.py                  # dist/audiolink.pyz
+python3 build_bin.py                  # dist/ single-file binary for this OS (needs pyinstaller)
+```
+
+A dev image adds a USB-ethernet function (Pi at `10.55.0.2`) and SSH with
+`keys/id_ed25519.pub`, and pre-saves the networks in `wifi.conf` (see
+`wifi.conf.example`); release images contain none of these. Pi firmware is pinned
+to 1.20250915: newer releases break USB boot on the Zero 2 W
+([raspberrypi/firmware#2024](https://github.com/raspberrypi/firmware/issues/2024)).
+
+## License
+
+MIT. Bundles PortAudio (MIT-style license, `audiolink/wire/_lib/PORTAUDIO-LICENSE.txt`).

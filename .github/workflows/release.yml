@@ -1,0 +1,89 @@
+# Builds every distribution; on a v* tag, publishes them as a GitHub release.
+#   audiolink-VER.pyz                 any OS with Python 3.9+ (incl. macOS's /usr/bin/python3), and the Pi
+#   audiolink-VER-macos-arm64|x86_64  single-file binaries, no Python needed
+#   audiolink-VER-windows-x64.exe     single-file binary
+#   audiolink-pi-VER.zip              the Pi's boot files (release image: no dev SSH/ethernet)
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: sh fetch_firmware.sh
+      - run: python3 build_initramfs.py          # release image (no --dev)
+      - name: Package
+        run: |
+          V=$(python3 -c "import audiolink; print(audiolink.__version__)")
+          mkdir -p out
+          cp dist/audiolink.pyz "out/audiolink-$V.pyz"
+          (cd bootdir && zip -qr "../out/audiolink-pi-$V.zip" .)
+          python3 "out/audiolink-$V.pyz" --version
+      - uses: actions/upload-artifact@v4
+        with: {name: pi, path: out/*}
+
+  macos:
+    strategy:
+      matrix:
+        include:
+          - {os: macos-latest, arch: arm64}
+          - {os: macos-15-intel, arch: x86_64}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install pyinstaller
+      - run: python build_bin.py
+      - name: Package and smoke-test
+        run: |
+          V=$(python -c "import audiolink; print(audiolink.__version__)")
+          mkdir -p out
+          cp "dist/audiolink-macos-$(uname -m)" "out/audiolink-$V-macos-${{ matrix.arch }}"
+          "out/audiolink-$V-macos-${{ matrix.arch }}" --version
+          "out/audiolink-$V-macos-${{ matrix.arch }}" list-devices
+      - uses: actions/upload-artifact@v4
+        with: {name: "macos-${{ matrix.arch }}", path: out/*}
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run: {shell: bash}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install pyinstaller
+      - run: python build_bin.py
+      - name: Package and smoke-test
+        run: |
+          V=$(python -c "import audiolink; print(audiolink.__version__)")
+          mkdir -p out
+          cp dist/audiolink.exe "out/audiolink-$V-windows-x64.exe"
+          "out/audiolink-$V-windows-x64.exe" --version
+          "out/audiolink-$V-windows-x64.exe" list-devices
+      - uses: actions/upload-artifact@v4
+        with: {name: windows-x64, path: out/*}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [pi, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {path: out, merge-multiple: true}
+      - name: Checksums
+        run: cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Publish
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "audiolink $GITHUB_REF_NAME" --generate-notes

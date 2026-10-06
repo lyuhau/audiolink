@@ -222,7 +222,18 @@ def seed_networks(conf):
 
 
 # ---------------------------------------------------------------- main
+DEV = False
+
+
 def main():
+    global DEV
+    import argparse
+    ap = argparse.ArgumentParser(description="Build the Pi boot folder (bootdir/).")
+    ap.add_argument("--dev", action="store_true",
+                    help="development image: USB ethernet + SSH with keys/id_ed25519.pub, and wifi.conf "
+                         "pre-saved. Release images (the default) contain none of these.")
+    DEV = ap.parse_args().dev
+    print("image: %s" % ("DEV (USB ethernet, SSH key, wifi.conf)" if DEV else "release"))
     pkgs, provides = load_index()
     names = resolve(pkgs, provides, PACKAGES)
     print(f"alpine packages: {len(names)}")
@@ -239,7 +250,9 @@ def main():
     tree.dir("root", 0o700)
     tree.file("init", (ROOT / "pi/init").read_bytes(), 0o755)
     tree.dir("root/.ssh", 0o700)
-    tree.file("root/.ssh/authorized_keys", (ROOT / "keys/id_ed25519.pub").read_bytes(), 0o600)
+    if DEV:                             # USB-ethernet + SSH for development, with our key
+        tree.file("etc/audiolink-dev", b"")
+        tree.file("root/.ssh/authorized_keys", (ROOT / "keys/id_ed25519.pub").read_bytes(), 0o600)
     tree.file("etc/hostname", b"audiopi\n")
     tree.file("etc/shadow", b"root:*:0:0:::::\n", 0o640)  # key-only login
     # audiolink: the same .pyz the hosts run, plus its start script and arguments.
@@ -260,7 +273,7 @@ def main():
     # wpa_supplicant runs with no networks of its own; audiolink loads the saved ones.
     tree.file("etc/wpa_supplicant/wpa_supplicant.conf",
               f"ctrl_interface=/var/run/wpa_supplicant\ncountry={WIFI_COUNTRY}\nupdate_config=0\n".encode(), 0o600)
-    seed = seed_networks(ROOT / "wifi.conf")
+    seed = seed_networks(ROOT / "wifi.conf") if DEV else {}
     if seed:
         tree.file("var/lib/audiolink/networks.json", json.dumps(seed, indent=1).encode(), 0o600)
     print(f"wifi: {len(seed)} pre-saved network(s) from wifi.conf")
