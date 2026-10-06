@@ -134,8 +134,15 @@ def lib():
             ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p]
         pa.Pa_ReadStream.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
         pa.Pa_WriteStream.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_ulong]
-        for fn in ("Pa_StartStream", "Pa_StopStream", "Pa_AbortStream", "Pa_CloseStream"):
+        for fn in ("Pa_StartStream", "Pa_StopStream", "Pa_AbortStream", "Pa_CloseStream",
+                   "Pa_GetStreamReadAvailable", "Pa_GetStreamWriteAvailable"):
             getattr(pa, fn).argtypes = [ctypes.c_void_p]
+        pa.Pa_GetStreamReadAvailable.restype = ctypes.c_long
+        if sys.platform == "darwin":
+            for fn in ("PaMacCore_GetStreamInputDevice", "PaMacCore_GetStreamOutputDevice"):
+                getattr(pa, fn).argtypes = [ctypes.c_void_p]
+                getattr(pa, fn).restype = ctypes.c_uint32
+        pa.Pa_GetStreamWriteAvailable.restype = ctypes.c_long
         _check(pa.Pa_Initialize(), pa)
         _pa = pa
     return _pa
@@ -157,7 +164,7 @@ def _check(err, pa=None):
 
 
 def devices():
-    """[{index, name, hostapi, inputs, outputs, low_in, low_out}] for every device."""
+    """[{index, name, hostapi, inputs, outputs, low_in, low_out, rate}] for every device."""
     pa = lib()
     out = []
     for i in range(_check(pa.Pa_GetDeviceCount())):
@@ -168,6 +175,7 @@ def devices():
             "hostapi": api.name.decode(errors="replace"), "hostapi_type": api.type,
             "inputs": d.maxInputChannels, "outputs": d.maxOutputChannels,
             "low_in": d.defaultLowInputLatency, "low_out": d.defaultLowOutputLatency,
+            "rate": d.defaultSampleRate,
         })
     return out
 
@@ -196,6 +204,22 @@ class Stream:
         self.buf = ctypes.create_string_buffer(frames_per_buffer * channels * 4)
         _check(pa.Pa_StartStream(self.handle))
 
+    def coreaudio_device(self):
+        """macOS: the Core Audio device id behind this stream (None elsewhere)."""
+        if sys.platform != "darwin":
+            return None
+        fn = _pa.PaMacCore_GetStreamOutputDevice if self.output else _pa.PaMacCore_GetStreamInputDevice
+        return fn(self.handle)
+
+    def abort(self):
+        """Stop now, discarding anything queued. Call from the thread that writes/reads."""
+        _pa.Pa_AbortStream(self.handle)
+
+    def available(self):
+        """Frames that can be read (input) or written (output) without blocking."""
+        fn = _pa.Pa_GetStreamWriteAvailable if self.output else _pa.Pa_GetStreamReadAvailable
+        return _check(fn(self.handle))
+
     def write(self, data):
         """Blocks until there is room. Returns False on an underflow (gap in output)."""
         err = _pa.Pa_WriteStream(self.handle, data, len(data) // (2 * self.channels))
@@ -217,6 +241,7 @@ class Stream:
         return pcm.tobytes(), err == paInputOverflowed
 
     def close(self):
-        """Abort (don't drain) and close; safe to call on a stream whose device is gone."""
+        """Abort (don't drain) and close; safe to call on a stream whose device is gone,
+        but not while another thread is inside read() or write()."""
         _pa.Pa_AbortStream(self.handle)
         _pa.Pa_CloseStream(self.handle)

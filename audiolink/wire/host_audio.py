@@ -1,9 +1,10 @@
 """Host-side audio: find the AudioPi gadget's devices and stream them with PortAudio."""
 import logging
+import sys
 import threading
 import time
 
-from .protocol import CHANNELS, CHUNK, CHUNK_FRAMES, RATE
+from .fmt import AudioFormat
 
 log = logging.getLogger("audiolink")
 
@@ -19,7 +20,7 @@ def find_devices(out_name=None, in_name=None):
 
     def pick(name, kind):
         key = "outputs" if kind == "output" else "inputs"
-        cands = [d for d in devs if d[key] >= CHANNELS]
+        cands = [d for d in devs if d[key] >= 2]
         if name:
             cands = [d for d in cands if name.lower() in d["name"].lower()]
         else:
@@ -33,44 +34,83 @@ def find_devices(out_name=None, in_name=None):
     return pick(out_name, "output"), pick(in_name, "input")
 
 
+def device_format(out_dev, in_dev):
+    """The format the gadget presents. It offers exactly one rate and channel count,
+    the same both ways, so the devices themselves say what the Pi is running."""
+    fmt = AudioFormat(round(out_dev["rate"]), out_dev["outputs"])
+    if (round(in_dev["rate"]), in_dev["inputs"]) != (fmt.rate, fmt.channels):
+        raise LookupError("AudioPi input (%d Hz x%d) and output (%r) disagree"
+                          % (in_dev["rate"], in_dev["inputs"], fmt))
+    return fmt
+
+
 def run_portaudio(link, out_name=None, in_name=None):
     """Host: blocking PortAudio streams on the gadget's devices.
 
     A supervisor reopens the devices whenever they error out or stall, e.g. when
-    the Pi reboots or is unplugged, and waits for them if they aren't present yet.
+    the Pi reboots, is unplugged or re-presents itself in another format, and waits
+    for them if they aren't present yet. Streams open in the format the device reports.
     """
     from . import portaudio
 
     def open_streams():
         portaudio.reinit()
         out_dev, in_dev = find_devices(out_name, in_name)
+        fmt = device_format(out_dev, in_dev)
         # Input first: the gadget's capture side only carries data while the host streams.
-        inp = portaudio.Stream(in_dev, False, RATE, CHANNELS, CHUNK_FRAMES)
+        inp = portaudio.Stream(in_dev, False, fmt.rate, fmt.channels, fmt.chunk_frames)
         try:
-            out = portaudio.Stream(out_dev, True, RATE, CHANNELS, CHUNK_FRAMES)
+            out = portaudio.Stream(out_dev, True, fmt.rate, fmt.channels, fmt.chunk_frames)
         except Exception:
             inp.close()
             raise
+        link.set_format(fmt)
         log.info("audio out: %s [%s]", out_dev["name"], out_dev["hostapi"])
-        log.info("audio in:  %s [%s]", in_dev["name"], in_dev["hostapi"])
-        return out, inp
+        log.info("audio in:  %s [%s], %r", in_dev["name"], in_dev["hostapi"], fmt)
+        return out, inp, fmt
 
-    def run_session(out, inp):
+    def run_session(out, inp, fmt):
         state = {"ok": True, "last_read": time.monotonic(), "err": "stalled"}
 
+        def lost(reason):
+            state["err"] = reason
+            state["ok"] = False
+
+        watch = None
+        if sys.platform == "darwin":
+            # Know about a removal at once: Core Audio would move our output to the speakers.
+            from .coreaudio import Watch
+            try:
+                watch = Watch([out.coreaudio_device(), inp.coreaudio_device()], lost)
+            except Exception as e:
+                log.debug("coreaudio watch unavailable: %s", e)
+
+        # Neither thread blocks inside PortAudio: they wait for room/data here, so they
+        # notice state["ok"] going false and exit before the streams are closed (closing
+        # or re-initializing under a blocked read corrupts memory).
         def player():
             try:
                 while state["ok"]:
-                    if not out.write(link.pull(CHUNK)):
+                    if out.available() < fmt.chunk_frames:
+                        time.sleep(0.002)
+                        continue
+                    if not out.write(link.pull(fmt.chunk)):
                         link.stats["out_underflows"] += 1
             except Exception as e:
                 state["err"] = e
             state["ok"] = False
+            try:
+                out.abort()             # drop what's queued rather than let it play anywhere
+            except Exception:
+                pass
 
         def recorder():
             try:
                 while state["ok"]:
-                    data, overflowed = inp.read(CHUNK_FRAMES)
+                    if inp.available() < fmt.chunk_frames:
+                        time.sleep(0.002)
+                        continue
+                    data, overflowed = inp.read(fmt.chunk_frames)
                     state["last_read"] = time.monotonic()
                     if overflowed:
                         link.stats["in_overflows"] += 1
@@ -84,21 +124,27 @@ def run_portaudio(link, out_name=None, in_name=None):
             t.start()
         while state["ok"] and time.monotonic() - state["last_read"] < 2.0:
             time.sleep(0.25)
+            if watch and not watch.alive():     # backstop for a missed notification
+                lost("device removed")
         state["ok"] = False
+        if watch:
+            watch.close()
         log.warning("audio device lost (%s); reopening", state["err"])
+        for t in threads:
+            t.join(10)
+            if t.is_alive():
+                log.warning("audio thread stuck in PortAudio; reopening anyway")
         for st in (out, inp):
             try:
                 st.close()
             except Exception:
                 pass
-        for t in threads:
-            t.join(2)
 
     def supervisor():
         waiting = False
         while True:
             try:
-                out, inp = open_streams()
+                out, inp, fmt = open_streams()
             except (LookupError, portaudio.PortAudioError) as e:
                 if not waiting:
                     log.warning("%s; waiting for the AudioPi to appear", e)
@@ -106,7 +152,7 @@ def run_portaudio(link, out_name=None, in_name=None):
                 time.sleep(2)
                 continue
             waiting = False
-            run_session(out, inp)
+            run_session(out, inp, fmt)
             link.stats["audio_restarts"] += 1
             time.sleep(1)
 

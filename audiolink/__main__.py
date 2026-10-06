@@ -24,6 +24,7 @@
   audiolink connect PI PORT                  (any machine) ssh ProxyCommand: find the Pi, connect
   audiolink discovery enable|disable|status  whether the plugged-in Pi publishes on the DHT
   audiolink dht-size                         estimate how many DHT nodes are out there
+  audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
 
 --forward LPORT:[HOST:]PORT  listen on LPORT here; each connection asks the peer to
                              connect to HOST:PORT (HOST defaults to the peer's 127.0.0.1)
@@ -125,6 +126,10 @@ def main(argv=None):
     con = sub.add_parser("connect", help="pipe stdin/stdout to a Pi port (ssh ProxyCommand)")
     con.add_argument("pi", help="name (see `audiolink pis`) or connect code")
     con.add_argument("port", type=int)
+    aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)")
+    aud.add_argument("action", nargs="?", default="status", choices=["status", "sweep", "set", "forget"],
+                     help="sweep: measure every candidate format and keep the fastest")
+    aud.add_argument("format", nargs="?", help="set: RATExCHANNELS (e.g. 96000x8) or baseline")
     size = sub.add_parser("dht-size", help="estimate the size of the BitTorrent DHT")
     size.add_argument("--samples", type=int, default=8)
     roles = {"host": sub.add_parser("host", help="run on the Mac/PC the Pi is plugged into"),
@@ -139,8 +144,10 @@ def main(argv=None):
                                help="local HTTP proxy that browses as the Pi (0 = off)")
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
+    roles["host"].add_argument("--audio-format", default="auto", metavar="auto|baseline|RATExCH",
+                               help="negotiate a faster audio format with the Pi (default: auto)")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
-    for p in (roles["host"], w, dsc, add, ren, prg):
+    for p in (roles["host"], w, dsc, add, ren, prg, aud):
         p.add_argument("--control-port", type=int, default=None, help="local control port (default 47800)")
     roles["host"].add_argument("--in-device", help="input device name (substring)")
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
@@ -175,6 +182,10 @@ def main(argv=None):
         if a.action == "join" and (a.via_network or a.pi or not pi_on_usb(port)):
             return mode.change_command(a)
         return wifi_command(a)
+    if a.cmd == "audio":
+        from .host.audio_format import audio_command
+        a.control_port = port
+        return audio_command(a)
     if a.cmd == "discovery":
         from .host.discovery import discovery_command
         a.control_port = port
@@ -206,7 +217,8 @@ def main(argv=None):
 
 
 def run_pi(a, allow, port, gate):
-    """The Pi: identity, Wi-Fi management, the browse-as-the-Pi proxy, discovery, streams; ALSA audio."""
+    """The Pi: identity, Wi-Fi management, the browse-as-the-Pi proxy, discovery, streams; ALSA audio
+    and its format."""
     from .services.discovery import DiscoveryService
     from .services.identity import IdentityService
     from .services.pairing import PairingService
@@ -215,7 +227,9 @@ def run_pi(a, allow, port, gate):
     from .services.setup_ap import SetupApService
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
-    from .wire.alsa import run_alsa
+    from .services.audio_format import AudioFormatService
+    from .wire.alsa import AlsaAudio
+    from .wire.gadget import Gadget
     wifi = WifiService(a.wifi_store)
     proxy = ProxyService(on_request=wifi.manager.note_demand)
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
@@ -225,15 +239,19 @@ def run_pi(a, allow, port, gate):
     session = Session("pi", [streams, wifi, proxy, identity, DiscoveryService(identity),
                              PairingService(identity, endpoint), setup_ap,
                              ModeService(wifi, setup_ap, endpoint)])
+    audio = AlsaAudio(session.link, a.device)
+    audio.start()
+    session.add(AudioFormatService(audio, Gadget()))
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
-    run_alsa(session.link, a.device)
     return session, streams
 
 
 def run_host(a, allow, port, gate):
-    """The host: streams (+ --expose), the control port, portal handling, identity custody; PortAudio."""
+    """The host: streams (+ --expose), the control port, portal handling, identity custody,
+    audio-format negotiation; PortAudio."""
     from .host import control
+    from .host.audio_format import AudioNegotiator, parse_format
     from .host.identity import HostIdentity
     from .host.portal import PortalWatcher
     from .host.wifi_cli import startup_join
@@ -244,13 +262,16 @@ def run_host(a, allow, port, gate):
         gate.pause()             # the Wi-Fi prompts own the terminal until startup is done
     streams = Streams("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
     watcher = PortalWatcher(port, gate)
-    session = Session("host", [streams, watcher, HostIdentity()])
+    negotiator = AudioNegotiator(a.audio_format if a.audio_format in ("auto", "baseline")
+                                 else parse_format(a.audio_format))
+    session = Session("host", [streams, watcher, HostIdentity(), negotiator])
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
     run_portaudio(session.link, a.out_device, a.in_device)
     local_ops = {"peer": lambda args: {"connected": session.peer_alive, "peer": session.peer_info,
                                        "proxy_port": a.proxy_port}}
     local_ops.update(watcher.local_ops())
+    local_ops.update(negotiator.local_ops())
     control.serve(session, port, local_ops)
     if a.proxy_port:
         # Browse as the Pi (captive portals): local HTTP proxy -> Pi's proxy.

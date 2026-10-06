@@ -18,7 +18,7 @@ import queue
 import socket
 import threading
 
-from ..wire.protocol import MAX_PAYLOAD, T_CLOSE, T_DATA, T_OPEN
+from ..wire.protocol import T_CLOSE, T_DATA, T_OPEN
 from . import Service
 
 log = logging.getLogger("audiolink")
@@ -169,7 +169,7 @@ class Streams(Service):
         link = self.session.link
         try:
             while True:
-                data = st.sock.recv(MAX_PAYLOAD)
+                data = st.sock.recv(link.max_payload)
                 if not data:
                     break
                 link.stats["tcp_tx_bytes"] += len(data)

@@ -59,7 +59,10 @@ def call(op, args=None, port=DEFAULT_PORT):
         raise SystemExit("can't reach a running `audiolink host` on 127.0.0.1:%d; start it first" % port)
     with conn:
         conn.sendall((json.dumps({"op": op, "args": args or {}}) + "\n").encode())
-        reply = json.loads(conn.makefile("r").readline())
+        line = conn.makefile("r").readline()
+    if not line:
+        raise SystemExit("`audiolink host` on 127.0.0.1:%d stopped before replying" % port)
+    reply = json.loads(line)
     if not reply.get("ok"):
         raise SystemExit("error: " + reply.get("error", "failed"))
     return reply["result"]

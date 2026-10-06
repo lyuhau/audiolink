@@ -1,6 +1,8 @@
 """Framing and the reliable link layer.
 
-Physical: 48 kHz / 16-bit / stereo PCM = a 192,000 B/s byte pipe each way, zeros when idle.
+Physical: 16-bit PCM, zeros when idle. Every link starts at 48 kHz stereo (192,000 B/s
+each way) and may then switch to a faster format (see fmt.py); the frame size and
+window follow the format's byte rate (Link.set_format).
 
 Frame:  SYNC(4) | session(4) | peer(4) | type(1) | stream(2) | seq(4) | ack(4) | len(2) | payload | CRC32(4)
   - SYNC's last byte is the protocol version, so peers speaking another version
@@ -26,17 +28,12 @@ import time
 import zlib
 
 from .. import PROTOCOL_VERSION
-
-RATE, CHANNELS = 48000, 2
-FRAME_BYTES = CHANNELS * 2           # one PCM frame
-CHUNK_FRAMES = 480                   # 10 ms of audio
-CHUNK = CHUNK_FRAMES * FRAME_BYTES
+from .fmt import BASELINE
 
 SYNC = b"\xa5\x5a\x96" + bytes([PROTOCOL_VERSION])
 HDR = struct.Struct(">4sIIBHIIH")    # sync, session, peer, type, stream, seq, ack, length
 CRC = struct.Struct(">I")
-MAX_PAYLOAD = 1024
-WINDOW = 48                          # reliable frames in flight (~50 KB)
+MAX_PAYLOAD = 4096                   # the largest payload any format uses (parser limit)
 RTO = 0.4                            # retransmit timeout, seconds
 KEEPALIVE = 0.2                      # send an ack at least this often
 DGRAM_QUEUE = 64                     # datagrams beyond this are dropped
@@ -118,12 +115,20 @@ class Link:
         self.on_up = on_up
         self.stats = collections.Counter()
         self.parser = Parser(self._on_frame, self.stats)
+        self.set_format(BASELINE)
+
+    def set_format(self, fmt):
+        """Size frames and the window for the audio format now carrying the link."""
+        with self.cv:
+            self.format = fmt
+            self.max_payload, self.window = fmt.link_params()
+            self.cv.notify_all()
 
     # ---- sending
     def send(self, typ, sid, payload=b""):
         """Queue a reliable message; blocks while the queue is full (backpressure)."""
         with self.cv:
-            while len(self.pending) >= WINDOW:
+            while len(self.pending) >= self.window:
                 self.cv.wait(0.5)
             self.pending.append((typ, sid, payload))
 
@@ -150,7 +155,7 @@ class Link:
             self.resend_idx = None
         # Alternate between reliable and datagram traffic when both are waiting.
         want_dgram = self.dgrams and (self.stats["tx_frames"] + self.stats["tx_dgrams"]) % 2
-        if self.pending and len(self.unacked) < WINDOW and not want_dgram:
+        if self.pending and len(self.unacked) < self.window and not want_dgram:
             typ, sid, payload = self.pending.popleft()
             self.cv.notify_all()
             seq = self.next_seq

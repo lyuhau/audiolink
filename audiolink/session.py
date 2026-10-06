@@ -19,7 +19,7 @@ import threading
 import time
 
 from . import PROTOCOL_VERSION, __version__
-from .wire.protocol import MAX_PAYLOAD, T_CTRL, T_HELLO, Link
+from .wire.protocol import T_CTRL, T_HELLO, Link
 
 log = logging.getLogger("audiolink")
 
@@ -120,7 +120,7 @@ class Session:
 
     def _send_ctrl(self, rid, obj):
         data = json.dumps(obj).encode()
-        step = MAX_PAYLOAD - 1
+        step = self.link.max_payload - 1
         for i in range(0, max(len(data), 1), step):
             more = i + step < len(data)
             self.link.send(T_CTRL, rid, (b"\x01" if more else b"\x00") + data[i:i + step])

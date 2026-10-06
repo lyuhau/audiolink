@@ -4,5 +4,5 @@ Pure standard-library Python (3.9+). The only native code is the bundled
 PortAudio library, loaded with ctypes on the host side.
 """
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 PROTOCOL_VERSION = 2
