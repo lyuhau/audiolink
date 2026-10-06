@@ -1,4 +1,5 @@
 """Where audiolink keeps things on each kind of machine."""
+import json
 import os
 import sys
 from pathlib import Path
@@ -46,3 +47,32 @@ def is_persistent(path):
         if inside and len(mnt) > len(best_mnt):
             best_mnt, best_type = mnt, fstype
     return best_type not in ("rootfs", "tmpfs", "ramfs")
+
+
+def save_json(path, data, indent=None):
+    """Replace a JSON file so that power loss leaves either the old or the new one.
+    The Pi's state lives on a FAT card and the Pi can lose power (or be reset) at any
+    moment: the data and the rename both have to reach the card before we return."""
+    path = str(path)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=indent)
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+    if hasattr(os, "O_DIRECTORY"):
+        try:
+            fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)            # the rename lives in the directory
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+    if sys.platform.startswith("linux"):
+        os.sync()                       # FAT: make sure the directory entry and FAT are written

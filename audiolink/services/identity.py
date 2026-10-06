@@ -21,7 +21,7 @@ from pathlib import Path
 from ..crypto import ed25519_public
 from ..discovery.record import code_for, new_identity
 from ..names import NAME_RE, name_for
-from ..paths import is_persistent
+from ..paths import is_persistent, save_json
 from . import Service
 
 log = logging.getLogger("audiolink")
@@ -70,14 +70,7 @@ class IdentityService(Service):
             return None
 
     def _save(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            json.dump(self.data, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)
+        save_json(self.path, self.data)
 
     def _changed(self):
         self.fresh = False

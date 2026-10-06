@@ -15,6 +15,7 @@ import threading
 import time
 
 from . import Service
+from ..paths import save_json
 
 log = logging.getLogger("audiolink")
 
@@ -124,13 +125,7 @@ class WifiManager:
             return {}
 
     def _save(self):
-        os.makedirs(os.path.dirname(self.store_path), exist_ok=True)
-        tmp = self.store_path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self.saved, f, indent=1)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self.store_path)
+        save_json(self.store_path, self.saved, indent=1)
 
     # ---- wpa_cli
     def _wpa(self, *args):
