@@ -9,7 +9,8 @@ browsing.
 
 It stands down as soon as a host connects over USB (the host can then manage Wi-Fi),
 and after MAX_ON seconds it goes back to client mode for WAIT seconds to retry the
-saved networks. `audiolink wifi ap on|off|status` overrides the automatic rule.
+saved networks. `audiolink wifi ap on|off|status` overrides the automatic rule, and a
+connection-mode change (services/mode.py) pauses it while pending.
 """
 import logging
 import subprocess
@@ -39,6 +40,7 @@ class SetupApService(Service):
         self.since = time.monotonic()           # when the current mode started
         self.offline_since = time.monotonic()   # last time we were on a Wi-Fi network
         self.manual = None                      # None: automatic; True: forced on
+        self.paused = False                     # a connection-mode change is in progress
         self.lock = threading.Lock()
         threading.Thread(target=self._policy, daemon=True).start()
 
@@ -53,19 +55,27 @@ class SetupApService(Service):
                     "mode": "on (manual)" if self.manual else "automatic"}
         if op == "on":
             self.manual = True
-            self._start()
+            self.start()
             return self.handle("status", {})
         if op == "off":
             self.manual = None
-            self._stop()
+            self.stop()
             return self.handle("status", {})
         raise ValueError("unknown setup_ap operation %r" % op)
+
+    # ---- for services/mode.py
+    def pause_policy(self):
+        self.paused = True
+
+    def resume_policy(self):
+        self.offline_since = time.monotonic()
+        self.paused = False
 
     # ---- the automatic rule
     def _policy(self):
         while True:
             time.sleep(5)
-            if self.manual:
+            if self.manual or self.paused:
                 continue
             host = self.session.peer_alive
             now = time.monotonic()
@@ -74,16 +84,16 @@ class SetupApService(Service):
                     self.offline_since = now
                 elif not host and now - self.offline_since > self.wait:
                     log.info("setup network: no host and no Wi-Fi for %ds", self.wait)
-                    self._start()
+                    self.start()
             elif host:
                 log.info("setup network: a host connected; back to client Wi-Fi")
-                self._stop()
+                self.stop()
             elif now - self.since > self.max_on:
                 log.info("setup network: retrying saved networks for %ds", self.wait)
-                self._stop()
+                self.stop()
 
     # ---- switching the radio
-    def _start(self):
+    def start(self):
         with self.lock:
             if self.active:
                 return
@@ -131,7 +141,7 @@ class SetupApService(Service):
             time.sleep(1)
         return False
 
-    def _stop(self):
+    def stop(self):
         with self.lock:
             if not self.active:
                 return

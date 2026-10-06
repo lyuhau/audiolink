@@ -12,6 +12,8 @@
   audiolink wifi portal                      log the Pi in to a captive portal from a browser here
   audiolink wifi check                       exit 0 = Pi online, 2 = captive portal, 3 = offline
   audiolink wifi ap on|off|status            the Pi's own setup network (normally automatic)
+  audiolink wifi join NAME --pi PI           over the network: confirm-or-revert (see `wifi --help`)
+  audiolink wifi confirm PI                  keep a Pi's pending network change / show what happened
   audiolink add [CODE]                       add a Pi: plugged in here, on the network, or by code
   audiolink pairing code PI                  a one-time code for adding PI on another machine
   audiolink pis                              list the Pis this machine knows
@@ -76,7 +78,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list-devices", help="list audio devices")
     w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)")
-    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check", "ap"],
+    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check", "ap", "confirm"],
                    help="omit to pick a network from a list")
     w.add_argument("name", nargs="?", help="network name for join/forget; on|off|status for ap")
     w.add_argument("--security", choices=["open", "owe", "wpa2", "wpa3"],
@@ -87,6 +89,14 @@ def main(argv=None):
     w.add_argument("--portal", action="store_true", help="join: open a captive portal login without asking")
     w.add_argument("--no-portal", action="store_true", help="join: never offer a captive portal login")
     w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
+    w.add_argument("--pi", help="join over the network: which Pi (default: the only one you know)")
+    w.add_argument("--via-network", action="store_true", help="join over the network even if plugged in here")
+    w.add_argument("--confirm-by", choices=["me", "any"], default="me",
+                   help="over the network: who confirms the Pi can be reached on the new network")
+    w.add_argument("--confirm-within", type=int, default=180, metavar="SECONDS")
+    w.add_argument("--tries", type=int, default=1, help="connection attempts before giving up (max 3)")
+    w.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
+    w.add_argument("--token", help="confirm: the one-time token printed by the requesting machine")
     dsc = sub.add_parser("discovery", help="whether the plugged-in Pi publishes on the DHT")
     dsc.add_argument("action", nargs="?", default="status",
                      choices=["enable", "disable", "code", "status", "publish"])
@@ -156,8 +166,14 @@ def main(argv=None):
     from .host import control
     port = getattr(a, "control_port", None) or control.DEFAULT_PORT
     if a.cmd == "wifi":
-        from .host.wifi_cli import wifi_command
+        from .client import mode
+        from .host.wifi_cli import wifi_command, pi_on_usb
         a.control_port = port
+        if a.action == "confirm":
+            a.pi = a.pi or a.name
+            return mode.confirm_command(a)
+        if a.action == "join" and (a.via_network or a.pi or not pi_on_usb(port)):
+            return mode.change_command(a)
         return wifi_command(a)
     if a.cmd == "discovery":
         from .host.discovery import discovery_command
@@ -194,6 +210,8 @@ def run_pi(a, allow, port, gate):
     from .services.discovery import DiscoveryService
     from .services.identity import IdentityService
     from .services.pairing import PairingService
+    from .services.endpoint import Endpoint
+    from .services.mode import ModeService
     from .services.setup_ap import SetupApService
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
@@ -202,8 +220,11 @@ def run_pi(a, allow, port, gate):
     proxy = ProxyService(on_request=wifi.manager.note_demand)
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
     identity = IdentityService(a.state_dir)
+    endpoint = Endpoint(identity)
+    setup_ap = SetupApService(wifi, identity)
     session = Session("pi", [streams, wifi, proxy, identity, DiscoveryService(identity),
-                             PairingService(identity), SetupApService(wifi, identity)])
+                             PairingService(identity, endpoint), setup_ap,
+                             ModeService(wifi, setup_ap, endpoint)])
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
     run_alsa(session.link, a.device)

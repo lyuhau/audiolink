@@ -71,8 +71,43 @@ class PiConn:
             raise ConnectionError("the Pi closed the connection")
         return json.loads(line)
 
+    def ask_auth(self, op, hello, secret, sealed=None, **fields):
+        """An authenticated request: proves this machine knows the Pi's read secret;
+        `sealed` (a dict) travels encrypted with it."""
+        from ..crypto import seal
+        proof = hmac.new(secret, op.encode() + bytes.fromhex(hello["nonce"]), hashlib.sha256).hexdigest()
+        req = dict(fields, op=op, proof=proof)
+        if sealed is not None:
+            req["sealed"] = seal(secret, json.dumps(sealed).encode()).hex()
+        return self.ask(req)
+
     def close(self):
         self.sock.close()
+
+
+def reach(entry, at=(), with_dht=False):
+    """(PiConn, hello) for this known Pi over the network, or (None, None). Tries
+    --at addresses, its last known LAN address, mDNS, the setup network address, and
+    (with_dht) a fresh DHT lookup."""
+    pub = keyring.pub_of(entry["code"])
+    ips = list(at) + (entry.get("last_record") or {}).get("lan", []) + browse(1.0) + [SETUP_ADDR]
+    if with_dht:
+        from .find import lookup
+        try:
+            rec, _ = lookup(entry["code"])
+            ips = (rec or {}).get("lan", []) + ips
+        except SystemExit:
+            pass
+    for ip in dict.fromkeys(ips):
+        try:
+            conn = PiConn(ip, timeout=1.5)
+            hello = conn.ask({"op": "hello"})
+        except (OSError, ValueError):
+            continue
+        if hello.get("pub") == pub:
+            return conn, hello
+        conn.close()
+    return None, None
 
 
 def candidates(at=()):
@@ -115,8 +150,7 @@ def pair(conn, code=None, client_name="audiolink"):
 def request_code(conn, hello, code):
     """Ask a Pi for a fresh pairing code, proving we know its read secret."""
     _, secret = parse_code(code)
-    proof = hmac.new(secret, b"new_code" + bytes.fromhex(hello["nonce"]), hashlib.sha256).hexdigest()
-    r = conn.ask({"op": "new_code", "proof": proof})
+    r = conn.ask_auth("new_code", hello, secret)
     if "error" in r:
         raise SystemExit("the Pi refused: %s" % r["error"])
     issued = open_sealed(secret, bytes.fromhex(r["sealed"]))
@@ -177,17 +211,10 @@ def code_command(a):
     except SystemExit:
         pass
     if issued is None:                              # otherwise over the network
-        ips = list(a.at or []) + (entry.get("last_record") or {}).get("lan", []) + browse()
-        for ip in dict.fromkeys(ips):
+        conn, hello = reach(entry, a.at or [])
+        if conn:
             try:
-                conn = PiConn(ip, timeout=1.5)
-                hello = conn.ask({"op": "hello"})
-            except (OSError, ValueError):
-                continue
-            try:
-                if hello["pub"] == pub:
-                    issued = request_code(conn, hello, entry["code"])
-                    break
+                issued = request_code(conn, hello, entry["code"])
             finally:
                 conn.close()
     if issued is None:

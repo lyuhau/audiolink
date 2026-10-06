@@ -4,33 +4,14 @@ Joining works out the network's security from the Pi's scan and asks only for wh
 missing; it suggests near-misses (5 GHz twins, other-case names) and re-prompts on a
 wrong password. Requests go through the running host daemon (control.call).
 """
-import os
 import time
 
 from .control import call
 from .portal import offer_portal, portal_flow
 from ..ui import Prompter, line_buffered
+from ..wifi_ui import SEC_LABEL, wifi_password
 
-SEC_LABEL = {"open": "open", "owe": "open+", "wpa2": "WPA2", "wpa3": "WPA3", "wpa2/wpa3": "WPA2/3",
-             "wep": "WEP", "enterprise": "802.1X"}
 FIVE_GHZ_SUFFIXES = ("_5g", "-5g", "_5ghz", "-5ghz", " 5g", "_5", "-5", " 5ghz", ".5g")
-
-
-def wifi_password(ask, ssid, security, retry=False):
-    """Returns (password, can_retry): from --password-stdin, $AUDIOLINK_WIFI_PASSWORD
-    (first try only), or a prompt that enforces WPA2's 8-63 characters."""
-    if ask.stdin_pw is not None:
-        return ask.stdin_pw, False
-    env = os.environ.get("AUDIOLINK_WIFI_PASSWORD")
-    if env and not retry:
-        return env, False
-    while True:
-        pw = ask.secret("%s password for %r: " % (SEC_LABEL.get(security, security), ssid))
-        if security in ("wpa2", "wpa2/wpa3") and not 8 <= len(pw) <= 63:
-            print("WPA2 passwords are 8-63 characters; try again")
-            continue
-        if pw:
-            return pw, True
 
 
 def _band(freq):
@@ -192,6 +173,15 @@ def pick_flow(a, port):
         print("already connected to %r" % choice["ssid"])
         return
     return join_flow(choice["ssid"], a, port, known_security=choice["security"])
+
+
+def pi_on_usb(port):
+    """Is a Pi with Wi-Fi management connected to a running host on this machine?"""
+    try:
+        peer = call("peer", port=port)
+    except SystemExit:
+        return False
+    return bool(peer.get("connected")) and "wifi" in (peer.get("peer") or {}).get("caps", [])
 
 
 def wifi_command(a):

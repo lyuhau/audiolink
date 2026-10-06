@@ -110,6 +110,7 @@ class WifiManager:
         self._scan_cache = (0.0, [])
         self.emit = lambda name, data=None: None    # set by the caller: sends events to the host
         self.internet = None                        # last connectivity state, with "ssid"
+        self.provisional = None                     # (ssid, entry) joined but not yet confirmed
         self._last_demand = 0.0
         threading.Thread(target=self._load_into_supplicant, daemon=True).start()
         threading.Thread(target=self._monitor, daemon=True).start()
@@ -265,6 +266,44 @@ class WifiManager:
             self._last_demand = now
             self.emit("portal_needed", self.internet)
 
+    # ---- provisional joins (services/mode.py): keep only once someone confirms
+    def commit_provisional(self):
+        with self.lock:
+            if not self.provisional:
+                return None
+            ssid, ent = self.provisional
+            self.provisional = None
+            self.saved[ssid] = ent
+            self._save()
+            self._reprioritize()
+            self._wpa("enable_network", "all")
+            log.info("wifi: %r confirmed and saved", ssid)
+            return ssid
+
+    def discard_provisional(self):
+        """Forget an unconfirmed join (unless it was already a saved network)."""
+        with self.lock:
+            if not self.provisional:
+                return
+            ssid, _ = self.provisional
+            self.provisional = None
+            nid = self._networks().get(ssid)
+            if nid is not None and ssid not in self.saved:
+                self._wpa("remove_network", nid)
+            self._wpa("enable_network", "all")
+
+    def last_scan(self):
+        """(age in seconds, results) of the last scan; age is huge if there wasn't one."""
+        at, results = self._scan_cache
+        return (time.monotonic() - at if at else 1e9), [dict(n) for n in results]
+
+    def current_ssid(self):
+        try:
+            st = self._status()
+        except Exception:
+            return None
+        return st.get("ssid") if st.get("wpa_state") == "COMPLETED" else None
+
     # ---- handing the radio to the setup network (services/setup_ap.py) and back
     def associated(self):
         """True while connected to a Wi-Fi network as a client."""
@@ -352,9 +391,11 @@ class WifiManager:
                  "hidden": bool(e.get("hidden"))}
                 for s, e in sorted(self.saved.items(), key=lambda kv: -kv[1].get("last_used", 0))]
 
-    def join(self, ssid, password=None, security=None, hidden=False, use_saved=False, timeout=30):
+    def join(self, ssid, password=None, security=None, hidden=False, use_saved=False, timeout=30, save=True):
         """Try a network; save it only if association and DHCP succeed.
-        use_saved=True reconnects with the stored credentials. Failures carry a code:
+        use_saved=True reconnects with the stored credentials. save=False keeps a
+        successful join provisional: connected but not saved, until commit_provisional()
+        (or discard_provisional() to drop it). Failures carry a code:
         not_found | auth_failed | timeout | no_ip."""
         if use_saved:
             if ssid not in self.saved:
@@ -372,12 +413,23 @@ class WifiManager:
         self._wpa("select_network", nid)      # try only this one for now
         seen, deadline = set(), time.monotonic() + timeout
         ok = bad_key = False
+        keyed = security_of(ent) not in ("open", "owe")
+        prev = None
         while time.monotonic() < deadline:
             st = self._status()
-            seen.add(st.get("wpa_state"))
-            if st.get("wpa_state") == "COMPLETED" and st.get("ssid") == ssid:
+            state = st.get("wpa_state")
+            seen.add(state)
+            if state == "COMPLETED" and st.get("ssid") == ssid:
                 ok = True
                 break
+            # This chip checks the password in firmware: a wrong one shows up only as an
+            # association that falls back to scanning (~5 s). Call it on the first one
+            # rather than waiting ~20 s for wpa_supplicant's TEMP-DISABLED; a rare
+            # transient failure just means re-submitting.
+            if keyed and prev == "ASSOCIATING" and state in ("SCANNING", "DISCONNECTED"):
+                bad_key = True
+                break
+            prev = state
             # After failed handshakes wpa_supplicant temporarily disables the network.
             if "TEMP-DISABLED" in self._flags(nid):
                 bad_key = True
@@ -393,11 +445,15 @@ class WifiManager:
                 time.sleep(0.5)
         if ok and ip:
             ent["last_used"] = int(time.time())
-            self.saved[ssid] = ent
-            self._save()
-            self._reprioritize()
-            self._wpa("enable_network", "all")
-            log.info("wifi: joined and saved %r (%s)", ssid, ip)
+            if save:
+                self.saved[ssid] = ent
+                self._save()
+                self._reprioritize()
+                self._wpa("enable_network", "all")
+                log.info("wifi: joined and saved %r (%s)", ssid, ip)
+            else:
+                self.provisional = (ssid, ent)
+                log.info("wifi: joined %r (%s), not saved until confirmed", ssid, ip)
             conn = dict(connectivity(), ssid=ssid)
             self._set_internet(conn)
             return dict(conn, joined=True, ip=ip, security=security_of(ent))
