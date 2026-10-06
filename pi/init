@@ -99,12 +99,8 @@ mkdir -p /boot
 # without asking (e.g. a rename caught halfway).
 [ -e /dev/mmcblk0p1 ] && fsck.fat -a -w /dev/mmcblk0p1 > /var/log/fsck.log 2>&1
 if mount -t vfat -o rw,noatime,flush,fmask=0177,dmask=0077,quiet /dev/mmcblk0p1 /boot; then
-    mkdir -p /boot/audiolink
-    # The image's seed (dev: networks from wifi.conf) only fills in what the card lacks.
-    for f in /var/lib/audiolink/*; do
-        [ -e "$f" ] && [ ! -e "/boot/audiolink/${f##*/}" ] && cp "$f" /boot/audiolink/
-    done
-    mount --bind /boot/audiolink /var/lib/audiolink || mkdir -p /var/lib/audiolink
+    mkdir -p /boot/audiolink /var/lib/audiolink
+    mount --bind /boot/audiolink /var/lib/audiolink
 fi
 mkdir -p /var/lib/audiolink
 

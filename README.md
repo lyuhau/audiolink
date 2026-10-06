@@ -123,7 +123,7 @@ Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
 
 ```
 sh fetch_firmware.sh                  # pinned Pi firmware, kernel modules, Wi-Fi firmware
-python3 build_initramfs.py --dev      # bootdir/: dev image (+ USB ethernet, SSH with keys/, wifi.conf)
+python3 build_initramfs.py --dev      # bootdir/: dev image (+ USB ethernet, SSH with keys/)
 rpiboot -d bootdir                    # boot the Pi over USB (see patches/ for macOS fixes)
 python3 build_pyz.py                  # dist/audiolink.pyz
 python3 build_bin.py                  # dist/ single-file binary for this OS (needs pyinstaller)
@@ -135,8 +135,8 @@ with no reader: boot the Pi with `rpiboot` *without* the card (an empty card in
 the slot makes USB boot fail), insert the card while it runs, then deploy.
 
 A dev image adds a USB-ethernet function (Pi at `10.55.0.2`) and SSH with
-`keys/id_ed25519.pub`, and pre-saves the networks in `wifi.conf` (see
-`wifi.conf.example`); release images contain none of these. Pi firmware is pinned
+`keys/id_ed25519.pub`; release images contain neither. Wi-Fi networks are added
+the same way in both (`audiolink wifi`) and kept on the SD card. Pi firmware is pinned
 to 1.20250915: newer releases break USB boot on the Zero 2 W
 ([raspberrypi/firmware#2024](https://github.com/raspberrypi/firmware/issues/2024)).
 

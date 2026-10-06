@@ -6,7 +6,6 @@ modes, symlinks and case-sensitive names survive without root or a Linux VM.
 """
 import gzip
 import io
-import json
 import lzma
 import os
 import re
@@ -200,28 +199,6 @@ def add_wifi_fw(tree):
     tree.symlink("lib/firmware/brcm/brcmfmac43430-sdio.clm_blob", f"../cypress/{clm.name}")
 
 
-# ---------------------------------------------------------------- wifi seed
-def seed_networks(conf):
-    """Turn wifi.conf's network blocks into audiolink's saved-network store, keeping
-    only the derived WPA key (never the password) in the image."""
-    import hashlib
-    if not conf.exists():
-        return {}
-    seed = {}
-    for block in re.findall(r"network\s*=\s*\{(.*?)\}", conf.read_text(), re.S):
-        ssid = re.search(r'^\s*ssid="(.*)"\s*$', block, re.M)
-        psk = re.search(r'^\s*psk=(".*"|[0-9a-fA-F]{64})\s*$', block, re.M)
-        if not ssid or ssid.group(1) == "YOUR_WIFI_NAME":
-            continue
-        key = None
-        if psk:
-            raw = psk.group(1)
-            key = hashlib.pbkdf2_hmac("sha1", raw[1:-1].encode(), ssid.group(1).encode(), 4096, 32).hex() \
-                if raw.startswith('"') else raw.lower()
-        seed[ssid.group(1)] = {"psk": key, "hidden": "scan_ssid=1" in block, "last_used": 0}
-    return seed
-
-
 # ---------------------------------------------------------------- main
 DEV = False
 
@@ -231,10 +208,10 @@ def main():
     import argparse
     ap = argparse.ArgumentParser(description="Build the Pi boot folder (bootdir/).")
     ap.add_argument("--dev", action="store_true",
-                    help="development image: USB ethernet + SSH with keys/id_ed25519.pub, and wifi.conf "
-                         "pre-saved. Release images (the default) contain none of these.")
+                    help="development image: USB ethernet + SSH with keys/id_ed25519.pub. "
+                         "Release images (the default) contain neither.")
     DEV = ap.parse_args().dev
-    print("image: %s" % ("DEV (USB ethernet, SSH key, wifi.conf)" if DEV else "release"))
+    print("image: %s" % ("DEV (USB ethernet, SSH key)" if DEV else "release"))
     pkgs, provides = load_index()
     names = resolve(pkgs, provides, PACKAGES)
     print(f"alpine packages: {len(names)}")
@@ -274,10 +251,6 @@ def main():
     # wpa_supplicant runs with no networks of its own; audiolink loads the saved ones.
     tree.file("etc/wpa_supplicant/wpa_supplicant.conf",
               f"ctrl_interface=/var/run/wpa_supplicant\ncountry={WIFI_COUNTRY}\nupdate_config=0\n".encode(), 0o600)
-    seed = seed_networks(ROOT / "wifi.conf") if DEV else {}
-    if seed:
-        tree.file("var/lib/audiolink/networks.json", json.dumps(seed, indent=1).encode(), 0o600)
-    print(f"wifi: {len(seed)} pre-saved network(s) from wifi.conf")
 
     add_kmods(tree)
     add_wifi_fw(tree)
