@@ -4,9 +4,11 @@ Like a phone: a network is saved once its password is proven to work (a join or 
 trial, services/wifi_trial.py), and saved networks auto-join when in range, most
 recently used first. A network that was proven but never settled on (a change that
 wasn't kept, services/mode.py) stays saved, so nobody retypes its password, but
-ranks last. Saved entries: credentials, "verified" (when the password last worked)
-and "last_used" (when the Pi last settled on it; 0 = never). The store keeps the
-WPA pre-shared key derived from (password, SSID), never the password itself.
+ranks last. Saved entries: credentials, "verified" (the password has worked) and
+"last_used" (a counter: higher = settled on more recently; 0 = never). A counter, not
+a time: the Pi has no clock of its own, so after a reboot it may think it's 1970.
+The store keeps the WPA pre-shared key derived from (password, SSID), never the
+password itself.
 """
 import binascii
 import hashlib
@@ -205,6 +207,11 @@ class Supplicant:
         return m.group(1) if m else None
 
 
+def _next_use(saved):
+    """The next "last_used" value: above every one so far."""
+    return max([e.get("last_used", 0) for e in saved.values()] + [0]) + 1
+
+
 class WifiManager:
     def __init__(self, store_path):
         self.store_path = store_path
@@ -314,7 +321,7 @@ class WifiManager:
 
     def _remember(self, ssid, ent):
         prev = self.saved.get(ssid, {})
-        self.saved[ssid] = dict(ent, verified=int(time.time()), last_used=prev.get("last_used", 0))
+        self.saved[ssid] = dict(ent, verified=True, last_used=prev.get("last_used", 0))
         self._save()
         if ssid not in self.sup.networks():
             nid = self.sup.add(ssid, self.saved[ssid], 1)
@@ -329,7 +336,7 @@ class WifiManager:
                 return None
             ssid, _ = self.provisional
             self.provisional = None
-            self.saved[ssid]["last_used"] = int(time.time())
+            self.saved[ssid]["last_used"] = _next_use(self.saved)
             self._save()
             self._reprioritize()
             if not self.parked:
@@ -501,7 +508,7 @@ class WifiManager:
                 time.sleep(0.5)
         if ok and ip:
             if save:
-                self.saved[ssid] = dict(ent, verified=int(time.time()), last_used=int(time.time()))
+                self.saved[ssid] = dict(ent, verified=True, last_used=_next_use(self.saved))
                 self._save()
                 self._reprioritize()
                 if not self.parked:

@@ -40,13 +40,10 @@ def _run(*cmd):
 
 
 def _mac():
-    """A locally administered address for the trial interface, distinct from wlan0's."""
-    try:
-        b = bytearray.fromhex(Path("/sys/class/net/%s/address" % IFACE).read_text().strip().replace(":", ""))
-    except (OSError, ValueError):
-        b = bytearray(os.urandom(6))
+    """A fresh, random, locally administered address for each trial: some access points
+    (phone hotspots) ignore DHCP from an address that just left, for a while."""
+    b = bytearray(os.urandom(6))
     b[0] = (b[0] | 0x02) & 0xFE
-    b[5] ^= 0x02
     return ":".join("%02x" % x for x in b)
 
 
@@ -88,9 +85,10 @@ def resolve_a(name, server, source, timeout=3):
 
 def trial(ssid, ent, timeout=20):
     """Join `ssid` (saved-entry fields `ent`) on a second interface and check it.
-    Returns {"ok": True|False|None, "code", "reason", "internet", "freq"}: ok is None
-    when the trial couldn't tell (code "inconclusive"), else code is ok | auth_failed |
-    no_ip | error."""
+    Returns {"ok": True|False|None, "code", "reason", "internet", "freq"}. ok False only
+    when the network is certainly unusable (auth_failed, error); None when the trial
+    couldn't tell (inconclusive, or no_ip: the password works but DHCP didn't answer
+    in time); True: code ok."""
     log.info("wifi trial: trying %r without leaving the current network", ssid)
     _teardown()
     RUN.mkdir(parents=True, exist_ok=True)
@@ -128,11 +126,15 @@ def trial(ssid, ent, timeout=20):
         script = RUN / "dhcp.sh"
         script.write_text(DHCP_SCRIPT)
         os.chmod(script, 0o700)
-        _run("udhcpc", "-i", TRIAL_IFACE, "-f", "-n", "-q", "-t", "4", "-T", "2", "-s", str(script),
-             "-x", "hostname:audiopi")
-        lease = _lease()
+        for _ in range(2):              # DHCP answers do go missing (phone hotspots)
+            _run("udhcpc", "-i", TRIAL_IFACE, "-f", "-n", "-q", "-t", "5", "-T", "2", "-s", str(script),
+                 "-x", "hostname:audiopi")
+            lease = _lease()
+            if lease.get("ip"):
+                break
         if not lease.get("ip"):
-            return _result(False, "no_ip", "associated but got no IP address (DHCP)", freq=freq)
+            # Not proof the network is broken: the real switch (with its fallback) decides.
+            return _result(None, "no_ip", "the password works, but no address came back in time", freq=freq)
         ip, router = lease["ip"], (lease.get("router") or "").split()[:1]
         dns = (lease.get("dns") or "").split()[:1] or router
         own = Supplicant().ip()
@@ -144,7 +146,7 @@ def trial(ssid, ent, timeout=20):
         _run("ip", "route", "add", router[0], "dev", TRIAL_IFACE, "table", TABLE)
         _run("ip", "route", "add", "default", "via", router[0], "dev", TRIAL_IFACE, "table", TABLE)
         _run("ip", "rule", "add", "from", ip, "lookup", TABLE, "priority", RULE_PRIO)
-        net = connectivity(source=ip, resolve=lambda host: resolve_a(host, dns[0], ip))
+        net = _check(ip, dns[0])
         return _result(True, "ok", "joined, got %s, internet %s" % (ip, net["internet"]), freq=freq,
                        internet=net["internet"], portal_url=net.get("portal_url"))
     except Exception as e:
@@ -152,6 +154,24 @@ def trial(ssid, ent, timeout=20):
         return _result(False, "error", str(e))
     finally:
         _teardown(lease)
+
+
+def _check(source, dns):
+    """Internet check through the trial address. Right after joining, the network's
+    DNS (a phone's hotspot relaying to mobile data, say) can be slow to answer the
+    first query: retry, then fall back to a public resolver, then check once more."""
+    def resolve(host):
+        for server, timeout in ((dns, 3), (dns, 3), ("1.1.1.1", 3)):
+            try:
+                return resolve_a(host, server, source, timeout=timeout)
+            except OSError as e:
+                err = e
+        raise err
+    net = connectivity(source=source, resolve=resolve)
+    if net["internet"] == "offline":
+        time.sleep(2)
+        net = connectivity(source=source, resolve=resolve)
+    return net
 
 
 def _lease():
@@ -174,6 +194,11 @@ def _teardown(lease=None):
     if ip:
         _run("ip", "rule", "del", "from", ip, "lookup", TABLE, "priority", RULE_PRIO)
     _run("ip", "route", "flush", "table", TABLE)
+    # Leave properly: an access point that still thinks we're connected can ignore the
+    # next trial from the same address (no DHCP answer) for a while.
+    if (RUN / "wpa.pid").exists():
+        _run("wpa_cli", "-p", str(RUN), "-i", TRIAL_IFACE, "disconnect")
+        time.sleep(0.5)
     try:
         pid = int((RUN / "wpa.pid").read_text())
         os.kill(pid, 15)

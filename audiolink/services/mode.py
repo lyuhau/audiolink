@@ -118,7 +118,7 @@ class ModeService(Service):
             precheck = None
             if current and current != ssid and not ap_channel:
                 precheck = trial(ssid, ent)
-                if precheck["ok"]:
+                if precheck["ok"] or precheck["code"] == "no_ip":
                     self.wifi.remember(ssid, ent)   # the password works: never ask for it again
                 if precheck["ok"] is False:
                     reason = "%s; stayed on %r" % (precheck["reason"], current)
