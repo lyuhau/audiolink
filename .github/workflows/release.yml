@@ -17,8 +17,8 @@ jobs:
   pi:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: {python-version: "3.12"}
       - run: sh fetch_firmware.sh
       - run: python3 build_initramfs.py          # release image (no --dev)
@@ -29,7 +29,7 @@ jobs:
           cp dist/audiolink.pyz "out/audiolink-$V.pyz"
           (cd bootdir && zip -qr "../out/audiolink-pi-$V.zip" .)
           python3 "out/audiolink-$V.pyz" --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with: {name: pi, path: out/*}
 
   macos:
@@ -40,8 +40,8 @@ jobs:
           - {os: macos-15-intel, arch: x86_64}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: {python-version: "3.12"}
       - run: pip install pyinstaller
       - run: python build_bin.py
@@ -52,7 +52,7 @@ jobs:
           cp "dist/audiolink-macos-$(uname -m)" "out/audiolink-$V-macos-${{ matrix.arch }}"
           "out/audiolink-$V-macos-${{ matrix.arch }}" --version
           "out/audiolink-$V-macos-${{ matrix.arch }}" list-devices
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with: {name: "macos-${{ matrix.arch }}", path: out/*}
 
   windows:
@@ -60,8 +60,8 @@ jobs:
     defaults:
       run: {shell: bash}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: {python-version: "3.12"}
       - run: pip install pyinstaller
       - run: python build_bin.py
@@ -72,7 +72,7 @@ jobs:
           cp dist/audiolink.exe "out/audiolink-$V-windows-x64.exe"
           "out/audiolink-$V-windows-x64.exe" --version
           "out/audiolink-$V-windows-x64.exe" list-devices
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with: {name: windows-x64, path: out/*}
 
   release:
@@ -80,7 +80,7 @@ jobs:
     needs: [pi, macos, windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with: {path: out, merge-multiple: true}
       - name: Checksums
         run: cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
