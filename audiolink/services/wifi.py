@@ -43,14 +43,19 @@ def derive_psk(ssid, password):
 CHECK_HOST, CHECK_PATH = "captive.apple.com", "/hotspot-detect.html"
 
 
-def connectivity(timeout=6):
+def connectivity(timeout=6, source=None, resolve=None):
     """Captive-portal check, the way Apple devices do it: fetch a page that says
     "Success" on the open internet. Anything else (a redirect or another page)
-    means a portal is in the way. Redirects are not followed."""
+    means a portal is in the way. Redirects are not followed.
+    source/resolve: check through a particular network (wifi_trial.py): connect from
+    that source address, to the address resolve(CHECK_HOST) returns."""
     import http.client
     try:
-        conn = http.client.HTTPConnection(CHECK_HOST, 80, timeout=timeout)
-        conn.request("GET", CHECK_PATH, headers={"User-Agent": "CaptiveNetworkSupport wispr"})
+        target = resolve(CHECK_HOST) if resolve else CHECK_HOST
+        conn = http.client.HTTPConnection(target, 80, timeout=timeout,
+                                          source_address=(source, 0) if source else None)
+        conn.request("GET", CHECK_PATH, headers={"Host": CHECK_HOST,
+                                                 "User-Agent": "CaptiveNetworkSupport wispr"})
         r = conn.getresponse()
         body = r.read(65536).decode("latin-1", "replace")
         conn.close()
@@ -103,9 +108,103 @@ def security_of(ent):
     return ent.get("security") or ("wpa2" if ent.get("psk") else "open")
 
 
+class Supplicant:
+    """One wpa_supplicant instance, through wpa_cli: the Pi's Wi-Fi (wlan0), or a
+    short-lived trial connection on a second interface (services/wifi_trial.py)."""
+
+    def __init__(self, iface=IFACE, ctrl=None):
+        self.iface, self.ctrl = iface, ctrl
+
+    def wpa(self, *args):
+        cmd = ["wpa_cli"] + (["-p", self.ctrl] if self.ctrl else []) + ["-i", self.iface]
+        r = subprocess.run(cmd + [str(a) for a in args], capture_output=True, text=True, timeout=10)
+        out = r.stdout.strip()
+        if r.returncode != 0 or out.startswith("FAIL"):
+            raise RuntimeError("wpa_cli %s: %s" % (args[0], out or r.stderr.strip() or "failed"))
+        return out
+
+    def status(self):
+        st = {}
+        for line in self.wpa("status").splitlines():
+            k, _, v = line.partition("=")
+            st[k] = v
+        return st
+
+    def networks(self):
+        """{ssid: network id} for networks configured in wpa_supplicant."""
+        nets = {}
+        for line in self.wpa("list_networks").splitlines()[1:]:
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                nets[parts[1]] = int(parts[0])
+        return nets
+
+    def flags(self, nid):
+        for line in self.wpa("list_networks").splitlines()[1:]:
+            parts = line.split("\t")
+            if parts[0] == str(nid):
+                return parts[3] if len(parts) > 3 else ""
+        return ""
+
+    def add(self, ssid, ent, priority):
+        nid = int(self.wpa("add_network").splitlines()[-1])
+        self.wpa("set_network", nid, "ssid", binascii.hexlify(ssid.encode()).decode())
+        sec = security_of(ent)
+        if sec == "open":
+            self.wpa("set_network", nid, "key_mgmt", "NONE")
+        elif sec == "owe":
+            self.wpa("set_network", nid, "key_mgmt", "OWE")
+            self.wpa("set_network", nid, "ieee80211w", 2)
+        elif sec in ("wpa2", "wpa2/wpa3"):
+            self.wpa("set_network", nid, "psk", ent["psk"])
+        elif sec == "wpa3":
+            self.wpa("set_network", nid, "key_mgmt", "SAE")
+            self.wpa("set_network", nid, "ieee80211w", 2)
+            # Hex form: any bytes work, including quotes, newlines and non-ASCII.
+            self.wpa("set_network", nid, "sae_password",
+                     binascii.hexlify(ent["sae_password"].encode()).decode())
+        if ent.get("hidden"):
+            self.wpa("set_network", nid, "scan_ssid", 1)
+        self.wpa("set_network", nid, "priority", priority)
+        return nid
+
+    def associate(self, nid, ssid, keyed, timeout):
+        """Wait for network nid to connect. Returns (outcome, states seen), outcome
+        "ok", "bad_key" (a handshake happened and failed), "refused" (wpa_supplicant
+        gave up without ever associating) or "timeout"."""
+        seen, deadline, prev = set(), time.monotonic() + timeout, None
+        while time.monotonic() < deadline:
+            st = self.status()
+            state = st.get("wpa_state")
+            seen.add(state)
+            if state == "COMPLETED" and st.get("ssid") == ssid:
+                return "ok", seen
+            # This chip checks the password in firmware: a wrong one shows up only as an
+            # association that falls back to scanning (~5 s). Call it on the first one
+            # rather than waiting ~20 s for wpa_supplicant's TEMP-DISABLED; a rare
+            # transient failure just means re-submitting.
+            if keyed and prev == "ASSOCIATING" and state in ("SCANNING", "DISCONNECTED"):
+                return "bad_key", seen
+            prev = state
+            # wpa_supplicant temporarily disables a network after repeated failures: failed
+            # handshakes (a wrong key) if it ever got as far as associating, else refusals.
+            if "TEMP-DISABLED" in self.flags(nid):
+                tried = seen & {"ASSOCIATING", "ASSOCIATED", "4WAY_HANDSHAKE", "GROUP_HANDSHAKE"}
+                return ("bad_key" if keyed and tried else "refused"), seen
+            time.sleep(0.5)
+        return "timeout", seen
+
+    def ip(self):
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show", self.iface], capture_output=True,
+                             text=True).stdout
+        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out)
+        return m.group(1) if m else None
+
+
 class WifiManager:
     def __init__(self, store_path):
         self.store_path = store_path
+        self.sup = Supplicant()
         self.lock = threading.Lock()          # one operation at a time
         self.saved = self._load()
         self._scan_cache = (0.0, [])
@@ -113,6 +212,7 @@ class WifiManager:
         self.internet = None                        # last connectivity state, with "ssid"
         self.provisional = None                     # (ssid, entry) joined but not yet confirmed
         self._last_demand = 0.0
+        self.parked = False                         # setup network up (park/unpark)
         threading.Thread(target=self._load_into_supplicant, daemon=True).start()
         threading.Thread(target=self._monitor, daemon=True).start()
 
@@ -127,66 +227,6 @@ class WifiManager:
     def _save(self):
         save_json(self.store_path, self.saved, indent=1)
 
-    # ---- wpa_cli
-    def _wpa(self, *args):
-        r = subprocess.run(["wpa_cli", "-i", IFACE] + [str(a) for a in args],
-                           capture_output=True, text=True, timeout=10)
-        out = r.stdout.strip()
-        if r.returncode != 0 or out.startswith("FAIL"):
-            raise RuntimeError("wpa_cli %s: %s" % (args[0], out or r.stderr.strip() or "failed"))
-        return out
-
-    def _status(self):
-        st = {}
-        for line in self._wpa("status").splitlines():
-            k, _, v = line.partition("=")
-            st[k] = v
-        return st
-
-    def _networks(self):
-        """{ssid: network id} for networks configured in wpa_supplicant."""
-        nets = {}
-        for line in self._wpa("list_networks").splitlines()[1:]:
-            parts = line.split("\t")
-            if len(parts) >= 2:
-                nets[parts[1]] = int(parts[0])
-        return nets
-
-    def _flags(self, nid):
-        for line in self._wpa("list_networks").splitlines()[1:]:
-            parts = line.split("\t")
-            if parts[0] == str(nid):
-                return parts[3] if len(parts) > 3 else ""
-        return ""
-
-    def _add(self, ssid, ent, priority):
-        nid = int(self._wpa("add_network").splitlines()[-1])
-        self._wpa("set_network", nid, "ssid", binascii.hexlify(ssid.encode()).decode())
-        sec = security_of(ent)
-        if sec == "open":
-            self._wpa("set_network", nid, "key_mgmt", "NONE")
-        elif sec == "owe":
-            self._wpa("set_network", nid, "key_mgmt", "OWE")
-            self._wpa("set_network", nid, "ieee80211w", 2)
-        elif sec in ("wpa2", "wpa2/wpa3"):
-            self._wpa("set_network", nid, "psk", ent["psk"])
-        elif sec == "wpa3":
-            self._wpa("set_network", nid, "key_mgmt", "SAE")
-            self._wpa("set_network", nid, "ieee80211w", 2)
-            # Hex form: any bytes work, including quotes, newlines and non-ASCII.
-            self._wpa("set_network", nid, "sae_password",
-                      binascii.hexlify(ent["sae_password"].encode()).decode())
-        if ent.get("hidden"):
-            self._wpa("set_network", nid, "scan_ssid", 1)
-        self._wpa("set_network", nid, "priority", priority)
-        return nid
-
-    def _ip(self):
-        out = subprocess.run(["ip", "-4", "-o", "addr", "show", IFACE], capture_output=True,
-                             text=True).stdout
-        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out)
-        return m.group(1) if m else None
-
     def _restart_dhcp(self):
         subprocess.run(["killall", "-q", "udhcpc"])
         subprocess.run(["ip", "addr", "flush", "dev", IFACE])
@@ -195,15 +235,15 @@ class WifiManager:
     def _reprioritize(self):
         """Most recently used saved network gets the highest priority."""
         order = sorted(self.saved, key=lambda s: self.saved[s].get("last_used", 0))
-        nets = self._networks()
+        nets = self.sup.networks()
         for prio, ssid in enumerate(order, 1):
             if ssid in nets:
-                self._wpa("set_network", nets[ssid], "priority", prio)
+                self.sup.wpa("set_network", nets[ssid], "priority", prio)
 
     def _load_into_supplicant(self):
         for _ in range(60):                   # wpa_supplicant starts after us at boot
             try:
-                self._wpa("ping")
+                self.sup.wpa("ping")
                 break
             except Exception:
                 time.sleep(1)
@@ -211,18 +251,18 @@ class WifiManager:
             log.warning("wifi: wpa_supplicant not running; Wi-Fi management unavailable")
             return
         with self.lock:
-            existing = self._networks()
+            existing = self.sup.networks()
             for ssid, ent in self.saved.items():
                 if ssid not in existing:
-                    self._add(ssid, ent, 1)
+                    self.sup.add(ssid, ent, 1)
             self._reprioritize()
-            self._wpa("enable_network", "all")
+            self.sup.wpa("enable_network", "all")
         log.info("wifi: %d saved network(s) loaded", len(self.saved))
 
     # ---- connectivity monitor (portal logins expire; networks come and go)
     def _probe(self):
-        st = self._status()
-        ip = self._ip()
+        st = self.sup.status()
+        ip = self.sup.ip()
         if st.get("wpa_state") != "COMPLETED" or not ip:
             return {"internet": "offline", "ssid": None, "detail": "not connected"}
         return dict(connectivity(), ssid=st.get("ssid"))
@@ -272,7 +312,8 @@ class WifiManager:
             self.saved[ssid] = ent
             self._save()
             self._reprioritize()
-            self._wpa("enable_network", "all")
+            if not self.parked:
+                self.sup.wpa("enable_network", "all")
             log.info("wifi: %r confirmed and saved", ssid)
             return ssid
 
@@ -283,10 +324,14 @@ class WifiManager:
                 return
             ssid, _ = self.provisional
             self.provisional = None
-            nid = self._networks().get(ssid)
+            nid = self.sup.networks().get(ssid)
             if nid is not None and ssid not in self.saved:
-                self._wpa("remove_network", nid)
-            self._wpa("enable_network", "all")
+                self.sup.wpa("remove_network", nid)
+            if self.parked:
+                self.sup.wpa("disconnect")
+                subprocess.run(["killall", "-q", "udhcpc"])
+                subprocess.run(["ip", "addr", "flush", "dev", IFACE])
+            self._settle()
 
     def last_scan(self):
         """(age in seconds, results) of the last scan; age is huge if there wasn't one."""
@@ -295,46 +340,52 @@ class WifiManager:
 
     def current_ssid(self):
         try:
-            st = self._status()
+            st = self.sup.status()
         except Exception:
             return None
         return st.get("ssid") if st.get("wpa_state") == "COMPLETED" else None
 
-    # ---- handing the radio to the setup network (services/setup_ap.py) and back
+    # ---- while the setup network is up (services/setup_ap.py)
     def associated(self):
         """True while connected to a Wi-Fi network as a client."""
         try:
-            return self._status().get("wpa_state") == "COMPLETED"
+            return self.sup.status().get("wpa_state") == "COMPLETED"
         except Exception:
             return False
 
-    def suspend(self):
-        """Stop client-mode Wi-Fi (wpa_supplicant, DHCP) so the radio can be used
-        for something else."""
+    def park(self):
+        """Keep wpa_supplicant running but connect to nothing on our own: the setup
+        network shares the radio, and joining a network on another channel would drag
+        it along (breaking its clients). join() still works while parked."""
         with self.lock:
-            subprocess.run(["killall", "-q", "udhcpc"])
+            self.parked = True
             try:
-                self._wpa("terminate")
-            except Exception:
-                pass
-            for _ in range(50):         # terminate is asynchronous: wait until it lets go
-                if subprocess.run(["pidof", "wpa_supplicant"], capture_output=True).returncode != 0:
-                    break
-                time.sleep(0.1)
-            else:
-                subprocess.run(["killall", "-q", "-9", "wpa_supplicant"])
+                self.sup.wpa("disable_network", "all")
+                self.sup.wpa("disconnect")
+            except Exception as e:
+                log.warning("wifi: park: %s", e)
+            subprocess.run(["killall", "-q", "udhcpc"])
             subprocess.run(["ip", "addr", "flush", "dev", IFACE])
-        self._set_internet({"internet": "offline", "ssid": None, "detail": "Wi-Fi suspended"})
-        log.info("wifi: client mode suspended")
+        self._set_internet({"internet": "offline", "ssid": None, "detail": "setup network up"})
+        log.info("wifi: parked (setup network up)")
 
-    def resume(self):
-        """Back to client mode: restart wpa_supplicant with the saved networks, and DHCP."""
-        subprocess.run(["ip", "addr", "flush", "dev", IFACE])
-        subprocess.run(SUPPLICANT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self._load_into_supplicant()
+    def unpark(self):
+        """Back to normal: saved networks auto-join again."""
         with self.lock:
+            self.parked = False
+            self._settle()
+        log.info("wifi: back to the saved networks")
+
+    def _settle(self):
+        """After an operation: let saved networks auto-join, unless parked."""
+        if self.parked:
+            if not self.provisional and not self.associated():
+                self.sup.wpa("disable_network", "all")
+            return
+        self.sup.wpa("enable_network", "all")
+        if not self.associated():
+            self.sup.wpa("reassociate")
             self._restart_dhcp()
-        log.info("wifi: client mode resumed")
 
     # ---- operations (called from control requests)
     def handle(self, op, args):
@@ -350,10 +401,17 @@ class WifiManager:
         max_age > 0 reuses results that are at most that many seconds old."""
         at, results = self._scan_cache
         if not (max_age and time.monotonic() - at <= max_age):
-            self._wpa("scan")
+            for attempt in range(5):
+                try:
+                    self.sup.wpa("scan")
+                    break
+                except RuntimeError as e:       # FAIL-BUSY: a scan or connection attempt is running
+                    if "BUSY" not in str(e) or attempt == 4:
+                        raise
+                    time.sleep(1)
             time.sleep(4)
             best = {}
-            for line in self._wpa("scan_results").splitlines()[1:]:
+            for line in self.sup.wpa("scan_results").splitlines()[1:]:
                 parts = line.split("\t")
                 if len(parts) < 5:
                     continue
@@ -368,15 +426,21 @@ class WifiManager:
             self._scan_cache = (time.monotonic(), results)
         return [dict(n, saved=n["ssid"] in self.saved) for n in results]
 
+    def _scan_or_cached(self):
+        try:
+            return self.scan()
+        except RuntimeError:
+            return self._scan_cache[1]
+
     def check(self):
         state = self._probe()
         self._set_internet(state)
         return state
 
     def status(self):
-        st = self._status()
+        st = self.sup.status()
         connected = st.get("wpa_state") == "COMPLETED"
-        ip = self._ip()
+        ip = self.sup.ip()
         return dict({"state": st.get("wpa_state"), "ssid": st.get("ssid") if connected else None,
                      "freq": int(st["freq"]) if connected and st.get("freq") else None,
                      "ip": ip, "saved": sorted(self.saved)},
@@ -402,40 +466,19 @@ class WifiManager:
                 raise ValueError("security type required")
             ent = credentials(ssid, security, password)
             ent["hidden"] = bool(hidden)
-        prev = self._networks().get(ssid)
+        prev = self.sup.networks().get(ssid)
         if prev is not None:
-            self._wpa("remove_network", prev)
-        nid = self._add(ssid, ent, 1000)
-        self._wpa("select_network", nid)      # try only this one for now
-        seen, deadline = set(), time.monotonic() + timeout
-        ok = bad_key = False
+            self.sup.wpa("remove_network", prev)
+        nid = self.sup.add(ssid, ent, 1000)
+        self.sup.wpa("select_network", nid)      # try only this one for now
         keyed = security_of(ent) not in ("open", "owe")
-        prev = None
-        while time.monotonic() < deadline:
-            st = self._status()
-            state = st.get("wpa_state")
-            seen.add(state)
-            if state == "COMPLETED" and st.get("ssid") == ssid:
-                ok = True
-                break
-            # This chip checks the password in firmware: a wrong one shows up only as an
-            # association that falls back to scanning (~5 s). Call it on the first one
-            # rather than waiting ~20 s for wpa_supplicant's TEMP-DISABLED; a rare
-            # transient failure just means re-submitting.
-            if keyed and prev == "ASSOCIATING" and state in ("SCANNING", "DISCONNECTED"):
-                bad_key = True
-                break
-            prev = state
-            # After failed handshakes wpa_supplicant temporarily disables the network.
-            if "TEMP-DISABLED" in self._flags(nid):
-                bad_key = True
-                break
-            time.sleep(0.5)
+        outcome, seen = self.sup.associate(nid, ssid, keyed, timeout)
+        ok, bad_key = outcome == "ok", outcome == "bad_key"
         ip = None
         if ok:
             self._restart_dhcp()
             for _ in range(30):
-                ip = self._ip()
+                ip = self.sup.ip()
                 if ip:
                     break
                 time.sleep(0.5)
@@ -445,7 +488,8 @@ class WifiManager:
                 self.saved[ssid] = ent
                 self._save()
                 self._reprioritize()
-                self._wpa("enable_network", "all")
+                if not self.parked:
+                    self.sup.wpa("enable_network", "all")
                 log.info("wifi: joined and saved %r (%s)", ssid, ip)
             else:
                 self.provisional = (ssid, ent)
@@ -455,17 +499,15 @@ class WifiManager:
             return dict(conn, joined=True, ip=ip, security=security_of(ent))
 
         # Failed: drop the attempt and go back to the saved networks.
-        self._wpa("remove_network", nid)
+        self.sup.wpa("remove_network", nid)
         if ssid in self.saved:
-            self._add(ssid, self.saved[ssid], 1)
+            self.sup.add(ssid, self.saved[ssid], 1)
             self._reprioritize()
-        self._wpa("enable_network", "all")
-        self._wpa("reassociate")
-        self._restart_dhcp()
+        self._settle()
         sec = security_of(ent)
         if ok:
             code, reason = "no_ip", "associated but got no IP address (DHCP)"
-        elif not ent.get("hidden") and not any(n["ssid"] == ssid for n in self.scan()):
+        elif not ent.get("hidden") and not any(n["ssid"] == ssid for n in self._scan_or_cached()):
             code, reason = "not_found", "network not found (the Pi only sees 2.4 GHz networks)"
         elif bad_key or "4WAY_HANDSHAKE" in seen:
             code, reason = "auth_failed", "authentication failed (wrong password?)"
@@ -473,7 +515,7 @@ class WifiManager:
                 reason += "; WPA3 on this Pi's Wi-Fi chip is unverified"
         else:
             code, reason = "timeout", "timed out associating"
-        log.warning("wifi: join %r failed: %s", ssid, reason)
+        log.warning("wifi: join %r failed: %s (%s; states %s)", ssid, reason, outcome, ",".join(sorted(seen)))
         return {"joined": False, "ssid": ssid, "code": code, "reason": reason}
 
     def forget(self, ssid):
@@ -481,9 +523,9 @@ class WifiManager:
             raise ValueError("%r is not a saved network" % ssid)
         del self.saved[ssid]
         self._save()
-        nid = self._networks().get(ssid)
+        nid = self.sup.networks().get(ssid)
         if nid is not None:
-            self._wpa("remove_network", nid)
+            self.sup.wpa("remove_network", nid)
         return {"forgotten": ssid}
 
 
@@ -509,5 +551,5 @@ class WifiService(Service):
     def connection(self):
         """{"ip", "ssid", "internet"} as last seen (no network calls)."""
         state = self.manager.internet or {}
-        return {"ip": self.manager._ip(), "ssid": state.get("ssid"),
+        return {"ip": self.manager.sup.ip(), "ssid": state.get("ssid"),
                 "internet": state.get("internet", "offline")}

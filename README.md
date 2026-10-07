@@ -21,7 +21,9 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
   the code never crosses the network).
 - **Wi-Fi managed from the host,** including captive portals (logged in from a
   browser that browses *as the Pi*), and a setup network the Pi creates when it
-  has nowhere else to go. Changes made over the network are confirm-or-revert.
+  has nowhere else to go. Changes made over the network are tried first without
+  leaving the current network (a wrong password is refused on the spot), then
+  confirm-or-revert; from the setup network, the Pi joins while keeping it up.
 - **Pure standard-library Python;** the only native code is the bundled PortAudio.
 
 > Status: early. Tested with macOS hosts and a Pi Zero 2 W booting from an SD card

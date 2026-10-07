@@ -58,13 +58,25 @@ def change_command(a):
         if a.confirm_by == "me":
             token = os.urandom(12).hex()
             details["token_hash"] = hashlib.sha256(token.encode()).hexdigest()
+        print("asking %s to try %r (this can take up to half a minute)..." % (entry["alias"], a.name), flush=True)
+        conn.sock.settimeout(90)        # the Pi tries the network before answering
         r = conn.ask_auth("change_wifi", hello, secret, sealed=details)
     finally:
         conn.close()
     if "error" in r:
         raise SystemExit("%s refused: %s" % (entry["alias"], r["error"]))
-    print("%s accepted: switching to %r in %ds. If it can't be reached there within %d s, it goes back"
-          " to the %s." % (entry["alias"], a.name, r["switch_in"], r["confirm_within"], r["fallback"]))
+    pre = r.get("precheck") or {}
+    if r.get("joined"):
+        print("%s joined %r (%s, internet %s) and keeps its setup network up for now." % (
+            entry["alias"], a.name, r.get("ip"), r.get("internet") or "unknown"))
+        print("If nobody reaches it on %r within %d s, it leaves %r again." % (a.name, r["confirm_within"], a.name))
+    else:
+        if pre.get("ok"):
+            print("tried %r without leaving: %s." % (a.name, pre["reason"]))
+        elif pre:
+            print("couldn't try %r ahead of time (%s); switching anyway." % (a.name, pre["reason"]))
+        print("%s accepted: switching to %r in %ds. If it can't be reached there within %d s, it goes back"
+              " to the %s." % (entry["alias"], a.name, r["switch_in"], r["confirm_within"], r["fallback"]))
     if a.confirm_by == "any":
         print("any paired machine on %r can confirm it: audiolink wifi confirm %s" % (a.name, entry["alias"]))
         return
@@ -83,10 +95,12 @@ def _await_and_confirm(entry, secret, token, at, deadline):
                 st = conn.ask_auth("change_status", hello, secret)
                 if st.get("pending") and st["pending"]["phase"] == "awaiting confirmation":
                     r = conn.ask_auth("confirm", hello, secret, sealed={"token": token or ""})
-                    if "error" in r:
-                        raise SystemExit("couldn't confirm: %s" % r["error"])
-                    print("reached %s on %r and confirmed: it keeps this network." % (entry["alias"], r["kept"]))
-                    return
+                    # retry: reached it over its setup network, not the new one; keep looking
+                    if not r.get("retry"):
+                        if "error" in r:
+                            raise SystemExit("couldn't confirm: %s" % r["error"])
+                        print("reached %s on %r and confirmed: it keeps this network." % (entry["alias"], r["kept"]))
+                        return
                 if not st.get("pending") and st.get("last"):
                     last = st["last"]
                     if last["ok"]:
