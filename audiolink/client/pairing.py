@@ -16,6 +16,7 @@ import time
 from ..crypto import Spake2, open_sealed
 from ..discovery.record import parse_code
 from . import keyring
+from ..ui import detail
 
 PORT = 47900
 SETUP_ADDR = "192.168.4.1"          # where the Pi sits on its own setup network
@@ -135,15 +136,16 @@ def pair(conn, code=None, client_name="audiolink"):
     try:
         key, ours, theirs = a.finish(bytes.fromhex(r["msg"]))
     except ValueError:
-        raise SystemExit("the Pi sent a malformed pairing message")
+        raise SystemExit("Pairing failed: the Pi's answer didn't make sense. Try again.")
     r = conn.ask({"confirm": ours.hex()})
     if "error" in r:
         raise SystemExit(r["error"])
     if not hmac.compare_digest(bytes.fromhex(r.get("confirm", "")), theirs):
-        raise SystemExit("the Pi didn't prove it knows the code (someone in the middle?)")
+        raise SystemExit("Pairing stopped: the device that answered couldn't prove it's the Pi you meant\n"
+                         "(it didn't know the code). Make sure you're adding the right Pi, and try again.")
     payload = open_sealed(key, bytes.fromhex(r["payload"]))
     if payload is None:
-        raise SystemExit("pairing payload didn't decrypt")
+        raise SystemExit("Pairing failed: the Pi's reply couldn't be read. Try again.")
     return json.loads(payload)
 
 
@@ -152,10 +154,10 @@ def request_code(conn, hello, code):
     _, secret = parse_code(code)
     r = conn.ask_auth("new_code", hello, secret)
     if "error" in r:
-        raise SystemExit("the Pi refused: %s" % r["error"])
+        raise SystemExit("The Pi said no: %s" % r["error"])
     issued = open_sealed(secret, bytes.fromhex(r["sealed"]))
     if issued is None:
-        raise SystemExit("couldn't read the Pi's reply (stale code for it?)")
+        raise SystemExit("Couldn't read the Pi's reply. Its code on this computer may be out of date.")
     return json.loads(issued)
 
 
@@ -173,25 +175,25 @@ def add_over_network(a, ask):
     if len(new) == 1:
         conn, hello = new[0]
     else:
-        conn, hello = ask.choose("Pis found on the network:", [
-            ("%s [%s] at %s%s" % (h["name"], h["tag"], c.ip, "" if h["claimed"] else "  (unclaimed)"), (c, h))
+        conn, hello = ask.choose("Found these Pis on the network. Which one?", [
+            ("%s%s" % (h["name"], "" if h["claimed"] else "  (new: nobody has added it yet)"), (c, h))
             for c, h in new])
     try:
+        detail("%s, tag %s, at %s", hello["name"], hello["tag"], conn.ip)
         if hello["claimed"]:
-            print("%s [%s] at %s is claimed; get a pairing code on its host or any machine that knows it:"
-                  % (hello["name"], hello["tag"], conn.ip))
-            print("  audiolink pairing code %s" % hello["name"])
-            code = (a.pairing_code or ask.text("pairing code: ")).strip().replace(" ", "")
+            print("Found %s. It already belongs to someone, so you need a pairing code from a computer" % hello["name"])
+            print("that knows it. On that computer, run:  audiolink pairing code %s" % hello["name"])
+            code = (a.pairing_code or ask.text("Pairing code: ")).strip().replace(" ", "")
             result = pair(conn, code, client_name=socket.gethostname())
         else:
-            if not ask.yes("%s [%s] at %s is unclaimed. Claim it (you'll be its first machine)?"
-                           % (hello["name"], hello["tag"], conn.ip), default=True):
-                raise SystemExit("not added")
+            if not ask.yes("Found %s, which nobody has added yet. Add it? (This computer becomes its first.)"
+                           % hello["name"], default=True):
+                raise SystemExit("Not added.")
             result = pair(conn, None, client_name=socket.gethostname())
     finally:
         conn.close()
     entry, created = keyring.upsert(result["code"], name=result["name"], alias=a.name)
-    print("%s %s over the network" % ("added" if created else "refreshed", entry["alias"]))
+    print(("Added %s." if created else "%s was already added; updated its details.") % entry["alias"])
     return entry
 
 
@@ -201,7 +203,7 @@ def code_command(a):
     try:
         entry = keyring.resolve(a.pi)
     except KeyError:
-        raise SystemExit("no Pi called %r here; see: audiolink pis" % a.pi)
+        raise SystemExit("You don't have a Pi called %s. To see yours: audiolink pis" % a.pi)
     pub = keyring.pub_of(entry["code"])
     port = getattr(a, "control_port", None) or DEFAULT_PORT
     issued = None
@@ -218,8 +220,7 @@ def code_command(a):
             finally:
                 conn.close()
     if issued is None:
-        raise SystemExit("couldn't reach %s (not plugged in here, and not found on this network)"
-                         % entry["alias"])
-    print("pairing code for %s: %s %s  (valid %d min, one use)"
-          % (entry["alias"], issued["code"][:3], issued["code"][3:], issued["expires_in"] // 60))
-    print("on the new machine: audiolink add")
+        raise SystemExit("Can't reach %s: it isn't plugged in here or on this network." % entry["alias"])
+    print("Pairing code for %s:  %s %s" % (entry["alias"], issued["code"][:3], issued["code"][3:]))
+    print("On the new computer, run `audiolink add` and type this code. It works once, within %d minutes."
+          % (issued["expires_in"] // 60))

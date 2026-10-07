@@ -81,20 +81,20 @@ class PairingService(Service):
         with self.lock:
             wait = self.blocked_until - time.monotonic()
             if wait > 0:
-                conn.send({"error": "too many failed attempts; try again in %d s" % wait})
+                conn.send({"error": "Too many wrong codes. Try again in %d seconds." % wait})
                 raise StopIteration
             claimed = self.identity.data["claimed"]
             c = self._active_code() if claimed else None
             if claimed and not c:
-                conn.send({"error": "no pairing code is active; on the host or a paired machine run: "
-                                    "audiolink pairing code %s" % self.identity.data["name"]})
+                conn.send({"error": "%s needs a pairing code first. On a computer that already knows it, run: "
+                                    "audiolink pairing code %s" % ((self.identity.data["name"],) * 2)})
                 raise StopIteration
             password = c["code"] if c else ""
         b = Spake2("B", password, ID_CLIENT, ID_PI)
         try:
             key, ours, theirs = b.finish(bytes.fromhex(req["msg"]))
         except ValueError:
-            conn.send({"error": "bad message"})
+            conn.send({"error": "The request didn't make sense."})
             raise StopIteration
         conn.send({"msg": b.msg.hex()})
         confirm = bytes.fromhex(conn.recv().get("confirm", ""))
@@ -105,7 +105,7 @@ class PairingService(Service):
                 if c:
                     c["tries"] -= 1
                 log.warning("pairing: wrong code from %s (%d tries left)", conn.addr[0], c["tries"] if c else 0)
-                conn.send({"error": "wrong code"})
+                conn.send({"error": "That code isn't right."})
                 raise StopIteration
             self.failures = 0
             if c:

@@ -15,23 +15,35 @@ import time
 from ..services import Service
 from ..paths import cache_dir
 from .control import call
+from ..ui import detail
 
 log = logging.getLogger("audiolink")
+
+
+def _pi(port=None, peer=None):
+    """The plugged-in Pi's name, for messages."""
+    try:
+        peer = peer or call("peer", port=port)
+        return ((peer.get("peer") or {}).get("identity") or {}).get("name") or "the Pi"
+    except SystemExit:
+        return "the Pi"
 
 
 def offer_portal(a, port, wait=True):
     """A captive portal is in the way: open the login page if asked to (--portal) or
     if the user says yes; otherwise say how to do it later. Returns True if opened."""
     if getattr(a, "no_portal", False) or (not getattr(a, "portal", False) and not sys.stdin.isatty()):
-        print("this network has a login page (captive portal); open it with: audiolink wifi portal")
+        print("This network wants you to sign in before it gives %s internet.\n"
+              "To sign in from this computer: audiolink wifi portal" % _pi(port))
         return False
     if not getattr(a, "portal", False):
         try:
-            ans = input("this network has a login page (captive portal). Open it now? [Y/n] ")
+            ans = input("This network wants you to sign in before it gives %s internet.\n"
+                        "Open the sign-in page now? [Y/n] " % _pi(port))
         except EOFError:
             ans = "n"
         if ans.strip().lower().startswith("n"):
-            print("ok; open it later with: audiolink wifi portal")
+            print("OK. To sign in later: audiolink wifi portal")
             return False
     portal_flow(port, wait=wait)
     return True
@@ -75,45 +87,47 @@ def portal_flow(port, wait=True):
     polls until the Pi is online; the daemon uses wait=False (its connectivity
     events report when the Pi gets online)."""
     peer = call("peer", port=port)
+    pi = _pi(peer=peer)
     if "proxy" not in (peer["peer"] or {}).get("caps", []):
-        raise SystemExit("this Pi's audiolink can't proxy a browser (update it)")
+        raise SystemExit("%s's audiolink is too old for signing in to networks from here; update it." % pi)
     if not peer.get("proxy_port"):
-        raise SystemExit("the host was started with --proxy-port 0; restart it with a proxy port")
+        raise SystemExit("audiolink host was started with --proxy-port 0, which turns this off. "
+                         "Restart it without that.")
     st = call("wifi.status", port=port)
     if not st["ssid"]:
-        raise SystemExit("the Pi isn't on a Wi-Fi network; join one first (audiolink wifi)")
+        raise SystemExit("%s isn't on a Wi-Fi network. Pick one first: audiolink wifi" % pi)
     r = call("wifi.check", port=port)
     if r["internet"] == "online":
-        print("the Pi is already online on %r; no login needed" % st["ssid"])
+        print("%s is already online on %s. There's nothing to sign in to." % (pi, st["ssid"]))
         return
     if r["internet"] == "offline":
-        print("the Pi gets no response from the internet on %r (%s); trying the login page anyway"
-              % (st["ssid"], r.get("detail", "")))
+        print("%s gets no answer from the internet on %s. Trying the sign-in page anyway." % (pi, st["ssid"]))
+        detail("%s", r.get("detail", ""))
     url = r.get("portal_url") or "http://captive.apple.com/hotspot-detect.html"
     call("portal_active", port=port)        # the login window's own requests aren't "demand"
     browser = _open_browser(url, peer["proxy_port"])
     if browser:
-        print("opened a separate %s window that browses as the Pi." % browser)
-        print("log in to %r there; your normal browser and network settings are untouched." % st["ssid"])
+        print("Opened a separate %s window that browses through %s." % (browser, pi))
+        print("Sign in to %s there. Your usual browser and this computer's network aren't affected." % st["ssid"])
+        detail("page %s through the proxy at 127.0.0.1:%d", url, peer["proxy_port"])
     else:
-        print("no Chrome/Edge/Brave found. In any browser, set an HTTP proxy of 127.0.0.1:%d"
-              % peer["proxy_port"])
-        print("(that browses as the Pi), then open: %s" % url)
+        print("I couldn't find Chrome, Edge or Brave. In another browser, set its HTTP proxy to")
+        print("127.0.0.1:%d (that browses through %s), then open: %s" % (peer["proxy_port"], pi, url))
     if not wait:
         return
-    print("waiting for the Pi to get online (Ctrl-C to stop waiting)...", flush=True)
+    print("Waiting for %s to get online (Ctrl-C to stop waiting)..." % pi, flush=True)
     deadline = time.monotonic() + 15 * 60
     try:
         while time.monotonic() < deadline:
             time.sleep(3)
             call("portal_active", port=port)
             if call("wifi.check", port=port)["internet"] == "online":
-                print("the Pi is online. You can close that browser window.")
+                print("%s is online. You can close that browser window." % pi)
                 return
     except KeyboardInterrupt:
         print()
-        raise SystemExit("stopped waiting; check later with: audiolink wifi status")
-    raise SystemExit("still not online after 15 minutes")
+        raise SystemExit("Stopped waiting. To check later: audiolink wifi status")
+    raise SystemExit("%s still isn't online after 15 minutes." % pi)
 
 
 class PortalWatcher(Service):
@@ -153,7 +167,7 @@ class PortalWatcher(Service):
             prev, self.state = self.state, data
             if data["internet"] == "online":
                 if prev and prev["internet"] != "online":
-                    log.info("the Pi is online%s", " on %r" % data["ssid"] if data.get("ssid") else "")
+                    log.info("%s is online%s", self._name(), " on %s" % data["ssid"] if data.get("ssid") else "")
                 self.declined = False
             elif data["internet"] == "portal" and self.ready and \
                     not (prev and prev["internet"] == "portal" and prev.get("ssid") == data.get("ssid")):
@@ -164,14 +178,18 @@ class PortalWatcher(Service):
                 return                          # it's the login window itself
             self._portal_blocking(first=False)
 
+    def _name(self):
+        return _pi(peer={"peer": self.session.peer_info})
+
     def _portal_blocking(self, first, expired=False):
         ssid = self.state.get("ssid")
+        pi = self._name()
         if first:
-            log.warning("the Pi's Wi-Fi %r %s a captive portal login", ssid,
-                        "login expired; it needs" if expired else "needs")
+            log.warning("%s needs you to sign in to %s%s before it gets internet", pi, ssid,
+                        " again (the sign-in expired)" if expired else "")
         else:
-            log.warning("something needs the Pi's internet, but %r is waiting for a captive portal "
-                        "login; run: audiolink wifi portal", ssid)
+            log.warning("something needs %s's internet, but %s is waiting for you to sign in: "
+                        "audiolink wifi portal", pi, ssid)
         # Ask when it first happens; after a "no", ask again only on demand.
         if not self.interactive or (first and self.declined) or (not first and not self.declined):
             return
@@ -180,13 +198,13 @@ class PortalWatcher(Service):
         self.gate.pause()
         try:
             try:
-                ans = input("open the login page for %r now? [Y/n] " % ssid)
+                ans = input("Open the sign-in page for %s now? [Y/n] " % ssid)
             except EOFError:
                 ans = "n"
             if ans.strip().lower().startswith("n"):
                 self.declined = True
-                print("ok; open it later with: audiolink wifi portal (I'll ask again when "
-                      "something needs the Pi's internet)", flush=True)
+                print("OK. To sign in later: audiolink wifi portal (I'll ask again when something "
+                      "needs %s's internet)" % pi, flush=True)
             else:
                 self.declined = False
                 try:

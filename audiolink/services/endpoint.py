@@ -100,7 +100,7 @@ class Endpoint:
                     expected = proof_for(self.identity.keys()[1], op, conn.nonce)
                     if not self.identity.data["claimed"] or \
                             not hmac.compare_digest(expected, req.get("proof", "")):
-                        conn.send({"error": "not allowed (pair with this Pi first)"})
+                        conn.send({"error": "This computer hasn't been added to this Pi. Add it first: audiolink add"})
                         continue
                 try:
                     reply = fn(conn, req)

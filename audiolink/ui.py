@@ -79,12 +79,12 @@ class Prompter:
             return input(prompt)
         except (EOFError, KeyboardInterrupt):
             print()
-            raise SystemExit("cancelled")
+            raise SystemExit("Cancelled.")
 
     def need_tty(self, what):
         if not self.tty:
-            raise SystemExit("%s (no terminal to ask on%s)" % (
-                what.rstrip(" ?:"), "; see " + self.flags_hint if self.flags_hint else ""))
+            raise SystemExit("I'd need to ask \"%s\", but there's no terminal to type an answer into.%s" % (
+                what.strip(), "\nThese options answer it up front: " + self.flags_hint if self.flags_hint else ""))
 
     def yes(self, question, default=False):
         self.need_tty(question)
@@ -112,4 +112,4 @@ class Prompter:
             return getpass.getpass(prompt)
         except (EOFError, KeyboardInterrupt):
             print()
-            raise SystemExit("cancelled")
+            raise SystemExit("Cancelled.")

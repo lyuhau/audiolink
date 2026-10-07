@@ -82,10 +82,10 @@ class ModeService(Service):
         p = conn.open(req["sealed"])
         ssid = (p.get("ssid") or "").strip()
         if not ssid:
-            return {"error": "no network name given"}
+            return {"error": "No network name given."}
         use_saved = bool(p.get("use_saved")) or (ssid in self.wifi.saved and not p.get("password"))
         if use_saved and ssid not in self.wifi.saved:
-            return {"error": "%r isn't a saved network on this Pi; send its password" % ssid}
+            return {"error": "The Pi doesn't know the password for %s yet." % ssid}
         try:
             ent = dict(self.wifi.saved[ssid]) if use_saved else dict(
                 credentials(ssid, p.get("security") or "wpa2", p.get("password")), hidden=bool(p.get("hidden")))
@@ -98,7 +98,8 @@ class ModeService(Service):
                              % (ssid, age // 60), "code": "not_found", "stayed_on": self.wifi.current_ssid()}
         with self.lock:
             if self.pending:
-                return {"error": "a change to %r is already in progress" % self.pending["target"]}
+                return {"error": "The Pi is already in the middle of switching to %s. Try again in a minute."
+                                  % self.pending["target"]}
             current = self.wifi.current_ssid()
             fallback = "setup network" if self.setup_ap.active or not current else "Wi-Fi %r" % current
             window = max(CONFIRM_RANGE[0], min(CONFIRM_RANGE[1], int(p.get("confirm_within") or 180)))
@@ -230,14 +231,14 @@ class ModeService(Service):
     def _confirm(self, conn, req):
         p = self.pending
         if not p or p["phase"] != "awaiting confirmation":
-            return {"error": "nothing to confirm"}
+            return {"error": "There's no network change waiting to be confirmed."}
         if p["token_hash"]:
             token = conn.open(req["sealed"]).get("token", "") if req.get("sealed") else ""
             if not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), p["token_hash"]):
-                return {"error": "this change waits for its requester's confirmation (wrong token)"}
+                return {"error": "This change can only be confirmed by the computer that asked for it."}
         if p.get("alongside") and conn.addr[0].rsplit(".", 1)[0] == AP_ADDR.rsplit(".", 1)[0]:
             # Joined next to the setup network: the point is reaching the Pi on the new one.
-            return {"error": "confirm from %r, not over the setup network" % p["target"], "retry": True}
+            return {"error": "Confirm from %s, not over the setup network." % p["target"], "retry": True}
         self.confirmed.set()
         log.info("mode: confirmed from %s", conn.addr[0])
         return {"kept": p["target"]}

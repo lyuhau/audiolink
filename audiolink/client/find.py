@@ -15,6 +15,7 @@ import time
 
 from ..paths import cache_dir
 from . import keyring
+from ..ui import detail
 
 
 def _cache_file():
@@ -45,7 +46,8 @@ def code_for(pi):
     try:
         return keyring.resolve(pi)["code"]
     except KeyError:
-        raise SystemExit("no Pi called %r here (see: audiolink pis), and it isn't a connect code" % pi)
+        raise SystemExit("You don't have a Pi called %s, and that isn't a connect code either.\n"
+                         "To see your Pis: audiolink pis" % pi)
 
 
 def lookup(code):
@@ -66,7 +68,7 @@ def lookup(code):
         return None, took
     rec = read_record(secret, got[1])
     if rec is None:
-        raise SystemExit("found a record, but this code can't decrypt it (wrong or old code?)")
+        raise SystemExit("Found the Pi's note, but couldn't read it. The code here may be wrong or out of date.")
     _remember(pub, rec)
     return rec, took
 
@@ -78,12 +80,15 @@ def find_command(a):
     except ValueError as e:
         raise SystemExit(str(e))
     if not rec:
-        raise SystemExit("no record found on the DHT (%.0fs). Is discovery enabled and the Pi online?" % took)
+        detail("no record on the DHT after %.0fs", took)
+        raise SystemExit("Couldn't find where it is. It needs to be online, with discovery on\n"
+                         "(on its host: audiolink discovery status).")
     age = time.time() - rec["ts"]
-    print("%s: LAN %s on %r, ports %s (published %s, lookup %.1fs)"
-          % (rec["name"], ", ".join(rec["lan"]) or "?", rec.get("ssid"),
-             ", ".join(map(str, rec["ports"])) or "none",
-             "%.0f min ago" % (age / 60) if age >= 0 else "just now", took))
+    print("%s is on %s%s." % (rec["name"], rec.get("ssid") or "a network",
+                              " (as of %.0f minutes ago)" % (age / 60) if age >= 120 else ""))
+    if rec["ports"]:
+        print("Its open ports: %s" % ", ".join(map(str, rec["ports"])))
+    detail("addresses %s, lookup %.1fs", ", ".join(rec["lan"]) or "?", took)
 
 
 def _try_connect(ips, port, timeout=3):
@@ -108,15 +113,15 @@ def connect_command(a):
     if cached:
         sock = _try_connect(cached.get("lan", []), a.port)
     if sock is None:
-        sys.stderr.write("audiolink: looking up the Pi on the DHT...\n")
+        sys.stderr.write("audiolink: looking for the Pi...\n")
         rec, _ = lookup(code)
         if not rec:
-            raise SystemExit("audiolink: the Pi's record wasn't found on the DHT")
+            raise SystemExit("audiolink: couldn't find where the Pi is (is it online, with discovery on?)")
         sock = _try_connect(rec.get("lan", []), a.port)
         if sock is None:
-            raise SystemExit("audiolink: the Pi is at %s on %r, but port %d isn't reachable from here "
-                             "(different network, or devices isolated)"
-                             % (", ".join(rec.get("lan", [])), rec.get("ssid"), a.port))
+            raise SystemExit("audiolink: the Pi is on %s, but this computer can't reach it there.\n"
+                             "audiolink: connect this computer to %s too (some networks also keep devices apart)."
+                             % (rec.get("ssid") or "another network", rec.get("ssid") or "that network"))
     sock.settimeout(None)
     _pipe(sock)
 
@@ -153,12 +158,13 @@ def _pipe(sock):
 
 def dht_size_command(a):
     from ..discovery.dht import DHT
-    print("sampling the Mainline DHT (about a minute)...", flush=True)
+    print("Counting the BitTorrent DHT, the network audiolink uses to find Pis (about a minute)...",
+          flush=True)
     dht = DHT()
     t0 = time.monotonic()
     n, samples = dht.estimate_size(samples=a.samples)
     if not n:
-        raise SystemExit("no DHT nodes answered (UDP blocked on this network?)")
-    print("~%.1f million nodes that answer a read-only client (median of %d samples, %.0fs)"
-          % (n / 1e6, samples, time.monotonic() - t0))
-    print("a lower bound: slow, NAT'd, or ro-ignoring nodes don't show up in this method")
+        raise SystemExit("Nobody on the DHT answered. This network may block it (UDP).")
+    print("At least %.1f million computers are taking part right now." % (n / 1e6))
+    detail("median of %d samples, %.0fs; a lower bound: slow, NAT'd and read-only-ignoring nodes "
+           "don't show up", samples, time.monotonic() - t0)

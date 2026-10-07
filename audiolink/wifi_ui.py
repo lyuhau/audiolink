@@ -1,8 +1,14 @@
 """Wi-Fi terms and prompts shared by the host's `audiolink wifi` and network changes."""
 import os
 
-SEC_LABEL = {"open": "open", "owe": "open+", "wpa2": "WPA2", "wpa3": "WPA3", "wpa2/wpa3": "WPA2/3",
-             "wep": "WEP", "enterprise": "802.1X"}
+SEC_LABEL = {"open": "open", "owe": "open (encrypted)", "wpa2": "WPA2", "wpa3": "WPA3",
+             "wpa2/wpa3": "WPA2/3", "wep": "WEP", "enterprise": "enterprise"}
+
+
+def bars(dbm):
+    """Signal strength the way phones show it."""
+    level = 4 if dbm >= -55 else 3 if dbm >= -67 else 2 if dbm >= -75 else 1
+    return "▂▄▆█"[:level].ljust(4, "·")
 
 
 def wifi_password(ask, ssid, security, retry=False):
@@ -14,9 +20,9 @@ def wifi_password(ask, ssid, security, retry=False):
     if env and not retry:
         return env, False
     while True:
-        pw = ask.secret("%s password for %r: " % (SEC_LABEL.get(security, security), ssid))
+        pw = ask.secret("Password for %s: " % ssid)
         if security in ("wpa2", "wpa2/wpa3") and not 8 <= len(pw) <= 63:
-            print("WPA2 passwords are 8-63 characters; try again")
+            print("Wi-Fi passwords are 8 to 63 characters long. Try again.")
             continue
         if pw:
             return pw, True
