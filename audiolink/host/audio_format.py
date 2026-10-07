@@ -16,13 +16,12 @@ connection goes straight to the format that worked and skips ones that didn't.
 """
 import base64
 import hashlib
-import json
 import logging
 import os
 import threading
 import time
 
-from ..paths import config_dir
+from ..paths import config_dir, load_json, save_json
 from ..services import Service
 from ..wire.fmt import BASELINE, CANDIDATES, AudioFormat
 
@@ -64,19 +63,12 @@ class _Store:
         self.path = path
 
     def load(self, serial):
-        try:
-            return json.loads(self.path.read_text()).get(serial, {})
-        except (OSError, ValueError):
-            return {}
+        return load_json(self.path, {}).get(serial, {})
 
     def save(self, serial, entry):
-        try:
-            data = json.loads(self.path.read_text())
-        except (OSError, ValueError):
-            data = {}
+        data = load_json(self.path, {})
         data[serial] = entry
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=1))
+        save_json(self.path, data, indent=1)
 
 
 class AudioNegotiator(Service):
@@ -202,6 +194,15 @@ class AudioNegotiator(Service):
         mem = self.store.load(serial)
         failed = set(mem.get("failed", []))
         current, pending = self._status()
+        if pending and current != BASELINE and not sweep and target in (None, current) \
+                and key(current) not in failed:
+            # The Pi's daemon restarted and kept the format the link was in: check it, keep it.
+            self.state = "checking %r" % current
+            goodput = self._train(current, timeout=20)
+            if goodput:
+                self.session.request("audio.confirm", timeout=10)
+                self._note("using %s again", human(current))
+                return
         if pending or (current != BASELINE and (sweep or target not in (None, current))):
             self.state = "reverting"
             self._note("back to baseline first")

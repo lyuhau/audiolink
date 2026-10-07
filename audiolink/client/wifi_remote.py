@@ -1,4 +1,4 @@
-"""Changing a Pi's Wi-Fi over the network, client side (services/mode.py).
+"""Changing a Pi's Wi-Fi over the network, client side (services/wifi_remote.py).
 
 `audiolink wifi join NAME` uses this when the Pi isn't plugged in here: the request
 goes over the network (the Pi's setup network or a shared LAN). The Pi checks the
@@ -7,16 +7,14 @@ switches. If nobody can reach it there, it opens its setup network.
 """
 from ..discovery.record import parse_code
 from ..ui import detail, done, step
+from ..wifi_ui import FAILURE
 from . import keyring
 from .pairing import reach
 
 
 def _pick_pi(a):
     if a.pi:
-        try:
-            return keyring.resolve(a.pi)
-        except KeyError:
-            raise SystemExit("No Pi named %s (see: audiolink pis)" % a.pi)
+        return keyring.lookup(a.pi)
     pis = list(keyring.load().values())
     if len(pis) == 1:
         return pis[0]
@@ -87,8 +85,7 @@ def _internet(state):
 def _refuse(pi, net, r):
     """A refused change: finish the progress line with why, then where the Pi is."""
     detail("%s said: %s", pi, r["error"])
-    done({"auth_failed": "wrong password", "no_ip": "no address", "timeout": "couldn't connect",
-          "not_found": "not in range (2.4 GHz only)"}.get(r.get("code"), "refused"))
+    done(FAILURE.get(r.get("code"), "refused"))
     if r.get("stayed_on"):
         raise SystemExit("%s staying on %s" % (pi, r["stayed_on"]))
     if "stayed_on" in r:

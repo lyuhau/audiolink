@@ -2,9 +2,9 @@
 
 Like a phone: a network is saved once its password is proven to work (a join or a
 trial, services/wifi_trial.py), and saved networks auto-join when in range, most
-recently used first. A network that was only tried (services/mode.py refused or
-abandoned the change) stays saved, so nobody retypes its password, but ranks last.
-Saved entries: credentials, "verified" (the password has worked) and "last_used" (a
+recently used first. A network whose password worked in a trial but that the Pi
+never got onto (services/wifi_remote.py: the switch failed) stays saved, so nobody
+retypes its password, but ranks last. Saved entries: credentials and "last_used" (a
 counter: higher = joined more recently; 0 = never). A counter, not a time: the Pi
 has no clock of its own, so after a reboot it may think it's 1970.
 The store keeps the WPA pre-shared key derived from (password, SSID), never the
@@ -12,7 +12,7 @@ password itself.
 """
 import binascii
 import hashlib
-import json
+import inspect
 import logging
 import os
 import re
@@ -20,13 +20,14 @@ import subprocess
 import threading
 import time
 
-from . import Service
-from ..paths import save_json
+from . import Service, proc
+from ..paths import load_json, save_json
 
 log = logging.getLogger("audiolink")
 
 IFACE = "wlan0"
-SUPPLICANT = ["wpa_supplicant", "-B", "-i", IFACE, "-c", "/etc/wpa_supplicant/wpa_supplicant.conf"]
+SUPPLICANT_PID = "/run/wpa_supplicant.pid"         # wlan0's (pi/init); the trial runs its own
+SUPPLICANT = ["wpa_supplicant", "-B", "-P", SUPPLICANT_PID, "-i", IFACE, "-c", "/etc/wpa_supplicant/wpa_supplicant.conf"]
 DHCP = ["udhcpc", "-i", IFACE, "-b", "-t", "10", "-s", "/usr/share/udhcpc/default.script",
         "-x", "hostname:audiopi"]
 
@@ -223,16 +224,13 @@ class WifiManager:
         self.internet = None                        # last connectivity state, with "ssid"
         self._last_demand = 0.0
         self.parked = False                         # off Wi-Fi with the setup network up (park/unpark)
+        self.silent_checks = 0                      # monitor checks in a row wpa_supplicant didn't answer
         threading.Thread(target=self._load_into_supplicant, daemon=True).start()
         threading.Thread(target=self._monitor, daemon=True).start()
 
     # ---- store
     def _load(self):
-        try:
-            with open(self.store_path) as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return {}
+        return load_json(self.store_path, {})
 
     def _save(self):
         save_json(self.store_path, self.saved, indent=1)
@@ -258,16 +256,46 @@ class WifiManager:
             except Exception:
                 time.sleep(1)
         else:
-            log.warning("wifi: wpa_supplicant not running; Wi-Fi management unavailable")
-            return
+            log.warning("wifi: wpa_supplicant not running yet")
+            return                            # the monitor keeps checking (_check_supplicant)
         with self.lock:
-            existing = self.sup.networks()
-            for ssid, ent in self.saved.items():
-                if ssid not in existing:
-                    self.sup.add(ssid, ent, 1)
-            self._reprioritize()
-            self.sup.wpa("enable_network", "all")
+            self._sync_supplicant()
         log.info("wifi: %d saved network(s) loaded", len(self.saved))
+
+    def _sync_supplicant(self):
+        """Call with self.lock held: make sure wpa_supplicant knows every saved network
+        (it may have started late, or been restarted)."""
+        existing = self.sup.networks()
+        missing = [s for s in self.saved if s not in existing]
+        for ssid in missing:
+            nid = self.sup.add(ssid, self.saved[ssid], 1)
+            if self.parked:
+                self.sup.wpa("disable_network", nid)
+        if missing:
+            self._reprioritize()
+            if not self.parked:
+                self.sup.wpa("enable_network", "all")
+        return missing
+
+    def _check_supplicant(self):
+        """Call with self.lock held (monitor): wpa_supplicant running and up to date?"""
+        try:
+            self.sup.wpa("ping")
+            self.silent_checks = 0
+        except Exception:
+            if not os.path.exists("/sys/class/net/" + IFACE):
+                return                        # no Wi-Fi hardware (yet)
+            self.silent_checks += 1
+            if self.silent_checks < 3:        # it can be busy for a moment
+                return
+            log.warning("wifi: wpa_supplicant hasn't answered %d checks in a row; restarting it", self.silent_checks)
+            self.silent_checks = 0
+            proc.stop(SUPPLICANT_PID, wait=3)
+            subprocess.run(SUPPLICANT, capture_output=True)
+            time.sleep(2)
+        missing = self._sync_supplicant()
+        if missing:
+            log.info("wifi: gave wpa_supplicant back %d saved network(s)", len(missing))
 
     # ---- connectivity monitor (portal logins expire; networks come and go)
     def _probe(self):
@@ -290,6 +318,7 @@ class WifiManager:
             state = None
             if self.lock.acquire(blocking=False):   # skip while a join is in progress
                 try:
+                    self._check_supplicant()
                     state = self._probe()
                     self._set_internet(state)
                 except Exception as e:
@@ -312,7 +341,7 @@ class WifiManager:
             self._last_demand = now
             self.emit("portal_needed", self.internet)
 
-    # ---- saving without switching (services/mode.py)
+    # ---- saving without switching (services/wifi_remote.py)
     def remember(self, ssid, ent):
         """Save a network whose password was just proven, without preferring it."""
         with self.lock:
@@ -320,7 +349,7 @@ class WifiManager:
 
     def _remember(self, ssid, ent):
         prev = self.saved.get(ssid, {})
-        self.saved[ssid] = dict(ent, verified=True, last_used=prev.get("last_used", 0))
+        self.saved[ssid] = dict(ent, last_used=prev.get("last_used", 0))
         self._save()
         if ssid not in self.sup.networks():
             nid = self.sup.add(ssid, self.saved[ssid], 1)
@@ -348,6 +377,9 @@ class WifiManager:
         except Exception:
             return False
 
+    def ip(self):
+        return self.sup.ip()
+
     def freq(self):
         """The current network's frequency (MHz), or None when not on one."""
         try:
@@ -357,10 +389,13 @@ class WifiManager:
         return int(st["freq"]) if st.get("wpa_state") == "COMPLETED" and st.get("freq") else None
 
     def park(self):
-        """Keep wpa_supplicant running but connect to nothing on our own: the setup
-        network shares the radio, and joining a network on another channel would drag
-        it along (breaking its clients). join() still works while parked."""
+        """Off Wi-Fi with the setup network up: keep wpa_supplicant running but connect
+        to nothing on our own (scans would disturb the setup network's clients, and
+        joining a network on another channel would drag it along). join() still works
+        while parked. Returns False, doing nothing, if a network was joined meanwhile."""
         with self.lock:
+            if self.associated():               # decided on stale state (a join just finished)
+                return False
             self.parked = True
             try:
                 self.sup.wpa("disable_network", "all")
@@ -371,6 +406,7 @@ class WifiManager:
             subprocess.run(["ip", "addr", "flush", "dev", IFACE])
         self._set_internet({"internet": "offline", "ssid": None, "detail": "setup network up"})
         log.info("wifi: parked (setup network up)")
+        return True
 
     def unpark(self):
         """Back to normal: saved networks auto-join again."""
@@ -396,8 +432,12 @@ class WifiManager:
               "join": self.join, "forget": self.forget, "check": self.check}.get(op)
         if fn is None:
             raise ValueError("unknown wifi operation %r" % op)
+        known = inspect.signature(fn).parameters
+        extra = set(args) - set(known)
+        if extra:                       # from a newer host: do what we can
+            log.warning("wifi.%s: ignoring %s (from a newer host?)", op, ", ".join(sorted(extra)))
         with self.lock:
-            return fn(**args)
+            return fn(**{k: v for k, v in args.items() if k in known})
 
     def scan(self, max_age=0):
         """Visible networks, strongest first; one entry per (name, security).
@@ -450,7 +490,7 @@ class WifiManager:
                     **(connectivity() if connected and ip else {"internet": "offline"}))
 
     def list(self):
-        return [{"ssid": s, "last_used": e.get("last_used"), "verified": e.get("verified"), "security": security_of(e),
+        return [{"ssid": s, "last_used": e.get("last_used"), "security": security_of(e),
                  "hidden": bool(e.get("hidden"))}
                 for s, e in sorted(self.saved.items(), key=lambda kv: -kv[1].get("last_used", 0))]
 
@@ -471,35 +511,33 @@ class WifiManager:
         if prev is not None:
             self.sup.wpa("remove_network", prev)
         nid = self.sup.add(ssid, ent, 1000)
-        self.sup.wpa("select_network", nid)      # try only this one for now
-        keyed = security_of(ent) not in ("open", "owe")
-        outcome, seen = self.sup.associate(nid, ssid, keyed, timeout)
-        ok, bad_key = outcome == "ok", outcome == "bad_key"
-        ip = None
-        if ok:
-            self._restart_dhcp()
-            for _ in range(30):
-                ip = self.sup.ip()
-                if ip:
-                    break
-                time.sleep(0.5)
-        if ok and ip:
-            self.saved[ssid] = dict(ent, verified=True, last_used=_next_use(self.saved))
-            self._save()
-            self._reprioritize()
-            self.parked = False                 # on a network: saved ones may auto-join again
-            self.sup.wpa("enable_network", "all")
-            log.info("wifi: joined and saved %r (%s)", ssid, ip)
-            conn = dict(connectivity(), ssid=ssid)
-            self._set_internet(conn)
-            return dict(conn, joined=True, ip=ip, security=security_of(ent))
-
-        # Failed: drop the attempt and go back to the saved networks.
-        self.sup.wpa("remove_network", nid)
-        if ssid in self.saved:
-            self.sup.add(ssid, self.saved[ssid], 1)
-            self._reprioritize()
-        self._settle()
+        try:
+            self.sup.wpa("select_network", nid)      # try only this one for now
+            keyed = security_of(ent) not in ("open", "owe")
+            outcome, seen = self.sup.associate(nid, ssid, keyed, timeout)
+            ok, bad_key = outcome == "ok", outcome == "bad_key"
+            ip = None
+            if ok:
+                self._restart_dhcp()
+                for _ in range(30):
+                    ip = self.sup.ip()
+                    if ip:
+                        break
+                    time.sleep(0.5)
+            if ok and ip:
+                self.saved[ssid] = dict(ent, last_used=_next_use(self.saved))
+                self._save()
+                self._reprioritize()
+                self.parked = False                 # on a network: saved ones may auto-join again
+                self.sup.wpa("enable_network", "all")
+                log.info("wifi: joined and saved %r (%s)", ssid, ip)
+                conn = dict(connectivity(), ssid=ssid)
+                self._set_internet(conn)
+                return dict(conn, joined=True, ip=ip, security=security_of(ent))
+        except Exception:
+            self._undo_attempt(ssid, nid)           # never leave only the untried entry enabled
+            raise
+        self._undo_attempt(ssid, nid)
         sec = security_of(ent)
         if ok:
             code, reason = "no_ip", "associated but got no IP address (DHCP)"
@@ -513,6 +551,16 @@ class WifiManager:
             code, reason = "timeout", "timed out associating"
         log.warning("wifi: join %r failed: %s (%s; states %s)", ssid, reason, outcome, ",".join(sorted(seen)))
         return {"joined": False, "ssid": ssid, "code": code, "reason": reason}
+
+    def _undo_attempt(self, ssid, nid):
+        """A join that didn't work: drop its entry and go back to the saved networks."""
+        for step in (lambda: self.sup.wpa("remove_network", nid),
+                     lambda: ssid in self.saved and self.sup.add(ssid, self.saved[ssid], 1),
+                     self._reprioritize, self._settle):
+            try:
+                step()
+            except Exception as e:
+                log.warning("wifi: undoing a join of %r: %s", ssid, e)
 
     def forget(self, ssid):
         if ssid not in self.saved:
@@ -544,8 +592,52 @@ class WifiService(Service):
     def handle(self, op, args):
         return self.manager.handle(op, args)
 
+    # ---- for other services (setup_ap, wifi_remote, discovery, presence, proxy)
+    def ip(self):
+        """The Pi's address on its Wi-Fi network, or None."""
+        return self.manager.ip()
+
+    def freq(self):
+        return self.manager.freq()
+
+    def current_ssid(self):
+        return self.manager.current_ssid()
+
+    def scan(self):
+        return self.manager.handle("scan", {})
+
+    def last_scan(self):
+        return self.manager.last_scan()
+
+    def join(self, **args):
+        return self.manager.handle("join", args)
+
+    def saved_entry(self, ssid):
+        """A copy of a saved network's entry, or None."""
+        ent = self.manager.saved.get(ssid)
+        return dict(ent) if ent is not None else None
+
+    def saved_names(self):
+        return sorted(self.manager.saved)
+
+    def remember(self, ssid, ent):
+        self.manager.remember(ssid, ent)
+
+    @property
+    def parked(self):
+        return self.manager.parked
+
+    def park(self):
+        return self.manager.park()
+
+    def unpark(self):
+        self.manager.unpark()
+
+    def note_demand(self):
+        self.manager.note_demand()
+
     def connection(self):
         """{"ip", "ssid", "internet"} as last seen (no network calls)."""
         state = self.manager.internet or {}
-        return {"ip": self.manager.sup.ip(), "ssid": state.get("ssid"),
+        return {"ip": self.manager.ip(), "ssid": state.get("ssid"),
                 "internet": state.get("internet", "offline")}

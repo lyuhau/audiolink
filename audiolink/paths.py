@@ -1,7 +1,10 @@
 """Where audiolink keeps things on each kind of machine."""
 import json
+import logging
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 
@@ -29,7 +32,7 @@ def cache_dir():
 
 
 # ---- the Pi
-PI_STATE_DIR = "/var/lib/audiolink"     # RAM in today's image; on the SD card once there is one
+PI_STATE_DIR = "/var/lib/audiolink"     # the SD card's audiolink/ folder (pi/init), or RAM without a card
 
 
 def is_persistent(path):
@@ -49,15 +52,51 @@ def is_persistent(path):
     return best_type not in ("rootfs", "tmpfs", "ramfs")
 
 
-def save_json(path, data, indent=None):
+def load_json(path, default=None):
+    """Read a JSON file written by save_json. Missing: `default`. Unreadable or damaged
+    (a failing card, a write cut short): retried, then moved aside to PATH.unreadable
+    and `default` returned, so that saving afresh can't destroy what might be recovered."""
+    path = str(path)
+    err = None
+    for attempt in range(3):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return default
+        except (OSError, ValueError) as e:
+            err = e
+            time.sleep(0.5)
+    logging.getLogger("audiolink").error("can't read %s (%s); moved it aside to %s.unreadable", path, err, path)
+    try:
+        os.replace(path, path + ".unreadable")
+    except OSError:
+        pass
+    return default
+
+
+def _clean_stale_tmp(path):
+    """Temp files a power cut left behind (other writers' recent ones are in use)."""
+    d, base = os.path.split(path)
+    try:
+        for name in os.listdir(d or "."):
+            if name.startswith(base + ".tmp-"):
+                f = os.path.join(d, name)
+                if time.time() - os.path.getmtime(f) > 3600:
+                    os.remove(f)
+    except OSError:
+        pass
+
+
+def save_json(path, data, indent=None, sort_keys=False):
     """Replace a JSON file so that power loss leaves either the old or the new one.
     The Pi's state lives on a FAT card and the Pi can lose power (or be reset) at any
     moment: the data and the rename both have to reach the card before we return."""
     path = str(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = "%s.tmp-%d-%d" % (path, os.getpid(), threading.get_ident())    # writers mustn't share one
     with open(tmp, "w") as f:
-        json.dump(data, f, indent=indent)
+        json.dump(data, f, indent=indent, sort_keys=sort_keys)
         f.flush()
         os.fsync(f.fileno())
     try:
@@ -65,6 +104,7 @@ def save_json(path, data, indent=None):
     except OSError:
         pass
     os.replace(tmp, path)
+    _clean_stale_tmp(path)
     if hasattr(os, "O_DIRECTORY"):
         try:
             fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY | os.O_DIRECTORY)

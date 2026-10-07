@@ -12,7 +12,6 @@ and restores it whenever the Pi comes up with a fresh identity (host/identity.py
 after every reboot if the state directory is in RAM (no SD card), and once when a
 Pi first gets a card. A restore never replaces an established identity on a card.
 """
-import json
 import logging
 import os
 import threading
@@ -21,7 +20,7 @@ from pathlib import Path
 from ..crypto import ed25519_public
 from ..discovery.record import code_for, new_identity
 from ..names import NAME_RE, name_for
-from ..paths import is_persistent, save_json
+from ..paths import is_persistent, load_json, save_json
 from . import Service
 
 log = logging.getLogger("audiolink")
@@ -63,11 +62,7 @@ class IdentityService(Service):
 
     # ---- storage
     def _load(self):
-        try:
-            with open(self.path) as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return None
+        return load_json(self.path)
 
     def _save(self):
         save_json(self.path, self.data)
@@ -87,6 +82,23 @@ class IdentityService(Service):
 
     def keys(self):
         return bytes.fromhex(self.data["seed"]), bytes.fromhex(self.data["secret"])
+
+    def pi_name(self):
+        return self.data["name"]
+
+    def claimed(self):
+        return self.data["claimed"]
+
+    def discoverable(self):
+        return self.data["discoverable"]
+
+    def code(self):
+        """The connect code (public key + read secret) that paired machines keep."""
+        return code_for(self.data)
+
+    def claim(self):
+        """Mark the Pi as claimed (its first pairing). Returns whether it was unclaimed."""
+        return self.handle("claim", {})["first"]
 
     def public(self):
         return ed25519_public(bytes.fromhex(self.data["seed"]))

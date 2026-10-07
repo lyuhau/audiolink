@@ -13,15 +13,14 @@ import threading
 import time
 
 from .setup_ap import AP_ADDR
-from .wifi import Supplicant
 
 
 class Presence:
-    def __init__(self):
+    def __init__(self, wifi_ip):
         self.lock = threading.Lock()
         self.open = collections.Counter()       # path -> open connections
         self.last = time.monotonic()            # last time anyone was connected (start: nobody)
-        self.wifi = Supplicant()
+        self.wifi_ip = wifi_ip                  # () -> the Pi's Wi-Fi address, or None
 
     def path_of(self, sock):
         try:
@@ -30,7 +29,7 @@ class Presence:
             return None
         if local == AP_ADDR:
             return "setup"
-        return "wifi" if local == self.wifi.ip() else None
+        return "wifi" if local == self.wifi_ip() else None
 
     def enter(self, sock):
         """A connection arrived; returns its path (pass it to leave()), or None if it

@@ -23,6 +23,7 @@ from .wire.protocol import T_CTRL, T_HELLO, Link
 
 log = logging.getLogger("audiolink")
 
+CLOCK_SANE = 1_700_000_000      # 2023: anything earlier means the clock was never set
 PEER_TIMEOUT = 5.0      # seconds without frames before the peer is considered gone
 
 
@@ -38,6 +39,7 @@ class Session:
         self.requests = {}                              # id -> [Event, reply]
         self.req_ids = itertools.count(1)
         self.ctrl_frags = {}                            # id -> bytearray being reassembled
+        self._warned_version = None
         self.link = Link(self.on_message, self.on_datagram, self.on_up)
         for svc in services:
             self.add(svc)
@@ -53,8 +55,10 @@ class Session:
         return svc
 
     def now(self):
-        """Wall-clock time; on the Pi, the host's clock (the Pi has none of its own)."""
-        return time.time() + self.clock_offset
+        """Wall-clock time. The Pi has no clock of its own: until NTP has set it (needs
+        internet; pi/init), it goes by the host's clock (from the HELLO)."""
+        t = time.time()
+        return t if t > CLOCK_SANE else t + self.clock_offset
 
     @property
     def caps(self):
@@ -81,19 +85,31 @@ class Session:
         pass  # phase 3 (IP packets) will hook in here
 
     def on_message(self, typ, sid, payload):
+        try:
+            self._dispatch(typ, sid, payload)
+        except Exception:
+            # One bad message (a bug, or a peer on another version) must not take down
+            # the thread that receives everything.
+            log.exception("dropped a type-%d message that couldn't be handled", typ)
+
+    def _dispatch(self, typ, sid, payload):
         if typ == T_HELLO:
             self.peer_info = info = json.loads(payload.decode())
             if self.role == "pi" and info.get("role") == "host" and info.get("time"):
                 self.clock_offset = info["time"] - time.time()
             log.info("peer: %s %s, caps=%s", info.get("role"), info.get("version"),
                      ",".join(info.get("caps", [])))
+            if info.get("version") != __version__ and info.get("version") != self._warned_version:
+                self._warned_version = info.get("version")
+                log.warning("the %s runs audiolink %s, this is %s: features may be missing until both match",
+                            info.get("role", "peer"), info.get("version"), __version__)
             for svc in self.services:
                 svc.on_peer_hello(info)
         elif typ == T_CTRL:
             buf = self.ctrl_frags.setdefault(sid, bytearray())
             buf += payload[1:]
             if payload[:1] == b"\x00":
-                self._on_ctrl(sid, json.loads(bytes(self.ctrl_frags.pop(sid)).decode()))
+                self._on_ctrl(sid, json.loads(bytes(self.ctrl_frags.pop(sid, buf)).decode()))
         elif typ in self.by_type:
             self.by_type[typ].on_message(typ, sid, payload)
 
@@ -101,8 +117,12 @@ class Session:
     def request(self, op, args=None, timeout=60):
         """Send a control request to the peer and wait for its reply."""
         if not self.peer_alive:
+            other = self.link.other_version
+            if other is not None:
+                raise RuntimeError("The Pi runs another audiolink version (link protocol v%d, here v%d): "
+                                   "update the older one" % (other, PROTOCOL_VERSION))
             raise RuntimeError("No Pi plugged in")
-        rid = next(self.req_ids) & 0xFFFF or next(self.req_ids)
+        rid = next(self.req_ids) & 0xFFFF or next(self.req_ids) & 0xFFFF    # stream ids are 16-bit, never 0
         ent = self.requests[rid] = [threading.Event(), None]
         self._send_ctrl(rid, {"op": op, "args": args or {}})
         if not ent[0].wait(timeout):
@@ -171,6 +191,9 @@ class Session:
                 self.peer_alive = False
                 self._fail_requests("Pi disconnected")
                 for svc in self.services:
-                    svc.on_down()
+                    try:
+                        svc.on_down()
+                    except Exception:
+                        log.exception("%s: on_down failed", svc.name or type(svc).__name__)
                 # Start a fresh session so both sides resync when the peer returns.
                 self.link.restart()

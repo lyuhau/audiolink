@@ -9,19 +9,58 @@ The host can also:
            target; sent in the HELLO, so the Pi re-applies it on every link-up.
 
 Messages (all reliable, in order):
-  OPEN   "host:port" for a new stream id
-  DATA   bytes for a stream
-  CLOSE  sender is done writing (half-close); a stream ends when both sides close
+  OPEN    "host:port" for a new stream id
+  DATA    bytes for a stream
+  CREDIT  4-byte count: the receiver has written that many of the stream's bytes to
+          its socket (flow control, when both sides have the "stream_credit" cap)
+  CLOSE   sender is done writing (half-close); a stream ends when both sides close
+
+Flow control: a side sends at most WINDOW bytes of a stream ahead of the peer's
+credits, so a slow socket at the far end (a client on weak Wi-Fi, or one that went to
+sleep) holds up only its own stream, and buffers stay bounded (the Pi has 512 MB).
+DATA for a stream the receiver has already finished is credited and dropped.
+Relayed sockets use TCP keepalive, so a client that vanished without closing (a laptop
+lid shut mid-ssh) is noticed: the Pi counts connected clients (services/presence.py).
 """
 import logging
 import queue
 import socket
+import struct
 import threading
+import time
 
-from ..wire.protocol import T_CLOSE, T_DATA, T_OPEN
+from ..wire.protocol import T_CLOSE, T_CREDIT, T_DATA, T_OPEN
 from . import Service
 
 log = logging.getLogger("audiolink")
+
+WINDOW = 512 * 1024             # bytes in flight per stream (about the link's bandwidth x latency)
+CREDIT_EVERY = WINDOW // 4
+CREDIT = struct.Struct(">I")
+
+
+def tune(sock):
+    """Low latency, and TCP keepalive: a peer gone silently is dropped in ~2 min."""
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    for name, value in (("TCP_KEEPIDLE", 60), ("TCP_KEEPALIVE", 60), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 6)):
+        if hasattr(socket, name):           # TCP_KEEPALIVE is macOS's name for the idle time
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, name), value)
+            except OSError:
+                pass
+
+
+def shut(sock):
+    """Close a socket so that threads blocked on it wake up (close() alone doesn't)."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
 
 
 def parse_target(spec, default_host="127.0.0.1"):
@@ -48,12 +87,16 @@ class Stream:
         self.path = path            # how the client reached us (services/presence.py), if counted
         self.wq = queue.Queue()     # payloads to write to the socket; None = peer EOF
         self.closed_tx = self.closed_rx = False
+        self.dead = False           # torn down: stop waiting for credit
+        self.cv = threading.Condition()
+        self.in_flight = 0          # bytes sent to the peer, not yet credited back
+        self.consumed = 0           # bytes written to our socket, not yet credited to the peer
 
 
 class Streams(Service):
     name = "streams"
-    caps = ("streams", "expose")
-    msg_types = (T_OPEN, T_DATA, T_CLOSE)
+    caps = ("streams", "expose", "stream_credit")
+    msg_types = (T_OPEN, T_DATA, T_CLOSE, T_CREDIT)
 
     def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", presence=None):
         self.role = role
@@ -99,22 +142,37 @@ class Streams(Service):
         with self.lock:
             st = self.streams.get(sid)
         if st is None:
+            if typ == T_DATA and self._flow_controlled():
+                # A stream we've already finished (our end closed first): the sender
+                # still counts these bytes against its window. Credit them, or it would
+                # wait forever and never notice its own client closing.
+                self.session.link.send(T_CREDIT, sid, CREDIT.pack(len(payload)))
             return
         if typ == T_DATA:
             st.wq.put(payload)
+        elif typ == T_CREDIT:
+            with st.cv:
+                st.in_flight -= CREDIT.unpack(payload)[0]
+                st.cv.notify_all()
         elif typ == T_CLOSE:
             st.wq.put(None)
+
+    def _flow_controlled(self):
+        return self.session.peer_has("stream_credit")
+
+    def _kill(self, st):
+        with st.cv:
+            st.dead = True
+            st.cv.notify_all()
+        st.wq.put(None)
+        if st.sock:
+            shut(st.sock)
 
     def _close_all(self):
         with self.lock:
             streams, self.streams = list(self.streams.values()), {}
         for st in streams:
-            st.wq.put(None)
-            if st.sock:
-                try:
-                    st.sock.close()
-                except OSError:
-                    pass
+            self._kill(st)
 
     # ---- pi: mirror the host's expose list as local listeners
     def _apply_expose(self, wanted):
@@ -152,14 +210,16 @@ class Streams(Service):
         link = self.session.link
         if target not in self.allow:
             log.warning("stream %d: %s:%d not allowed (use --allow or --expose)", st.sid, host, port)
+            self._forget(st)
             link.send(T_CLOSE, st.sid)
             return
         try:
             st.sock = socket.create_connection(target, timeout=5)
             st.sock.settimeout(None)
-            st.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            tune(st.sock)
         except OSError as e:
             log.warning("stream %d: connect to %s:%d failed: %s", st.sid, host, port, e)
+            self._forget(st)
             link.send(T_CLOSE, st.sid)
             return
         log.info("stream %d: connected to %s:%d", st.sid, host, port)
@@ -169,12 +229,21 @@ class Streams(Service):
     def _reader(self, st):
         """socket -> link"""
         link = self.session.link
+        flow = self._flow_controlled()
         try:
             while True:
+                if flow:
+                    with st.cv:
+                        while st.in_flight >= WINDOW and not st.dead:
+                            st.cv.wait(1)
+                    if st.dead:
+                        break
                 data = st.sock.recv(link.max_payload)
                 if not data:
                     break
                 link.stats["tcp_tx_bytes"] += len(data)
+                with st.cv:
+                    st.in_flight += len(data)
                 link.send(T_DATA, st.sid, data)
         except OSError:
             pass
@@ -191,6 +260,10 @@ class Streams(Service):
                     break
                 st.sock.sendall(data)
                 self.session.link.stats["tcp_rx_bytes"] += len(data)
+                st.consumed += len(data)
+                if st.consumed >= CREDIT_EVERY and self._flow_controlled():
+                    self.session.link.send(T_CREDIT, st.sid, CREDIT.pack(st.consumed))
+                    st.consumed = 0
             st.sock.shutdown(socket.SHUT_WR)
         except OSError:
             pass
@@ -199,16 +272,26 @@ class Streams(Service):
 
     def _maybe_finish(self, st):
         if st.closed_tx and st.closed_rx:
+            self._forget(st)
             with self.lock:
-                self.streams.pop(st.sid, None)
                 path, st.path = st.path, None   # both pumps can get here: count it once
             if self.presence:
                 self.presence.leave(path)
-            try:
-                st.sock.close()
-            except OSError:
-                pass
+            shut(st.sock)
             log.info("stream %d: closed", st.sid)
+
+    def _forget(self, st):
+        with self.lock:
+            if self.streams.get(st.sid) is st:  # not a newer stream that reused the id
+                del self.streams[st.sid]
+
+    def _new_sid(self):
+        """Call with self.lock held: the next free stream id (odd on the Pi, even on the host)."""
+        while True:
+            sid = self.next_sid
+            self.next_sid = (sid + 2) & 0xFFFF or (1 if self.role == "pi" else 2)
+            if sid not in self.streams:
+                return sid
 
     # ---- forward: accept local TCP connections and open streams on the peer
     def forward(self, lport, target, bind="0.0.0.0", exposed=False):
@@ -224,18 +307,21 @@ class Streams(Service):
             while True:
                 try:
                     sock, addr = srv.accept()
-                except OSError:
-                    return                                  # listener closed
+                except OSError as e:
+                    if srv.fileno() < 0:
+                        return                              # listener closed
+                    log.warning("accept on :%d: %s", lport, e)  # e.g. out of file descriptors
+                    time.sleep(1)
+                    continue
                 if not self.session.peer_alive:
                     if self.presence:
                         self.presence.touch(sock)           # a client did reach us
                     sock.close()                            # nobody on the other end
                     continue
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                tune(sock)
                 path = self.presence.enter(sock) if self.presence else None
                 with self.lock:
-                    sid = self.next_sid
-                    self.next_sid = (self.next_sid + 2) & 0xFFFF or (1 if self.role == "pi" else 2)
+                    sid = self._new_sid()
                     st = Stream(sid, sock, path)
                     self.streams[sid] = st
                 log.info("stream %d: %s:%d -> peer %s:%d", sid, addr[0], addr[1], *target)

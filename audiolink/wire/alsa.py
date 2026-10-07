@@ -87,7 +87,10 @@ class AlsaAudio:
                 data = p.stdout.read(chunk)
                 if not data:
                     break
-                self.link.feed(data)
+                try:
+                    self.link.feed(data)
+                except Exception:       # never let one bad chunk stop the Pi from hearing the host
+                    log.exception("audio: receiving failed")
             self._reap(p)
             if gen == self.gen:
                 self.link.stats["arecord_restarts"] += 1

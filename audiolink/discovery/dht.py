@@ -30,6 +30,7 @@ ALPHA = 8           # parallel queries per round
 QUERY_TIMEOUT = 1.5 # seconds; slow or gone nodes are common
 BOOTSTRAP_TIMEOUT = 4.0  # bootstrap routers can be slower; they're all we have at first
 MAX_V = 1000        # BEP 44 value size limit
+KNOWN_MAX = 2000    # nodes remembered for warm starts
 
 
 # ---------------------------------------------------------------- bencode
@@ -193,7 +194,7 @@ class DHT:
             # Bootstrap routers only answer find_node (not BEP 44 get), so seed with that.
             for addr in self._bootstrap():
                 send(None, addr, "find_node", BOOTSTRAP_TIMEOUT)
-            for addr in list(self.known.values())[:16]:
+            for addr in list(self.known.values())[-16:]:       # the most recently seen
                 send(None, addr)
 
         seed()
@@ -229,19 +230,24 @@ class DHT:
                 inflight.pop(t, None)
                 with self.lock:
                     self.pending.pop(t, None)
-                r = msg.get(b"r") if msg.get(b"y") == b"r" else None
-                if r and b"id" in r:
+                r = msg.get(b"r") if isinstance(msg, dict) and msg.get(b"y") == b"r" else None
+                # Public nodes send all sorts: skip anything not shaped like a reply.
+                if isinstance(r, dict) and isinstance(r.get(b"id"), bytes) and len(r[b"id"]) == 20:
                     if inflight_q.pop(t, method) == method:     # bootstrap replies aren't answers
                         answered[r[b"id"]] = (addr, r)
                     queried.add(r[b"id"])
-                    for nid, naddr in _nodes(r.get(b"nodes", b"")):
+                    nodes = r.get(b"nodes", b"")
+                    for nid, naddr in _nodes(nodes if isinstance(nodes, bytes) else b""):
                         seen.setdefault(nid, naddr)
         finally:
             with self.lock:
                 for t in inflight:
                     self.pending.pop(t, None)
         for nid, (addr, _) in list(answered.items())[:200]:
+            self.known.pop(nid, None)                   # most recently seen last (warm starts use those)
             self.known[nid] = addr
+        while len(self.known) > KNOWN_MAX:
+            del self.known[next(iter(self.known))]
         return sorted(((n, a, r) for n, (a, r) in answered.items()), key=lambda x: _dist(x[0], target))
 
     # ---- BEP 44 mutable items
@@ -251,9 +257,14 @@ class DHT:
         best = None
         for _, _, r in self.lookup(target, "get", deadline):
             v, seq, sig = r.get(b"v"), r.get(b"seq"), r.get(b"sig")
-            if v is None or seq is None or sig is None or r.get(b"k", public) != public:
+            if v is None or not isinstance(seq, int) or not isinstance(sig, bytes) or \
+                    r.get(b"k", public) != public:
                 continue
-            if (best is None or seq > best[0]) and ed25519_verify(public, sig_buffer(salt, seq, v), sig):
+            try:
+                valid = ed25519_verify(public, sig_buffer(salt, seq, v), sig)
+            except (ValueError, TypeError):
+                continue
+            if valid and (best is None or seq > best[0]):
                 best = (seq, v)
         return best
 

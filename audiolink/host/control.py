@@ -10,6 +10,7 @@ import logging
 import os
 import socket
 import threading
+import time
 
 log = logging.getLogger("audiolink")
 
@@ -46,8 +47,12 @@ def serve(session, port=DEFAULT_PORT, local_ops=None):
 
     def loop():
         while True:
-            conn, _ = srv.accept()
-            threading.Thread(target=handle, args=(conn,), daemon=True).start()
+            try:
+                conn, _ = srv.accept()
+                threading.Thread(target=handle, args=(conn,), daemon=True).start()
+            except (OSError, RuntimeError) as e:     # e.g. out of file descriptors or threads
+                log.warning("control port: %s", e)
+                time.sleep(1)
 
     threading.Thread(target=loop, daemon=True).start()
 
@@ -57,12 +62,17 @@ def call(op, args=None, port=DEFAULT_PORT):
         conn = socket.create_connection(("127.0.0.1", port), timeout=120)
     except OSError:
         raise SystemExit("audiolink host isn't running (start it: audiolink host)")
-    with conn:
-        conn.sendall((json.dumps({"op": op, "args": args or {}}) + "\n").encode())
-        line = conn.makefile("r").readline()
-    if not line:
+    try:
+        with conn:
+            conn.sendall((json.dumps({"op": op, "args": args or {}}) + "\n").encode())
+            line = conn.makefile("r").readline()
+        reply = json.loads(line) if line else None
+    except socket.timeout:
+        raise SystemExit("audiolink host didn't answer in time")
+    except (OSError, ValueError):
+        reply = None
+    if not isinstance(reply, dict):
         raise SystemExit("audiolink host stopped before answering")
-    reply = json.loads(line)
     if not reply.get("ok"):
         msg = reply.get("error") or "Failed"
         raise SystemExit(msg[:1].upper() + msg[1:])

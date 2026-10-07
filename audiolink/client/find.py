@@ -6,14 +6,13 @@
 PI is a name from `audiolink pis` (alias or the Pi's own name) or a connect code.
 `audiolink dht-size`           estimate how many DHT nodes answer
 """
-import json
 import os
 import socket
 import sys
 import threading
 import time
 
-from ..paths import cache_dir
+from ..paths import cache_dir, load_json, save_json
 from . import keyring
 from ..ui import detail, done, step
 
@@ -23,30 +22,19 @@ def _cache_file():
 
 
 def _cached(pub):
-    try:
-        return json.loads(_cache_file().read_text()).get(pub.hex())
-    except (OSError, ValueError):
-        return None
+    return load_json(_cache_file(), {}).get(pub.hex())
 
 
 def _remember(pub, rec):
-    f = _cache_file()
-    try:
-        data = json.loads(f.read_text())
-    except (OSError, ValueError):
-        data = {}
+    data = load_json(_cache_file(), {})
     data[pub.hex()] = rec
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(data))
+    save_json(_cache_file(), data)
     keyring.update(pub.hex(), last_record=rec, name=rec.get("name"))
 
 
 def code_for(pi):
     """A connect code for a name from the keyring, or a code given directly."""
-    try:
-        return keyring.resolve(pi)["code"]
-    except KeyError:
-        raise SystemExit("No Pi named %s, and not a connect code (see: audiolink pis)" % pi)
+    return keyring.lookup(pi)["code"]
 
 
 def lookup(code):

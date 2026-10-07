@@ -9,32 +9,24 @@ Each entry is keyed by the Pi's public key, which never changes; names are label
               host can restore it after a reboot
   added, last_seen, last_record
 """
-import json
-import os
+import threading
 import time
 
 from ..discovery.record import parse_code
-from ..paths import config_dir
+from ..paths import config_dir, load_json, save_json
 
 PATH = config_dir() / "pis.json"
 
 
+_changing = threading.RLock()           # one load-modify-save at a time (the host daemon's threads)
+
+
 def load():
-    try:
-        return json.loads(PATH.read_text())
-    except (OSError, ValueError):
-        return {}
+    return load_json(PATH, {})
 
 
 def save(pis):
-    PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(pis, indent=1, sort_keys=True))
-    try:
-        os.chmod(tmp, 0o600)            # custody entries hold the Pi's private key
-    except OSError:
-        pass
-    tmp.replace(PATH)
+    save_json(PATH, pis, indent=1, sort_keys=True)     # 0600: custody entries hold the Pi's private key
 
 
 def pub_of(code):
@@ -51,6 +43,11 @@ def unique_alias(pis, wanted, pub):
 
 def upsert(code, name=None, alias=None, serial=None, custody=None):
     """Add or update a Pi. Returns (entry, created)."""
+    with _changing:
+        return _upsert(code, name, alias, serial, custody)
+
+
+def _upsert(code, name, alias, serial, custody):
     pis = load()
     pub = pub_of(code)
     e = pis.get(pub)
@@ -86,6 +83,14 @@ def resolve(name_or_code):
     raise KeyError(name_or_code)
 
 
+def lookup(name_or_code):
+    """resolve() for commands: a missing Pi ends the command with a message."""
+    try:
+        return resolve(name_or_code)
+    except KeyError:
+        raise SystemExit("No Pi named %s (see: audiolink pis)" % name_or_code)
+
+
 def by_serial(serial):
     for pub, e in load().items():
         if e.get("serial") == serial:
@@ -94,14 +99,16 @@ def by_serial(serial):
 
 
 def update(pub, **fields):
-    pis = load()
-    if pub in pis:
-        pis[pub].update(fields)
-        save(pis)
+    with _changing:
+        pis = load()
+        if pub in pis:
+            pis[pub].update(fields)
+            save(pis)
 
 
 def remove(pub):
-    pis = load()
-    e = pis.pop(pub, None)
-    save(pis)
-    return e
+    with _changing:
+        pis = load()
+        e = pis.pop(pub, None)
+        save(pis)
+        return e

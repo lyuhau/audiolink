@@ -91,7 +91,7 @@ def main(argv=None):
     w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
     w.add_argument("--pi", help="join over the network: which Pi (default: the only one you know)")
     w.add_argument("--via-network", action="store_true", help="join over the network even if plugged in here")
-    w.add_argument("--tries", type=int, default=1, help="connection attempts before giving up (max 3)")
+    w.add_argument("--tries", type=int, default=1, help="over the network: connection attempts before giving up (max 3)")
     w.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     dsc = sub.add_parser("discovery", help="whether the plugged-in Pi publishes on the DHT")
     dsc.add_argument("action", nargs="?", default="status",
@@ -147,7 +147,7 @@ def main(argv=None):
     roles["host"].add_argument("--in-device", help="input device name (substring)")
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
     roles["pi"].add_argument("--state-dir", default=PI_STATE_DIR, help="where the Pi keeps its identity")
-    roles["pi"].add_argument("--wifi-store", default="/var/lib/audiolink/networks.json",
+    roles["pi"].add_argument("--wifi-store", default=PI_STATE_DIR + "/networks.json",
                              help="where saved Wi-Fi networks are kept")
     roles["pi"].add_argument("--expose-ports", default="1024-65535", metavar="LO-HI",
                              help="ports the host may ask the Pi to expose")
@@ -173,11 +173,11 @@ def main(argv=None):
     from .host import control
     port = getattr(a, "control_port", None) or control.DEFAULT_PORT
     if a.cmd == "wifi":
-        from .client import mode
+        from .client import wifi_remote
         from .host.wifi_cli import wifi_command, pi_on_usb
         a.control_port = port
         if a.action == "join" and (a.via_network or a.pi or not pi_on_usb(port)):
-            return mode.change_command(a)
+            return wifi_remote.change_command(a)
         return wifi_command(a)
     if a.cmd == "audio":
         from .host.audio_format import audio_command
@@ -220,7 +220,7 @@ def run_pi(a, allow, port, gate):
     from .services.identity import IdentityService
     from .services.pairing import PairingService
     from .services.endpoint import Endpoint
-    from .services.mode import ModeService
+    from .services.wifi_remote import WifiRemoteService
     from .services.setup_ap import SetupApService
     from .services.presence import Presence
     from .services.proxy import ProxyService
@@ -229,21 +229,22 @@ def run_pi(a, allow, port, gate):
     from .wire.alsa import AlsaAudio
     from .wire.gadget import Gadget
     wifi = WifiService(a.wifi_store)
-    proxy = ProxyService(on_request=wifi.manager.note_demand)
-    presence = Presence()
+    proxy = ProxyService(on_request=wifi.note_demand)
+    presence = Presence(wifi.ip)
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports,
                       presence=presence)
     identity = IdentityService(a.state_dir)
     endpoint = Endpoint(identity, presence=presence)
     setup_ap = SetupApService(wifi, identity, presence)
-    session = Session("pi", [streams, wifi, proxy, identity, DiscoveryService(identity),
-                             PairingService(identity, endpoint), setup_ap,
-                             ModeService(wifi, setup_ap, endpoint)])
+    discovery = DiscoveryService(identity, wifi, streams)
+    session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint),
+                             setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery)])
     audio = AlsaAudio(session.link, a.device)
     audio.start()
     session.add(AudioFormatService(audio, Gadget()))
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
+    setup_ap.run()
     return session, streams
 
 

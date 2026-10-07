@@ -9,7 +9,7 @@ import time
 from .control import call
 from .portal import offer_portal, portal_flow
 from ..ui import Prompter, detail, done, line_buffered, step
-from ..wifi_ui import SEC_LABEL, bars, wifi_password
+from ..wifi_ui import FAILURE, SEC_LABEL, bars, wifi_password
 
 FIVE_GHZ_SUFFIXES = ("_5g", "-5g", "_5ghz", "-5ghz", " 5g", "_5", "-5", " 5ghz", ".5g")
 
@@ -87,7 +87,7 @@ def join_flow(name, a, port, known_security=None):
             kinds = sorted({m["security"] for m in matches})
             if len(kinds) > 1:
                 print("%d networks named %s:" % (len(kinds), name))
-                security = ask.choose("Which one?", [(SEC_LABEL[k], k) for k in kinds])
+                security = ask.choose("Which one?", [(SEC_LABEL.get(k, k), k) for k in kinds])
             else:
                 security = kinds[0]
 
@@ -121,8 +121,7 @@ def join_flow(name, a, port, known_security=None):
 
 def _failed(name, r):
     """Finish the "Connecting..." line with why it failed; returns where the Pi is."""
-    done({"auth_failed": "wrong password", "no_ip": "no address", "timeout": "couldn't connect",
-          "not_found": "not in range (2.4 GHz only)"}.get(r.get("code"), "failed"))
+    done(FAILURE.get(r.get("code"), "failed"))
     detail("the Pi said: %s (%s)", r.get("reason"), r.get("code"))
     return "%s staying on its known networks" % PI
 
@@ -174,7 +173,7 @@ def pick_flow(a, port):
     done("%d networks" % len(nets))
     opts = []
     for n in nets:
-        tags = [SEC_LABEL[n["security"]]]
+        tags = [SEC_LABEL.get(n["security"], n["security"])]
         if n["ssid"] == st["ssid"]:
             tags.append("connected")
         elif n["saved"]:
@@ -218,7 +217,7 @@ def wifi_command(a):
         nets = call("wifi.scan", port=port)
         done("%d networks" % len(nets) if nets else "none in range (2.4 GHz only)")
         for n in nets:
-            print("%-32s %s  %-16s %s" % (n["ssid"][:32], bars(n["signal"]), SEC_LABEL[n["security"]],
+            print("%-32s %s  %-16s %s" % (n["ssid"][:32], bars(n["signal"]), SEC_LABEL.get(n["security"], n["security"]),
                                             "known" if n["saved"] else ""))
             detail("%d dBm, %d MHz", n["signal"], n["freq"])
     elif a.action == "status":

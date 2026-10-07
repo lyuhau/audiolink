@@ -20,7 +20,6 @@ import threading
 import time
 
 from ..crypto import Spake2, seal
-from ..discovery.record import code_for
 from . import Service
 
 log = logging.getLogger("audiolink")
@@ -61,14 +60,14 @@ class PairingService(Service):
     # ---- requests from the host over USB (trusted)
     def handle(self, op, args):
         if op == "new_code":
-            if not self.identity.data["claimed"]:
+            if not self.identity.claimed():
                 return {"code": None, "unclaimed": True}
             return self.new_code()
         if op == "status":
             with self.lock:
                 c = self._active_code()
                 return {"active": bool(c), "expires_in": int(c["expires"] - time.monotonic()) if c else 0,
-                        "tries_left": c["tries"] if c else 0, "claimed": self.identity.data["claimed"]}
+                        "tries_left": c["tries"] if c else 0, "claimed": self.identity.claimed()}
         raise ValueError("unknown pairing operation %r" % op)
 
     # ---- endpoint requests
@@ -83,11 +82,11 @@ class PairingService(Service):
             if wait > 0:
                 conn.send({"error": "Too many wrong codes; retry in %ds" % wait})
                 raise StopIteration
-            claimed = self.identity.data["claimed"]
+            claimed = self.identity.claimed()
             c = self._active_code() if claimed else None
             if claimed and not c:
                 conn.send({"error": "Pairing code needed (on a computer that knows %s: audiolink pairing code %s)"
-                                    % ((self.identity.data["name"],) * 2)})
+                                    % ((self.identity.pi_name(),) * 2)})
                 raise StopIteration
             password = c["code"] if c else ""
         b = Spake2("B", password, ID_CLIENT, ID_PI)
@@ -112,8 +111,8 @@ class PairingService(Service):
                 self.code = None        # single use
         first = not claimed
         if first:
-            self.identity.handle("claim", {})
-        payload = {"code": code_for(self.identity.data), "name": self.identity.data["name"]}
+            self.identity.claim()
+        payload = {"code": self.identity.code(), "name": self.identity.pi_name()}
         conn.send({"confirm": ours.hex(), "payload": seal(key, json.dumps(payload).encode()).hex()})
         log.info("pairing: %s paired from %s%s", req.get("client", "a machine"), conn.addr[0],
                  " (first: claimed)" if first else "")

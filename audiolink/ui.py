@@ -10,15 +10,7 @@ import sys
 import threading
 
 VERBOSE = False                         # set from -v/--verbose (__main__)
-
-
-def duration(seconds):
-    """30 -> "30s", 180 -> "3 min"."""
-    seconds = int(seconds)
-    return "%ds" % seconds if seconds < 90 else "%d min" % round(seconds / 60)
-
-
-_open_step = False
+_open_step = False                      # a step() line is waiting for its done()
 
 
 def step(msg):

@@ -116,20 +116,13 @@ def add_command(a):
     print("Connect: audiolink ssh-config >> ~/.ssh/config, then ssh %s" % entry["alias"])
 
 
-def _resolve(name):
-    try:
-        return keyring.resolve(name)
-    except KeyError:
-        raise SystemExit("No Pi named %s (see: audiolink pis)" % name)
-
-
 def share_command(a):
-    e = _resolve(a.name)
+    e = keyring.lookup(a.name)
     print(e["code"])
 
 
 def forget_command(a):
-    e = _resolve(a.name)
+    e = keyring.lookup(a.name)
     keyring.remove(keyring.pub_of(e["code"]))
     print("Forgot %s" % e["alias"])
     if e.get("custody"):
@@ -138,7 +131,7 @@ def forget_command(a):
 
 
 def rename_command(a):
-    e = _resolve(a.name)
+    e = keyring.lookup(a.name)
     pub = keyring.pub_of(e["code"])
     new = a.new.strip().lower()
     if not NAME_RE.match(new):

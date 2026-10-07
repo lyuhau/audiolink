@@ -6,7 +6,6 @@ a claimed one asks for a fresh 6-digit code from its host or a paired machine.
 `audiolink pairing code PI`: issue that code (over USB if the Pi is plugged in here,
 otherwise over the network, proving this machine already knows the Pi).
 """
-import hashlib
 import hmac
 import json
 import socket
@@ -18,10 +17,12 @@ from ..discovery.record import parse_code
 from . import keyring
 from ..ui import detail
 
-PORT = 47900
-SETUP_ADDR = "192.168.4.1"          # where the Pi sits on its own setup network
+# The Pi's side of these (same wire protocol, so the same constants).
+from ..services.endpoint import PORT, proof_for
+from ..services.pairing import ID_CLIENT, ID_PI
+from ..services.setup_ap import AP_ADDR as SETUP_ADDR      # where the Pi sits on its setup network
+
 SERVICE = b"_audiolink._tcp.local"
-ID_CLIENT, ID_PI = b"audiolink client", b"audiolink pi"
 
 
 # ---------------------------------------------------------------- finding Pis
@@ -76,7 +77,7 @@ class PiConn:
         """An authenticated request: proves this machine knows the Pi's read secret;
         `sealed` (a dict) travels encrypted with it."""
         from ..crypto import seal
-        proof = hmac.new(secret, op.encode() + bytes.fromhex(hello["nonce"]), hashlib.sha256).hexdigest()
+        proof = proof_for(secret, op, bytes.fromhex(hello["nonce"]))
         req = dict(fields, op=op, proof=proof)
         if sealed is not None:
             req["sealed"] = seal(secret, json.dumps(sealed).encode()).hex()
@@ -198,10 +199,7 @@ def add_over_network(a, ask):
 def code_command(a):
     """`audiolink pairing code PI`: a fresh 6-digit code for pairing a new machine."""
     from ..host.control import DEFAULT_PORT, call
-    try:
-        entry = keyring.resolve(a.pi)
-    except KeyError:
-        raise SystemExit("No Pi named %s (see: audiolink pis)" % a.pi)
+    entry = keyring.lookup(a.pi)
     pub = keyring.pub_of(entry["code"])
     port = getattr(a, "control_port", None) or DEFAULT_PORT
     issued = None

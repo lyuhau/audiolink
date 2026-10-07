@@ -8,10 +8,11 @@ and DNS are never touched: the lease is recorded, not applied; the trial address
 a private routing table (TABLE) used only by traffic from that address, and names are
 resolved by asking the trial network's DNS server directly.
 
-Used by services/mode.py before switching networks on request from the network, so a
-wrong password, a captive portal or a network without DHCP is found out while the Pi
-is still reachable where it is. Not possible while the setup network is up (the chip
-allows an access point plus one client connection, on one channel).
+Used by services/wifi_remote.py before switching networks on request from the
+network, so a wrong password is found out while the Pi is still reachable where it is
+(the result also says whether there's internet or a captive portal; no address in time
+is inconclusive, as DHCP can just be slow). Not possible while the setup network is up
+(the chip allows an access point plus one client connection, on one channel).
 """
 import logging
 import os
@@ -23,6 +24,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import proc
 from .wifi import IFACE, Supplicant, connectivity, security_of
 
 log = logging.getLogger("audiolink")
@@ -189,6 +191,11 @@ def _result(ok, code, reason, freq=None, internet=None, portal_url=None):
     return r
 
 
+def cleanup():
+    """Undo a trial a previous run of the daemon left half done."""
+    _teardown()
+
+
 def _teardown(lease=None):
     ip = (lease or _lease()).get("ip")
     if ip:
@@ -199,13 +206,6 @@ def _teardown(lease=None):
     if (RUN / "wpa.pid").exists():
         _run("wpa_cli", "-p", str(RUN), "-i", TRIAL_IFACE, "disconnect")
         time.sleep(0.5)
-    try:
-        pid = int((RUN / "wpa.pid").read_text())
-        os.kill(pid, 15)
-        for _ in range(30):
-            os.kill(pid, 0)
-            time.sleep(0.1)
-    except (OSError, ValueError):
-        pass
+    proc.stop(RUN / "wpa.pid", wait=3)
     _run("iw", "dev", TRIAL_IFACE, "del")
     shutil.rmtree(RUN, ignore_errors=True)

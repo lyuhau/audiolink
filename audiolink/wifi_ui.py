@@ -11,6 +11,11 @@ def bars(dbm):
     return "▂▄▆█"[:level].ljust(4, "·")
 
 
+# Why a join failed (the Pi's failure codes), for ending a progress line.
+FAILURE = {"auth_failed": "wrong password", "no_ip": "no address", "timeout": "couldn't connect",
+           "not_found": "not in range (2.4 GHz only)"}
+
+
 def wifi_password(ask, ssid, security, retry=False):
     """Returns (password, can_retry): from --password-stdin, $AUDIOLINK_WIFI_PASSWORD
     (first try only), or a prompt that enforces WPA2's 8-63 characters."""

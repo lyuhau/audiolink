@@ -12,6 +12,12 @@ Every link starts in the BASELINE format. Over the link that's up, the host asks
 The HELLO carries {"audio": {"format", "pending"}}. A confirmed format also falls
 back to the baseline once no host has been seen for HOST_GONE seconds, so the next
 host (perhaps one that can't run it) always meets the Pi in the baseline.
+
+A restarted daemon (after a crash, or a dev redeploy) finds the gadget still in the
+last format, with the host most likely still using it. It keeps that format, pending
+like a switch (the host checks it and confirms), instead of re-presenting the gadget
+at once: rebinding the USB controller several times in a row can wedge it. Not if it
+did that less than ADOPT_AGAIN seconds ago: the format may be what keeps crashing it.
 """
 import base64
 import hashlib
@@ -28,6 +34,32 @@ log = logging.getLogger("audiolink")
 HOST_GONE = 15.0
 MAX_CONFIRM = 120
 SILENT_REVERT = 6.0             # after a switch, revert early if the host stays silent this long
+ADOPT_CONFIRM = 30.0            # a restarted daemon's kept format: the host has this long to confirm
+ADOPT_AGAIN = 120               # ...and it keeps one at most once in this long (seconds of uptime)
+ADOPTED = "/run/audiolink-adopted"
+
+
+def _uptime():
+    with open("/proc/uptime") as f:
+        return float(f.read().split()[0])
+
+
+def _may_adopt():
+    """Once per ADOPT_AGAIN: a daemon that crashed right after keeping a format starts
+    over in the baseline."""
+    try:
+        now = _uptime()
+        try:
+            with open(ADOPTED) as f:
+                if now - float(f.read()) < ADOPT_AGAIN:
+                    return False
+        except (OSError, ValueError):
+            pass
+        with open(ADOPTED, "w") as f:
+            f.write(str(now))
+        return True
+    except OSError:
+        return False
 
 
 class AudioFormatService(Service):
@@ -40,11 +72,26 @@ class AudioFormatService(Service):
         self.lock = threading.Lock()
         self.pending = None             # deadline (monotonic) for confirming the current format
         self.gone_since = None
-        if gadget.available() and gadget.current() not in (None, BASELINE):
-            # A restarted daemon: the gadget kept the last format. Start over in the baseline.
-            log.info("audio: gadget left in %r; back to %r", gadget.current(), BASELINE)
-            with self.lock:
-                self._switch(BASELINE)
+        self.adopted = None             # (format, deadline): kept from the last run, see attach()
+        current = gadget.current() if gadget.available() else None
+        if current not in (None, BASELINE):
+            if _may_adopt():
+                log.info("audio: gadget still in %r; keeping it unless the host confirms within %.0fs",
+                         current, ADOPT_CONFIRM)
+                with self.lock:
+                    self.audio.stop()
+                    self.audio.start(current)
+                    self.adopted = (current, time.monotonic() + ADOPT_CONFIRM)
+                    self.pending = self.adopted[1]
+            else:
+                log.info("audio: gadget left in %r again; back to %r", current, BASELINE)
+                with self.lock:
+                    self._switch(BASELINE)
+
+    def attach(self, session):
+        super().attach(session)
+        if self.adopted:
+            threading.Thread(target=self._await_confirm, args=self.adopted, daemon=True).start()
 
     @property
     def format(self):
@@ -99,8 +146,12 @@ class AudioFormatService(Service):
             deadline = self.pending = time.monotonic() + within
             log.info("audio: switching to %r; confirm within %.0fs", fmt, within)
             ok = self._switch(fmt)
-        if not ok:
-            return
+        if ok:
+            self._await_confirm(fmt, deadline)
+
+    def _await_confirm(self, fmt, deadline):
+        """Back to the baseline unless confirmed by the deadline (or early, if the host
+        goes silent)."""
         since = time.monotonic()
         while time.monotonic() < deadline:
             time.sleep(0.5)

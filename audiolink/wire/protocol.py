@@ -38,8 +38,16 @@ RTO = 0.4                            # retransmit timeout, seconds
 KEEPALIVE = 0.2                      # send an ack at least this often
 DGRAM_QUEUE = 64                     # datagrams beyond this are dropped
 
-T_ACK, T_DATA, T_OPEN, T_CLOSE, T_HELLO, T_DGRAM, T_CTRL = 0, 1, 2, 3, 4, 5, 6
-RELIABLE = {T_DATA, T_OPEN, T_CLOSE, T_HELLO, T_CTRL}
+T_ACK, T_DATA, T_OPEN, T_CLOSE, T_HELLO, T_DGRAM, T_CTRL, T_CREDIT = 0, 1, 2, 3, 4, 5, 6, 7
+# Every type but these is reliable (sequenced), including types this version doesn't
+# know: they're acked and then ignored, so a newer peer's new message can't jam the link.
+UNSEQUENCED = {T_ACK, T_DGRAM}
+SEQ_MASK = 0xFFFFFFFF                # sequence numbers wrap at 32 bits
+
+
+def seq_before(a, b):
+    """a comes before b, in wrapping 32-bit sequence space."""
+    return 0 < ((b - a) & SEQ_MASK) < 0x80000000
 
 log = logging.getLogger("audiolink")
 
@@ -109,6 +117,9 @@ class Link:
         self.ack_due = True
         self.last_tx = 0.0
         self.last_rx = 0.0
+        self.other_version = None               # a peer speaking another protocol version, if seen
+        self._version_check = 0.0
+        self._version_seen = None               # seen once: needs a second sighting (noise can match)
         self.out = bytearray()
         self.on_message = on_message
         self.on_datagram = on_datagram
@@ -127,6 +138,8 @@ class Link:
     # ---- sending
     def send(self, typ, sid, payload=b""):
         """Queue a reliable message; blocks while the queue is full (backpressure)."""
+        if len(payload) > MAX_PAYLOAD:
+            raise ValueError("message of %d bytes; the most a frame carries is %d" % (len(payload), MAX_PAYLOAD))
         with self.cv:
             while len(self.pending) >= self.window:
                 self.cv.wait(0.5)
@@ -159,7 +172,7 @@ class Link:
             typ, sid, payload = self.pending.popleft()
             self.cv.notify_all()
             seq = self.next_seq
-            self.next_seq += 1
+            self.next_seq = (seq + 1) & SEQ_MASK
             self.unacked.append([seq, now, typ, sid, payload])
             self.stats["tx_frames"] += 1
             return build_frame(self.session, self.peer or 0, typ, sid, seq, self.expected, payload)
@@ -193,6 +206,19 @@ class Link:
     # ---- receiving
     def feed(self, data):
         self.parser.feed(data)
+        now = time.monotonic()
+        if now - self.last_rx > 2 and now - self._version_check > 5:
+            # Hearing nothing we can parse: is it a peer on another protocol version?
+            self._version_check = now
+            i = data.find(SYNC[:3])
+            if i >= 0 and i + 3 < len(data) and data[i + 3] != SYNC[3]:
+                v = data[i + 3]
+                if self._version_seen == v and self.other_version != v:
+                    log.warning("the peer speaks link protocol v%d; this is v%d", v, SYNC[3])
+                    self.other_version = v
+                self._version_seen = v
+        elif self.other_version is not None and now - self.last_rx < 1:
+            self.other_version = self._version_seen = None
 
     def _on_frame(self, sess, echo, typ, sid, seq, ack, payload):
         deliver = dgram = None
@@ -212,16 +238,16 @@ class Link:
                 self.ack_due = True     # tell the peer who we are
             else:
                 popped = 0
-                while self.unacked and self.unacked[0][0] < ack:
+                while self.unacked and seq_before(self.unacked[0][0], ack):
                     self.unacked.popleft()
                     popped += 1
                 if popped:
                     self.cv.notify_all()
                     if self.resend_idx is not None:
                         self.resend_idx = max(0, self.resend_idx - popped)
-                if typ in RELIABLE:
+                if typ not in UNSEQUENCED:
                     if seq == self.expected:
-                        self.expected += 1
+                        self.expected = (seq + 1) & SEQ_MASK
                         deliver = (typ, sid, payload)
                     else:
                         self.stats["rx_out_of_order"] += 1

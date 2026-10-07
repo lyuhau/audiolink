@@ -10,6 +10,7 @@ gets its own upstream connection (Connection: close), which keeps it simple.
 import logging
 import socket
 import threading
+import time
 from urllib.parse import urlsplit
 
 from . import Service
@@ -98,8 +99,12 @@ def serve(port=PROXY_PORT, on_request=lambda: None):
 
     def loop():
         while True:
-            conn, _ = srv.accept()
-            threading.Thread(target=_handle, args=(conn, on_request), daemon=True).start()
+            try:
+                conn, _ = srv.accept()
+                threading.Thread(target=_handle, args=(conn, on_request), daemon=True).start()
+            except (OSError, RuntimeError) as e:     # e.g. out of file descriptors or threads
+                log.warning("proxy: %s", e)
+                time.sleep(1)
 
     threading.Thread(target=loop, daemon=True).start()
     log.info("proxy for browsing as the Pi on 127.0.0.1:%d", port)

@@ -3,7 +3,7 @@
 The record is signed with the Pi's own identity (services/identity.py) and sealed
 with its read secret. BEP 44 sequence numbers must keep increasing across restarts,
 and we use the timestamp for them; the Pi has no real-time clock, so it waits until
-a host has told it the time (session.now()).
+NTP or a host has told it the time (session.now()).
 
 Publishes once the Pi is online and discoverable, again whenever the record's
 contents change, and every REPUBLISH seconds (DHT nodes drop items after a few hours).
@@ -12,21 +12,21 @@ import logging
 import threading
 import time
 
+from ..session import CLOCK_SANE
 from . import Service
 
 log = logging.getLogger("audiolink")
 
 REPUBLISH = 30 * 60
 CHECK_EVERY = 30
-CLOCK_SANE = 1_700_000_000      # 2023: anything earlier means nobody has told us the time
 
 
 class DiscoveryService(Service):
     name = "discovery"
     caps = ("discovery",)
 
-    def __init__(self, identity):
-        self.identity = identity
+    def __init__(self, identity, wifi, streams):
+        self.identity, self.wifi, self.streams = identity, wifi, streams
         self.last = {"published": None}
         self.wake = threading.Event()
         self.dht = None
@@ -44,7 +44,7 @@ class DiscoveryService(Service):
     def handle(self, op, args):
         if op == "status":
             public = {k: v for k, v in self.last.items() if k != "content"}     # content is internal
-            return dict(public, enabled=self.identity.data["discoverable"], now=self.session.now(),
+            return dict(public, enabled=self.identity.discoverable(), now=self.session.now(),
                         clock_known=self.session.now() > CLOCK_SANE)
         if op == "publish":
             self.republish()
@@ -54,16 +54,13 @@ class DiscoveryService(Service):
     # ---- publishing
     def _current(self):
         """What the record should say, or None if there's nothing to publish yet."""
-        if not self.identity.data["discoverable"] or self.session.now() < CLOCK_SANE:
+        if not self.identity.discoverable() or self.session.now() < CLOCK_SANE:
             return None
-        wifi = self.session.by_name.get("wifi")
-        conn = wifi.connection() if wifi else None
-        if not conn or conn["internet"] != "online":
+        conn = self.wifi.connection()
+        if conn["internet"] != "online":
             return None
-        streams = self.session.by_name.get("streams")
-        ports = streams.ports() if streams else []
-        return (self.identity.public(), self.identity.data["name"],
-                [conn["ip"]] if conn["ip"] else [], conn["ssid"], ports)
+        return (self.identity.public(), self.identity.pi_name(),
+                [conn["ip"]] if conn["ip"] else [], conn["ssid"], self.streams.ports())
 
     def _loop(self):
         from ..discovery.dht import DHT
@@ -71,13 +68,13 @@ class DiscoveryService(Service):
         while True:
             self.wake.wait(CHECK_EVERY)
             self.wake.clear()
-            cur = self._current()
-            if cur is None:
-                continue
-            due = self.last.get("published") is None or self.session.now() - self.last["published"] > REPUBLISH
-            if cur == self.last.get("content") and not due:
-                continue
             try:
+                cur = self._current()
+                if cur is None:
+                    continue
+                due = self.last.get("published") is None or self.session.now() - self.last["published"] > REPUBLISH
+                if cur == self.last.get("content") and not due:
+                    continue
                 seed, secret = self.identity.keys()
                 pub, name, lan, ssid, ports = cur
                 rec, blob = make_record(secret, name, lan, ssid, ports, ts=self.session.now())
