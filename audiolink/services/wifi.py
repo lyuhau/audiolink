@@ -246,7 +246,8 @@ class WifiManager:
                     log.debug("wifi monitor: %s", e)
                 finally:
                     self.lock.release()
-            time.sleep(15 if state and state["internet"] == "portal" else 60)
+            # Not online yet (e.g. DHCP still running at boot) or behind a portal: check sooner.
+            time.sleep(60 if state and state["internet"] == "online" else 15)
 
     def announce(self):
         """Link-up hook: tell a (new) host the current state."""
