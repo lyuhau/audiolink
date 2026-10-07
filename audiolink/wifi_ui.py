@@ -22,7 +22,7 @@ def wifi_password(ask, ssid, security, retry=False):
     while True:
         pw = ask.secret("Password for %s: " % ssid)
         if security in ("wpa2", "wpa2/wpa3") and not 8 <= len(pw) <= 63:
-            print("Wi-Fi passwords are 8 to 63 characters long. Try again.")
+            print("Must be 8-63 characters")
             continue
         if pw:
             return pw, True

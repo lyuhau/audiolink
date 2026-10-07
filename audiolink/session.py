@@ -69,7 +69,7 @@ class Session:
     # ---- link callbacks (parser thread; must not block for long)
     def on_up(self):
         self.peer_alive = True
-        self._fail_requests("The connection to the Pi restarted; try again.")
+        self._fail_requests("Pi connection restarted; retry")
         hello = {"v": PROTOCOL_VERSION, "role": self.role, "version": __version__, "time": time.time()}
         for svc in self.services:
             svc.on_up()
@@ -101,13 +101,13 @@ class Session:
     def request(self, op, args=None, timeout=60):
         """Send a control request to the peer and wait for its reply."""
         if not self.peer_alive:
-            raise RuntimeError("No Pi is plugged in right now.")
+            raise RuntimeError("No Pi plugged in")
         rid = next(self.req_ids) & 0xFFFF or next(self.req_ids)
         ent = self.requests[rid] = [threading.Event(), None]
         self._send_ctrl(rid, {"op": op, "args": args or {}})
         if not ent[0].wait(timeout):
             self.requests.pop(rid, None)
-            raise TimeoutError("The Pi didn't answer (%s)." % op)
+            raise TimeoutError("Pi didn't answer (%s)" % op)
         reply = self.requests.pop(rid)[1]
         if not reply.get("ok"):
             raise RuntimeError(reply.get("error", "request failed"))
@@ -169,7 +169,7 @@ class Session:
             if self.peer_alive and time.monotonic() - self.link.last_rx > PEER_TIMEOUT:
                 log.warning("peer silent for %.0fs; resetting the link", PEER_TIMEOUT)
                 self.peer_alive = False
-                self._fail_requests("The Pi disconnected.")
+                self._fail_requests("Pi disconnected")
                 for svc in self.services:
                     svc.on_down()
                 # Start a fresh session so both sides resync when the peer returns.

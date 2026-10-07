@@ -13,17 +13,32 @@ VERBOSE = False                         # set from -v/--verbose (__main__)
 
 
 def duration(seconds):
-    """30 -> "30 seconds", 180 -> "3 minutes"."""
+    """30 -> "30s", 180 -> "3 min"."""
     seconds = int(seconds)
-    if seconds < 90:
-        return "%d seconds" % seconds
-    return "%d minutes" % round(seconds / 60)
+    return "%ds" % seconds if seconds < 90 else "%d min" % round(seconds / 60)
+
+
+_open_step = False
+
+
+def step(msg):
+    """Start a progress line: "Checking X... " (finish it with done())."""
+    global _open_step
+    print(msg + "... ", end="", flush=True)
+    _open_step = True
+
+
+def done(result):
+    """Finish the progress line started by step()."""
+    global _open_step
+    print(result, flush=True)
+    _open_step = False
 
 
 def detail(msg, *args):
     """Technical detail: printed only with -v."""
     if VERBOSE:
-        print("  [%s]" % (msg % args if args else msg), flush=True)
+        print("%s  [%s]" % ("\n" if _open_step else "", msg % args if args else msg), flush=True)
 
 
 class LogGate(logging.Handler):
@@ -79,12 +94,12 @@ class Prompter:
             return input(prompt)
         except (EOFError, KeyboardInterrupt):
             print()
-            raise SystemExit("Cancelled.")
+            raise SystemExit("Cancelled")
 
     def need_tty(self, what):
         if not self.tty:
-            raise SystemExit("I'd need to ask \"%s\", but there's no terminal to type an answer into.%s" % (
-                what.strip(), "\nThese options answer it up front: " + self.flags_hint if self.flags_hint else ""))
+            raise SystemExit("Can't ask \"%s\" without a terminal%s" % (
+                what.strip(), " (answer it with: %s)" % self.flags_hint if self.flags_hint else ""))
 
     def yes(self, question, default=False):
         self.need_tty(question)
@@ -112,4 +127,4 @@ class Prompter:
             return getpass.getpass(prompt)
         except (EOFError, KeyboardInterrupt):
             print()
-            raise SystemExit("Cancelled.")
+            raise SystemExit("Cancelled")

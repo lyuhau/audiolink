@@ -82,10 +82,10 @@ class ModeService(Service):
         p = conn.open(req["sealed"])
         ssid = (p.get("ssid") or "").strip()
         if not ssid:
-            return {"error": "No network name given."}
+            return {"error": "No network name"}
         use_saved = bool(p.get("use_saved")) or (ssid in self.wifi.saved and not p.get("password"))
         if use_saved and ssid not in self.wifi.saved:
-            return {"error": "The Pi doesn't know the password for %s yet." % ssid}
+            return {"error": "No saved password for %s" % ssid}
         try:
             ent = dict(self.wifi.saved[ssid]) if use_saved else dict(
                 credentials(ssid, p.get("security") or "wpa2", p.get("password")), hidden=bool(p.get("hidden")))
@@ -98,8 +98,7 @@ class ModeService(Service):
                              % (ssid, age // 60), "code": "not_found", "stayed_on": self.wifi.current_ssid()}
         with self.lock:
             if self.pending:
-                return {"error": "The Pi is already in the middle of switching to %s. Try again in a minute."
-                                  % self.pending["target"]}
+                return {"error": "Already switching to %s; retry in a minute" % self.pending["target"]}
             current = self.wifi.current_ssid()
             fallback = "setup network" if self.setup_ap.active or not current else "Wi-Fi %r" % current
             window = max(CONFIRM_RANGE[0], min(CONFIRM_RANGE[1], int(p.get("confirm_within") or 180)))
@@ -118,6 +117,11 @@ class ModeService(Service):
             precheck = None
             if current and current != ssid and not ap_channel:
                 precheck = trial(ssid, ent)
+                if precheck["code"] == "auth_failed" and use_saved and ent.get("verified"):
+                    # A password that has worked before: right after a failed login an access
+                    # point can turn the next one away too. Once more before calling it wrong.
+                    time.sleep(5)
+                    precheck = trial(ssid, ent)
                 if precheck["ok"] or precheck["code"] == "no_ip":
                     self.wifi.remember(ssid, ent)   # the password works: never ask for it again
                 if precheck["ok"] is False:
@@ -231,14 +235,14 @@ class ModeService(Service):
     def _confirm(self, conn, req):
         p = self.pending
         if not p or p["phase"] != "awaiting confirmation":
-            return {"error": "There's no network change waiting to be confirmed."}
+            return {"error": "Nothing to confirm"}
         if p["token_hash"]:
             token = conn.open(req["sealed"]).get("token", "") if req.get("sealed") else ""
             if not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), p["token_hash"]):
-                return {"error": "This change can only be confirmed by the computer that asked for it."}
+                return {"error": "Only the requesting computer can confirm this change"}
         if p.get("alongside") and conn.addr[0].rsplit(".", 1)[0] == AP_ADDR.rsplit(".", 1)[0]:
             # Joined next to the setup network: the point is reaching the Pi on the new one.
-            return {"error": "Confirm from %s, not over the setup network." % p["target"], "retry": True}
+            return {"error": "Confirm from %s, not the setup network" % p["target"], "retry": True}
         self.confirmed.set()
         log.info("mode: confirmed from %s", conn.addr[0])
         return {"kept": p["target"]}

@@ -17,7 +17,7 @@ import time
 from ..discovery.record import parse_code
 from ..names import NAME_RE
 from . import keyring
-from ..ui import detail
+from ..ui import detail, done, step
 
 
 def _launcher():
@@ -43,7 +43,7 @@ def _ago(ts):
 def pis_command(a):
     pis = keyring.load()
     if not pis:
-        print("You haven't added any Pis yet. Plug one in and run: audiolink add")
+        print("No Pis yet (add one: audiolink add)")
         return
     print("%-20s %-12s %s" % ("NAME", "LAST SEEN", "LAST SEEN ON"))
     for pub, e in sorted(pis.items(), key=lambda kv: kv[1]["alias"]):
@@ -72,12 +72,10 @@ def _add_usb(a):
     custody = None if info["persistent"] else call("identity.export", port=port)
     entry, created = keyring.upsert(code, name=info["name"], alias=a.name, serial=info["serial"],
                                     custody=custody)
-    print(("Added %s, the Pi plugged in here." if created else "%s was already added; updated its details.")
-          % entry["alias"])
-    if claim.get("first"):
-        print("This is the first computer to add it, so it's yours now.")
+    print("%s %s%s" % ("Added" if created else "Updated", entry["alias"],
+                       " (claimed: first computer)" if claim.get("first") else ""))
     if custody:
-        print("It has no SD card, so this computer keeps a backup of its identity for it.")
+        print("No SD card: keeping a backup of its identity here")
     return entry
 
 
@@ -89,12 +87,13 @@ def _add_code(a):
     name = None
     if not a.no_lookup:
         from .find import lookup
-        print("Looking up its name...", flush=True)
+        step("Looking up its name")
         detail("on the DHT; --no-lookup skips this")
         rec, _ = lookup(a.code)
         name = rec and rec.get("name")
+        done(name or "not found")
     entry, created = keyring.upsert(a.code, name=name, alias=a.name)
-    print(("Added %s." if created else "Updated %s.") % entry["alias"])
+    print("%s %s" % ("Added" if created else "Updated", entry["alias"]))
     return entry
 
 
@@ -107,23 +106,21 @@ def add_command(a):
     else:
         entry = None if a.at else _add_usb(a)
         if entry is None:
-            print("Looking for Pis on this network...", flush=True)
+            print("Searching this network...", flush=True)
             entry = add_over_network(a, Prompter(a, "--pairing-code, --at"))
     if entry is None:
-        raise SystemExit("Couldn't find a new Pi. Ways to add one:\n"
-                         "  - plug it in here, with `audiolink host` running, and run audiolink add again\n"
-                         "  - be on the same network as it (if it still isn't found: --at ITS-ADDRESS)\n"
-                         "  - join its setup network (named audiopi-...) and run audiolink add\n"
-                         "  - on a computer that knows it, run `audiolink share NAME`, then here:\n"
-                         "    audiolink add al1-...")
-    print("To use it with ssh: audiolink ssh-config >> ~/.ssh/config, then: ssh %s" % entry["alias"])
+        raise SystemExit("No new Pi found. To add one:\n"
+                         "  plug it in here (with audiolink host running)\n"
+                         "  or join its network or setup network (audiopi-...)  [--at ADDRESS if not found]\n"
+                         "  or paste its code: audiolink add al1-...  (from: audiolink share NAME)")
+    print("Connect: audiolink ssh-config >> ~/.ssh/config, then ssh %s" % entry["alias"])
 
 
 def _resolve(name):
     try:
         return keyring.resolve(name)
     except KeyError:
-        raise SystemExit("You don't have a Pi called %s. To see yours: audiolink pis" % name)
+        raise SystemExit("No Pi named %s (see: audiolink pis)" % name)
 
 
 def share_command(a):
@@ -134,10 +131,10 @@ def share_command(a):
 def forget_command(a):
     e = _resolve(a.name)
     keyring.remove(keyring.pub_of(e["code"]))
-    print("Forgot %s." % e["alias"])
+    print("Forgot %s" % e["alias"])
     if e.get("custody"):
-        print("This computer was keeping a backup of its identity. If it has no SD card and no other\n"
-              "computer has added it, it gets a new identity (and a new code) when it restarts.")
+        print("Note: dropped its identity backup; without an SD card or another computer's backup,\n"
+              "it gets a new identity (and code) when it restarts")
 
 
 def rename_command(a):
@@ -145,32 +142,30 @@ def rename_command(a):
     pub = keyring.pub_of(e["code"])
     new = a.new.strip().lower()
     if not NAME_RE.match(new):
-        raise SystemExit("Names can only use lowercase letters, digits and dashes (up to 32 characters).")
+        raise SystemExit("Names: lowercase letters, digits and dashes, up to 32")
     if a.on_pi:
         from ..host.control import DEFAULT_PORT, call
         port = getattr(a, "control_port", None) or DEFAULT_PORT
         info = call("identity.info", port=port)
         if info["pub"] != pub:
-            raise SystemExit("The Pi plugged in here isn't %s. Plug %s in to rename it." % (e["alias"], e["alias"]))
+            raise SystemExit("The Pi plugged in here isn't %s" % e["alias"])
         call("identity.rename", {"name": new}, port=port)
         keyring.update(pub, name=new)
-        print("Renamed the Pi itself to %s. Other computers pick up the new name the next time they\n"
-              "look it up." % new)
+        print("Renamed %s to %s (other computers update on their next lookup)" % (e["alias"], new))
     alias = keyring.unique_alias(keyring.load(), new, pub)
     keyring.update(pub, alias=alias)
     if not a.on_pi:
-        print("On this computer it's now called %s. (To rename the Pi itself, so every computer\n"
-              "sees the new name: add --on-pi with it plugged in here.)" % alias)
+        print("Renamed %s to %s on this computer (--on-pi renames the Pi itself)" % (e["alias"], alias))
     elif alias != new:
-        print("On this computer it's called %s, since you already have a Pi called %s." % (alias, new))
+        print("Here it's %s (another Pi is already named %s)" % (alias, new))
 
 
 def ssh_config_command(a):
     pis = keyring.load()
     if not pis:
-        raise SystemExit("You haven't added any Pis yet. Plug one in and run: audiolink add")
+        raise SystemExit("No Pis yet (add one: audiolink add)")
     user = a.user or getpass.getuser()
-    print("# audiolink: add this to ~/.ssh/config, then connect with: ssh NAME")
+    print("# audiolink: add to ~/.ssh/config, then: ssh NAME")
     for e in sorted(pis.values(), key=lambda e: e["alias"]):
         ports = (e.get("last_record") or {}).get("ports") or [a.port]
         port = a.port if a.port in ports or not e.get("last_record") else ports[0]

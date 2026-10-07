@@ -69,7 +69,7 @@ def list_devices():
         mark = "*" if any(h in d["name"].lower() for h in DEVICE_HINTS) else " "
         print("%s %3d  %-40s %-20s in=%d out=%d" % (mark, d["index"], d["name"], d["hostapi"],
                                                     d["inputs"], d["outputs"]))
-    print("\n* = the Pi's sound device (audiolink host uses these)")
+    print("\n* = Pi audio device")
 
 
 def main(argv=None):

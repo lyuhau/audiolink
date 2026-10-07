@@ -15,7 +15,7 @@ import time
 from ..services import Service
 from ..paths import cache_dir
 from .control import call
-from ..ui import detail
+from ..ui import detail, done, step
 
 log = logging.getLogger("audiolink")
 
@@ -33,17 +33,15 @@ def offer_portal(a, port, wait=True):
     """A captive portal is in the way: open the login page if asked to (--portal) or
     if the user says yes; otherwise say how to do it later. Returns True if opened."""
     if getattr(a, "no_portal", False) or (not getattr(a, "portal", False) and not sys.stdin.isatty()):
-        print("This network wants you to sign in before it gives %s internet.\n"
-              "To sign in from this computer: audiolink wifi portal" % _pi(port))
+        print("Sign-in page needed (run: audiolink wifi portal)")
         return False
     if not getattr(a, "portal", False):
         try:
-            ans = input("This network wants you to sign in before it gives %s internet.\n"
-                        "Open the sign-in page now? [Y/n] " % _pi(port))
+            ans = input("Sign-in page needed. Open it now? [Y/n] ")
         except EOFError:
             ans = "n"
         if ans.strip().lower().startswith("n"):
-            print("OK. To sign in later: audiolink wifi portal")
+            print("Later: audiolink wifi portal")
             return False
     portal_flow(port, wait=wait)
     return True
@@ -89,45 +87,46 @@ def portal_flow(port, wait=True):
     peer = call("peer", port=port)
     pi = _pi(peer=peer)
     if "proxy" not in (peer["peer"] or {}).get("caps", []):
-        raise SystemExit("%s's audiolink is too old for signing in to networks from here; update it." % pi)
+        raise SystemExit("%s: audiolink too old for sign-in pages (update it)" % pi)
     if not peer.get("proxy_port"):
-        raise SystemExit("audiolink host was started with --proxy-port 0, which turns this off. "
-                         "Restart it without that.")
+        raise SystemExit("Off: audiolink host was started with --proxy-port 0")
     st = call("wifi.status", port=port)
     if not st["ssid"]:
-        raise SystemExit("%s isn't on a Wi-Fi network. Pick one first: audiolink wifi" % pi)
+        raise SystemExit("%s: not on Wi-Fi (pick a network: audiolink wifi)" % pi)
     r = call("wifi.check", port=port)
     if r["internet"] == "online":
-        print("%s is already online on %s. There's nothing to sign in to." % (pi, st["ssid"]))
+        print("%s: already online (%s); nothing to sign in to" % (pi, st["ssid"]))
         return
     if r["internet"] == "offline":
-        print("%s gets no answer from the internet on %s. Trying the sign-in page anyway." % (pi, st["ssid"]))
+        print("%s: no internet on %s; opening the sign-in page anyway" % (pi, st["ssid"]))
         detail("%s", r.get("detail", ""))
     url = r.get("portal_url") or "http://captive.apple.com/hotspot-detect.html"
     call("portal_active", port=port)        # the login window's own requests aren't "demand"
     browser = _open_browser(url, peer["proxy_port"])
     if browser:
-        print("Opened a separate %s window that browses through %s." % (browser, pi))
-        print("Sign in to %s there. Your usual browser and this computer's network aren't affected." % st["ssid"])
+        print("Opened a %s window browsing through %s; sign in to %s there" % (browser, pi, st["ssid"]))
+        detail("a separate profile: your usual browser and this computer's network aren't affected")
         detail("page %s through the proxy at 127.0.0.1:%d", url, peer["proxy_port"])
     else:
-        print("I couldn't find Chrome, Edge or Brave. In another browser, set its HTTP proxy to")
-        print("127.0.0.1:%d (that browses through %s), then open: %s" % (peer["proxy_port"], pi, url))
+        print("No Chrome, Edge or Brave found. In another browser, set HTTP proxy 127.0.0.1:%d" % peer["proxy_port"])
+        print("(browses through %s) and open: %s" % (pi, url))
     if not wait:
         return
-    print("Waiting for %s to get online (Ctrl-C to stop waiting)..." % pi, flush=True)
+    step("Waiting for %s to get online (Ctrl-C to stop)" % pi)
     deadline = time.monotonic() + 15 * 60
     try:
         while time.monotonic() < deadline:
             time.sleep(3)
             call("portal_active", port=port)
             if call("wifi.check", port=port)["internet"] == "online":
-                print("%s is online. You can close that browser window." % pi)
+                done("online")
+                print("You can close that browser window")
                 return
     except KeyboardInterrupt:
-        print()
-        raise SystemExit("Stopped waiting. To check later: audiolink wifi status")
-    raise SystemExit("%s still isn't online after 15 minutes." % pi)
+        done("stopped")
+        raise SystemExit("Check later: audiolink wifi status")
+    done("timed out")
+    raise SystemExit("%s: still not online after 15 min" % pi)
 
 
 class PortalWatcher(Service):
@@ -185,11 +184,9 @@ class PortalWatcher(Service):
         ssid = self.state.get("ssid")
         pi = self._name()
         if first:
-            log.warning("%s needs you to sign in to %s%s before it gets internet", pi, ssid,
-                        " again (the sign-in expired)" if expired else "")
+            log.warning("%s: sign-in page on %s%s", pi, ssid, " (expired)" if expired else "")
         else:
-            log.warning("something needs %s's internet, but %s is waiting for you to sign in: "
-                        "audiolink wifi portal", pi, ssid)
+            log.warning("%s: internet needed, but %s is waiting for sign-in (run: audiolink wifi portal)", pi, ssid)
         # Ask when it first happens; after a "no", ask again only on demand.
         if not self.interactive or (first and self.declined) or (not first and not self.declined):
             return
@@ -198,13 +195,13 @@ class PortalWatcher(Service):
         self.gate.pause()
         try:
             try:
-                ans = input("Open the sign-in page for %s now? [Y/n] " % ssid)
+                ans = input("Open the sign-in page for %s? [Y/n] " % ssid)
             except EOFError:
                 ans = "n"
             if ans.strip().lower().startswith("n"):
                 self.declined = True
-                print("OK. To sign in later: audiolink wifi portal (I'll ask again when something "
-                      "needs %s's internet)" % pi, flush=True)
+                print("Later: audiolink wifi portal (asking again when something needs %s's internet)" % pi,
+                      flush=True)
             else:
                 self.declined = False
                 try:

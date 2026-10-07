@@ -56,15 +56,14 @@ def call(op, args=None, port=DEFAULT_PORT):
     try:
         conn = socket.create_connection(("127.0.0.1", port), timeout=120)
     except OSError:
-        raise SystemExit("This needs `audiolink host` running on this computer, with the Pi plugged in.\n"
-                         "Start it first (in another terminal): audiolink host")
+        raise SystemExit("audiolink host isn't running (start it: audiolink host)")
     with conn:
         conn.sendall((json.dumps({"op": op, "args": args or {}}) + "\n").encode())
         line = conn.makefile("r").readline()
     if not line:
-        raise SystemExit("audiolink host stopped before it answered.")
+        raise SystemExit("audiolink host stopped before answering")
     reply = json.loads(line)
     if not reply.get("ok"):
-        msg = reply.get("error") or "Something went wrong."
+        msg = reply.get("error") or "Failed"
         raise SystemExit(msg[:1].upper() + msg[1:])
     return reply["result"]

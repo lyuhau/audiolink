@@ -15,7 +15,7 @@ import time
 
 from ..paths import cache_dir
 from . import keyring
-from ..ui import detail
+from ..ui import detail, done, step
 
 
 def _cache_file():
@@ -46,8 +46,7 @@ def code_for(pi):
     try:
         return keyring.resolve(pi)["code"]
     except KeyError:
-        raise SystemExit("You don't have a Pi called %s, and that isn't a connect code either.\n"
-                         "To see your Pis: audiolink pis" % pi)
+        raise SystemExit("No Pi named %s, and not a connect code (see: audiolink pis)" % pi)
 
 
 def lookup(code):
@@ -68,7 +67,7 @@ def lookup(code):
         return None, took
     rec = read_record(secret, got[1])
     if rec is None:
-        raise SystemExit("Found the Pi's note, but couldn't read it. The code here may be wrong or out of date.")
+        raise SystemExit("Found its record, but can't read it (wrong or outdated code?)")
     _remember(pub, rec)
     return rec, took
 
@@ -81,13 +80,12 @@ def find_command(a):
         raise SystemExit(str(e))
     if not rec:
         detail("no record on the DHT after %.0fs", took)
-        raise SystemExit("Couldn't find where it is. It needs to be online, with discovery on\n"
-                         "(on its host: audiolink discovery status).")
+        raise SystemExit("Not found (needs to be online with discovery on; see: audiolink discovery status)")
     age = time.time() - rec["ts"]
-    print("%s is on %s%s." % (rec["name"], rec.get("ssid") or "a network",
-                              " (as of %.0f minutes ago)" % (age / 60) if age >= 120 else ""))
+    print("%s: on %s%s" % (rec["name"], rec.get("ssid") or "unknown network",
+                           " (%.0f min ago)" % (age / 60) if age >= 120 else ""))
     if rec["ports"]:
-        print("Its open ports: %s" % ", ".join(map(str, rec["ports"])))
+        print("Ports: %s" % ", ".join(map(str, rec["ports"])))
     detail("addresses %s, lookup %.1fs", ", ".join(rec["lan"]) or "?", took)
 
 
@@ -113,14 +111,13 @@ def connect_command(a):
     if cached:
         sock = _try_connect(cached.get("lan", []), a.port)
     if sock is None:
-        sys.stderr.write("audiolink: looking for the Pi...\n")
+        sys.stderr.write("audiolink: looking up the Pi...\n")
         rec, _ = lookup(code)
         if not rec:
-            raise SystemExit("audiolink: couldn't find where the Pi is (is it online, with discovery on?)")
+            raise SystemExit("audiolink: Pi not found (online, with discovery on?)")
         sock = _try_connect(rec.get("lan", []), a.port)
         if sock is None:
-            raise SystemExit("audiolink: the Pi is on %s, but this computer can't reach it there.\n"
-                             "audiolink: connect this computer to %s too (some networks also keep devices apart)."
+            raise SystemExit("audiolink: Pi is on %s, unreachable from here (connect to %s too)"
                              % (rec.get("ssid") or "another network", rec.get("ssid") or "that network"))
     sock.settimeout(None)
     _pipe(sock)
@@ -158,13 +155,14 @@ def _pipe(sock):
 
 def dht_size_command(a):
     from ..discovery.dht import DHT
-    print("Counting the BitTorrent DHT, the network audiolink uses to find Pis (about a minute)...",
-          flush=True)
+    step("Sampling the BitTorrent DHT (about a minute)")
     dht = DHT()
     t0 = time.monotonic()
     n, samples = dht.estimate_size(samples=a.samples)
     if not n:
-        raise SystemExit("Nobody on the DHT answered. This network may block it (UDP).")
-    print("At least %.1f million computers are taking part right now." % (n / 1e6))
+        done("no answers")
+        raise SystemExit("DHT unreachable (UDP blocked on this network?)")
+    done("done")
+    print("At least %.1f million nodes" % (n / 1e6))
     detail("median of %d samples, %.0fs; a lower bound: slow, NAT'd and read-only-ignoring nodes "
            "don't show up", samples, time.monotonic() - t0)
