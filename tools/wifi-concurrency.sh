@@ -3,12 +3,18 @@
 #   ap_up / ap_down        a second interface (uap0) running an open AP "audiopi-test" on wlan0's channel
 #   sta2_up SSID           a second station (wlan1) on another network (asks for its password)
 #   sta2_start / sta2_down reuse the saved station config / remove it
+#   savekey SSID           store another network's derived key (asks for its password)
+#   drag N                 N cycles: move wlan0 to the saved network and back, AP up
 #   monitor                log wlan0, AP and wlan1 health every 2 s to /tmp/exp/mon.log
 #   report [LINE]          summarize the log from LINE on
 # Results (2026-10-07, BCM43430): AP + station on one channel is solid; two stations on
 # two channels stay associated but lose 30-50% of pings (the radio time-slices); moving
 # the station to another channel drags the AP along silently (hostapd isn't told), once
-# with an SDIO error burst. Note: udhcpc on wlan1 overwrites /etc/resolv.conf.
+# with an SDIO error burst (none in 30 later moves). After a drag, clients stay
+# associated but receive nothing until hostapd restarts; phones then return to their
+# usual Wi-Fi rather than follow the AP to the new channel. Don't rely on the drag:
+# restart the AP on the new channel, and expect clients to have left.
+# Note: udhcpc on wlan1 overwrites /etc/resolv.conf.
 L=/tmp/exp
 mkdir -p $L
 case "$1" in
@@ -67,6 +73,34 @@ sta2_up)
 sta2_down)
     [ -f $L/udhcpc2.pid ] && kill $(cat $L/udhcpc2.pid); [ -f $L/sta2.pid ] && kill $(cat $L/sta2.pid); sleep 1
     iw dev wlan1 del 2>/dev/null; echo sta2 down
+    ;;
+savekey)
+    # store a network's derived key (not the password) for the drag tests
+    printf "password for %s: " "$2"; stty -echo 2>/dev/null; read PW; stty echo 2>/dev/null; echo
+    wpa_passphrase "$2" "$PW" | sed -n 's/^\s*psk=\([0-9a-f]*\)$/\1/p' > $L/hot.psk; unset PW
+    echo "$2" > $L/hot.ssid; chmod 600 $L/hot.psk; [ -s $L/hot.psk ] && echo saved || echo FAILED
+    ;;
+drag)
+    # $2 cycles: move wlan0 to the saved network (another channel) and back, with the AP up
+    N=${2:-20}; LOG=$L/drag.log; : > $LOG
+    errs() { dmesg | grep -cE "brcmf_sdio|CMD53|inhibit|brcmf_c_|fw error|firmware has halted"; }
+    waitc() { i=0; while [ $i -lt 40 ]; do wpa_cli -i wlan0 status | grep -q wpa_state=COMPLETED && wpa_cli -i wlan0 status | grep -q "^freq=$1" && { echo $i; return; }; sleep 0.5; i=$((i+1)); done; echo FAIL; }
+    apch() { iw dev uap0 info 2>/dev/null | sed -n 's/.*channel \([0-9]*\).*/\1/p'; }
+    apst() { hostapd_cli -p /var/run/hostapd-exp -i uap0 status 2>/dev/null | sed -n 's/^state=//p'; }
+    HOME_ID=$(wpa_cli -i wlan0 list_networks | awk '/CURRENT/{print $1}')
+    H=$(wpa_cli -i wlan0 add_network | tail -1)
+    wpa_cli -i wlan0 set_network $H ssid "\"$(cat $L/hot.ssid)\"" >/dev/null
+    wpa_cli -i wlan0 set_network $H psk $(cat $L/hot.psk) >/dev/null
+    wpa_cli -i wlan0 disable_network $H >/dev/null
+    E0=$(errs); echo "start: errors=$E0 ap=ch$(apch) $(apst)" >> $LOG
+    c=1; while [ $c -le $N ]; do
+        wpa_cli -i wlan0 select_network $H >/dev/null; t1=$(waitc 2462); sleep 4; a1=$(apch); s1=$(apst)
+        wpa_cli -i wlan0 select_network $HOME_ID >/dev/null; t2=$(waitc 2412); sleep 4; a2=$(apch); s2=$(apst)
+        echo "cycle $c: to-hotspot ${t1}x0.5s ap=ch$a1 $s1 | home ${t2}x0.5s ap=ch$a2 $s2 | new errors=$(( $(errs) - E0 ))" >> $LOG
+        c=$((c+1))
+    done
+    wpa_cli -i wlan0 remove_network $H >/dev/null; wpa_cli -i wlan0 enable_network all >/dev/null
+    echo done >> $LOG
     ;;
 monitor)
     # one line every 2 s: time | wlan0 state/freq, gw ping | uap0 state/chan, stations | phone ping | wlan1
