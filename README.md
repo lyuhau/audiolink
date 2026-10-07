@@ -20,8 +20,8 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
   claims an unclaimed Pi, and later ones use a one-time 6-digit code (SPAKE2, so
   the code never crosses the network).
 - **Wi-Fi managed from the host,** including captive portals (logged in from a
-  browser that browses *as the Pi*), and a setup network the Pi creates when it
-  has nowhere else to go. Changes made over the network are tried first without
+  browser that browses *as the Pi*), and a setup network the Pi opens whenever
+  nobody has been connected to it for a while, next to its Wi-Fi. Changes made over the network are tried first without
   leaving the current network (a wrong password is refused on the spot), then
   confirm-or-revert; from the setup network, the Pi joins while keeping it up.
 - **Pure standard-library Python;** the only native code is the bundled PortAudio.

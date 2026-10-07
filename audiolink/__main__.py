@@ -11,7 +11,7 @@
   audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
   audiolink wifi portal                      log the Pi in to a captive portal from a browser here
   audiolink wifi check                       exit 0 = Pi online, 2 = captive portal, 3 = offline
-  audiolink wifi ap on|off|status            the Pi's own setup network (normally automatic)
+  audiolink wifi ap [on|off|auto]            the Pi's own setup network (normally automatic)
   audiolink wifi join NAME --pi PI           over the network: confirm-or-revert (see `wifi --help`)
   audiolink wifi confirm PI                  keep a Pi's pending network change / show what happened
   audiolink add [CODE]                       add a Pi: plugged in here, on the network, or by code
@@ -81,7 +81,7 @@ def main(argv=None):
     w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)")
     w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check", "ap", "confirm"],
                    help="omit to pick a network from a list")
-    w.add_argument("name", nargs="?", help="network name for join/forget; on|off|status for ap")
+    w.add_argument("name", nargs="?", help="network name for join/forget; on|off|auto for ap")
     w.add_argument("--security", choices=["open", "owe", "wpa2", "wpa3"],
                    help="join: skip detection (needed for hidden networks)")
     w.add_argument("--open", action="store_true", help="join: same as --security open")
@@ -231,6 +231,7 @@ def run_pi(a, allow, port, gate):
     from .services.endpoint import Endpoint
     from .services.mode import ModeService
     from .services.setup_ap import SetupApService
+    from .services.presence import Presence
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
     from .services.audio_format import AudioFormatService
@@ -238,10 +239,12 @@ def run_pi(a, allow, port, gate):
     from .wire.gadget import Gadget
     wifi = WifiService(a.wifi_store)
     proxy = ProxyService(on_request=wifi.manager.note_demand)
-    streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
+    presence = Presence()
+    streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports,
+                      presence=presence)
     identity = IdentityService(a.state_dir)
-    endpoint = Endpoint(identity)
-    setup_ap = SetupApService(wifi, identity)
+    endpoint = Endpoint(identity, presence=presence)
+    setup_ap = SetupApService(wifi, identity, presence)
     session = Session("pi", [streams, wifi, proxy, identity, DiscoveryService(identity),
                              PairingService(identity, endpoint), setup_ap,
                              ModeService(wifi, setup_ap, endpoint)])

@@ -377,6 +377,14 @@ class WifiManager:
         except Exception:
             return False
 
+    def freq(self):
+        """The current network's frequency (MHz), or None when not on one."""
+        try:
+            st = self.sup.status()
+        except Exception:
+            return None
+        return int(st["freq"]) if st.get("wpa_state") == "COMPLETED" and st.get("freq") else None
+
     def park(self):
         """Keep wpa_supplicant running but connect to nothing on our own: the setup
         network shares the radio, and joining a network on another channel would drag

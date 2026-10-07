@@ -246,8 +246,8 @@ def wifi_command(a):
         join_flow(a.name, a, port)
     elif a.action == "ap":
         sub = a.name or "status"
-        if sub not in ("on", "off", "status"):
-            raise SystemExit("Usage: audiolink wifi ap on|off|status")
+        if sub not in ("on", "off", "auto", "status"):
+            raise SystemExit("Usage: audiolink wifi ap [on|off|auto]")
         if sub == "on":
             step("Starting %s's setup network" % PI)
         st = call("setup_ap." + sub, port=port)
@@ -255,10 +255,13 @@ def wifi_command(a):
             done("on" if st["active"] else "failed")
         detail("%s", st)
         if st["active"]:
-            print("Setup network: %s%s" % (st["ssid"], " (on until: audiolink wifi ap off)"
-                                           if "manual" in st["mode"] else ""))
+            who = {0: "", 1: ", 1 device on it"}.get(st["stations"], ", %d devices on it" % st["stations"])
+            print("Setup network: %s%s%s" % (st["ssid"], who, {"on": " (on until: audiolink wifi ap auto)",
+                                                               "auto": ""}.get(st["mode"], "")))
+        elif st["mode"] == "off":
+            print("Setup network: off (until: audiolink wifi ap auto)")
         else:
-            print("Setup network: off (starts when %s has no computer and no Wi-Fi)" % PI)
+            print("Setup network: off (opens when nobody is connected to %s)" % PI)
     elif a.action == "portal":
         portal_flow(port)
     elif a.action == "check":

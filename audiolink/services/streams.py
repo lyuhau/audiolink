@@ -42,9 +42,10 @@ def parse_range(spec):
 
 
 class Stream:
-    def __init__(self, sid, sock=None):
+    def __init__(self, sid, sock=None, path=None):
         self.sid = sid
         self.sock = sock
+        self.path = path            # how the client reached us (services/presence.py), if counted
         self.wq = queue.Queue()     # payloads to write to the socket; None = peer EOF
         self.closed_tx = self.closed_rx = False
 
@@ -54,8 +55,9 @@ class Streams(Service):
     caps = ("streams", "expose")
     msg_types = (T_OPEN, T_DATA, T_CLOSE)
 
-    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535"):
+    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", presence=None):
         self.role = role
+        self.presence = presence                        # pi: counts client connections
         self.expose = list(expose)                      # host: [(pi_port, (host, port))]
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
@@ -199,6 +201,9 @@ class Streams(Service):
         if st.closed_tx and st.closed_rx:
             with self.lock:
                 self.streams.pop(st.sid, None)
+                path, st.path = st.path, None   # both pumps can get here: count it once
+            if self.presence:
+                self.presence.leave(path)
             try:
                 st.sock.close()
             except OSError:
@@ -222,13 +227,16 @@ class Streams(Service):
                 except OSError:
                     return                                  # listener closed
                 if not self.session.peer_alive:
+                    if self.presence:
+                        self.presence.touch(sock)           # a client did reach us
                     sock.close()                            # nobody on the other end
                     continue
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                path = self.presence.enter(sock) if self.presence else None
                 with self.lock:
                     sid = self.next_sid
                     self.next_sid = (self.next_sid + 2) & 0xFFFF or (1 if self.role == "pi" else 2)
-                    st = Stream(sid, sock)
+                    st = Stream(sid, sock, path)
                     self.streams[sid] = st
                 log.info("stream %d: %s:%d -> peer %s:%d", sid, addr[0], addr[1], *target)
                 self.session.link.send(T_OPEN, sid, ("%s:%d" % target).encode())
