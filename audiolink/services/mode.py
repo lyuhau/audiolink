@@ -4,6 +4,13 @@ Like changing a game's resolution: a change that could cut off the channel being
 used is provisional until someone reaches the Pi through the new mode. Today the
 modes are "on Wi-Fi network X" and "the setup network" (services/setup_ap.py).
 
+Two separate questions: does the network work (its password, DHCP, internet: the
+Pi finds out itself and saves the network as soon as the password is proven), and
+can the requester still reach the Pi there. Only the requester can answer the
+second one, and only for itself, so confirming is the requester's choice for this
+one change ("confirm" in the request: by itself with a token, by any paired
+machine, or not at all), not a property of the network.
+
   1. a paired machine sends the new mode (endpoint "change_wifi", authenticated,
      details sealed with the read secret); the Pi validates what it can. If it's on a
      Wi-Fi network, it first tries the new one on a second interface without leaving
@@ -15,7 +22,8 @@ modes are "on Wi-Fi network X" and "the setup network" (services/setup_ap.py).
      From the setup network, a network on the setup network's channel is joined
      right away with the setup network still up (the chip allows that on one
      channel), and the reply carries the result; confirming then has to come from
-     the new network, and the setup network closes once it does
+     the new network, and the setup network closes once it does. Without
+     confirmation ("confirm": "none"), the change is kept as soon as it's made
   3. it waits up to confirm_within seconds for an authenticated "confirm" through
      the new mode: from the requester (it holds a one-time token) or, if asked,
      from any paired machine
@@ -87,7 +95,7 @@ class ModeService(Service):
         seen = next((n for n in nets if n["ssid"] == ssid), None) if age < 600 else None
         if not p.get("hidden") and nets and age < 600 and not seen:
             return {"error": "%r wasn't in the Pi's last scan (%d min ago; the Pi only sees 2.4 GHz)"
-                             % (ssid, age // 60)}
+                             % (ssid, age // 60), "code": "not_found", "stayed_on": self.wifi.current_ssid()}
         with self.lock:
             if self.pending:
                 return {"error": "a change to %r is already in progress" % self.pending["target"]}
@@ -97,7 +105,8 @@ class ModeService(Service):
             self.pending = {"target": ssid, "phase": "checking", "fallback": fallback,
                             "fallback_ssid": None if fallback == "setup network" else current,
                             "fallback_manual": self.setup_ap.manual, "window": window,
-                            "token_hash": p.get("token_hash"), "deadline": None}
+                            "token_hash": p.get("token_hash"), "deadline": None,
+                            "confirm": p.get("confirm") or ("me" if p.get("token_hash") else "any")}
             self.confirmed.clear()
         args = {"ssid": ssid, "password": p.get("password"), "security": p.get("security") or "wpa2",
                 "hidden": bool(p.get("hidden")), "use_saved": use_saved}
@@ -108,21 +117,25 @@ class ModeService(Service):
             precheck = None
             if current and current != ssid and not ap_channel:
                 precheck = trial(ssid, ent)
+                if precheck["ok"]:
+                    self.wifi.remember(ssid, ent)   # the password works: never ask for it again
                 if precheck["ok"] is False:
                     reason = "%s; stayed on %r" % (precheck["reason"], current)
                     self.last = {"ok": False, "result": "tried %r: %s" % (ssid, reason), "at": time.time()}
                     self._clear()
-                    return {"error": "%r: %s" % (ssid, reason), "code": precheck["code"]}
+                    return {"error": "%r: %s" % (ssid, reason), "code": precheck["code"], "stayed_on": current}
         except Exception:
             self._clear()
             raise
         tries = max(1, min(MAX_TRIES, int(p.get("tries") or 1)))
         self.pending["phase"] = "switching"
         threading.Thread(target=self._run, args=(args, tries), daemon=True).start()
-        log.info("mode: switching to %r in %ds (fallback: %s, confirm within %ds)",
-                 ssid, SWITCH_DELAY, fallback, window)
+        log.info("mode: switching to %r in %ds (fallback: %s, confirm: %s within %ds)",
+                 ssid, SWITCH_DELAY, fallback, self.pending["confirm"], window)
         return {"accepted": True, "switch_in": SWITCH_DELAY, "confirm_within": window,
-                "fallback": fallback, "tries": tries, "precheck": precheck}
+                "fallback": fallback, "fallback_ssid": self.pending["fallback_ssid"], "tries": tries,
+                "precheck": precheck,
+                "confirm": self.pending["confirm"]}
 
     def _clear(self):
         with self.lock:
@@ -140,14 +153,16 @@ class ModeService(Service):
                          "at": time.time()}
             self._clear()
             return {"error": "couldn't join %r: %s (still on the setup network)" % (args["ssid"], r["reason"]),
-                    "code": r.get("code")}
+                    "code": r.get("code"), "stayed_on": None}
         p.update(phase="awaiting confirmation", deadline=time.monotonic() + p["window"], alongside=True)
         self._republish()
         log.info("mode: on %r (%s) next to the setup network; waiting %ds for a confirmation from there",
                  args["ssid"], r["ip"], p["window"])
         threading.Thread(target=self._await, args=(args["ssid"],), daemon=True).start()
         return {"accepted": True, "joined": True, "ip": r["ip"], "internet": r.get("internet"),
-                "switch_in": 0, "confirm_within": p["window"], "fallback": p["fallback"], "tries": 1}
+                "switch_in": 0, "confirm_within": p["window"], "fallback": p["fallback"],
+                "fallback_ssid": None, "tries": 1,
+                "confirm": p["confirm"]}
 
     def _republish(self):
         discovery = self.session.by_name.get("discovery")
@@ -175,6 +190,8 @@ class ModeService(Service):
 
     def _await(self, ssid):
         p = self.pending
+        if p["confirm"] == "none":
+            self.confirmed.set()                # the requester asked not to wait
         if self.confirmed.wait(p["window"]):
             self.wifi.commit_provisional()
             self.setup_ap.manual = None
@@ -182,7 +199,8 @@ class ModeService(Service):
                 time.sleep(2)                   # let the confirmation's reply go out first
                 self.setup_ap.stop()
             self.setup_ap.resume_policy()
-            self.last = {"ok": True, "result": "on %r, confirmed and saved" % ssid, "at": time.time()}
+            self.last = {"ok": True, "result": "on %r%s" % (ssid, "" if p["confirm"] == "none" else ", confirmed"),
+                         "at": time.time()}
             self._clear()
             log.info("mode: %r confirmed", ssid)
         elif p.get("alongside"):

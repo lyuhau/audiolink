@@ -92,8 +92,9 @@ def main(argv=None):
     w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
     w.add_argument("--pi", help="join over the network: which Pi (default: the only one you know)")
     w.add_argument("--via-network", action="store_true", help="join over the network even if plugged in here")
-    w.add_argument("--confirm-by", choices=["me", "any"], default="me",
-                   help="over the network: who confirms the Pi can be reached on the new network")
+    w.add_argument("--confirm-by", choices=["me", "any", "none"], default="me",
+                   help="over the network: who confirms the Pi can be reached on the new network "
+                        "(none: keep the change as soon as the network works)")
     w.add_argument("--confirm-within", type=int, default=180, metavar="SECONDS")
     w.add_argument("--tries", type=int, default=1, help="connection attempts before giving up (max 3)")
     w.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
@@ -156,7 +157,12 @@ def main(argv=None):
                              help="where saved Wi-Fi networks are kept")
     roles["pi"].add_argument("--expose-ports", default="1024-65535", metavar="LO-HI",
                              help="ports the host may ask the Pi to expose")
+    for p in sub.choices.values():       # every command: -v shows the technical details
+        if not any("--verbose" in act.option_strings for act in p._actions):
+            p.add_argument("-v", "--verbose", action="store_true", help="show technical details too")
     a = ap.parse_args(argv)
+    from . import ui
+    ui.VERBOSE = bool(getattr(a, "verbose", False))
 
     if a.cmd == "list-devices":
         return list_devices()

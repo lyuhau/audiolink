@@ -1,7 +1,29 @@
-"""Terminal plumbing shared by the commands: pausing logs, asking questions, output order."""
+"""Terminal plumbing shared by the commands: pausing logs, asking questions, output order,
+and the two levels of output.
+
+Command output is for people who don't know how audiolink works: say what happened
+in plain words and what to do next. Addresses, timings, codes and other internals go
+through detail(), shown only with -v/--verbose.
+"""
 import logging
 import sys
 import threading
+
+VERBOSE = False                         # set from -v/--verbose (__main__)
+
+
+def duration(seconds):
+    """30 -> "30 seconds", 180 -> "3 minutes"."""
+    seconds = int(seconds)
+    if seconds < 90:
+        return "%d seconds" % seconds
+    return "%d minutes" % round(seconds / 60)
+
+
+def detail(msg, *args):
+    """Technical detail: printed only with -v."""
+    if VERBOSE:
+        print("  [%s]" % (msg % args if args else msg), flush=True)
 
 
 class LogGate(logging.Handler):

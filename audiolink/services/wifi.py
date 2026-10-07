@@ -1,8 +1,12 @@
 """Pi-side Wi-Fi management through wpa_supplicant (wpa_cli), driven by the host.
 
-Like a phone: a network is saved only after a successful join, saved networks
-auto-join when in range, most recently used first. The store keeps the WPA
-pre-shared key derived from (password, SSID), never the password itself.
+Like a phone: a network is saved once its password is proven to work (a join or a
+trial, services/wifi_trial.py), and saved networks auto-join when in range, most
+recently used first. A network that was proven but never settled on (a change that
+wasn't kept, services/mode.py) stays saved, so nobody retypes its password, but
+ranks last. Saved entries: credentials, "verified" (when the password last worked)
+and "last_used" (when the Pi last settled on it; 0 = never). The store keeps the
+WPA pre-shared key derived from (password, SSID), never the password itself.
 """
 import binascii
 import hashlib
@@ -302,35 +306,48 @@ class WifiManager:
             self._last_demand = now
             self.emit("portal_needed", self.internet)
 
-    # ---- provisional joins (services/mode.py): keep only once someone confirms
+    # ---- saving vs settling (services/mode.py)
+    def remember(self, ssid, ent):
+        """Save a network whose password was just proven, without preferring it."""
+        with self.lock:
+            self._remember(ssid, ent)
+
+    def _remember(self, ssid, ent):
+        prev = self.saved.get(ssid, {})
+        self.saved[ssid] = dict(ent, verified=int(time.time()), last_used=prev.get("last_used", 0))
+        self._save()
+        if ssid not in self.sup.networks():
+            nid = self.sup.add(ssid, self.saved[ssid], 1)
+            if self.parked or self.provisional:
+                self.sup.wpa("disable_network", nid)
+        self._reprioritize()
+
     def commit_provisional(self):
+        """Settle on the network joined by join(save=False): it becomes the preferred one."""
         with self.lock:
             if not self.provisional:
                 return None
-            ssid, ent = self.provisional
+            ssid, _ = self.provisional
             self.provisional = None
-            self.saved[ssid] = ent
+            self.saved[ssid]["last_used"] = int(time.time())
             self._save()
             self._reprioritize()
             if not self.parked:
                 self.sup.wpa("enable_network", "all")
-            log.info("wifi: %r confirmed and saved", ssid)
+            log.info("wifi: settled on %r", ssid)
             return ssid
 
     def discard_provisional(self):
-        """Forget an unconfirmed join (unless it was already a saved network)."""
+        """Leave a network joined by join(save=False). Its password stays saved."""
         with self.lock:
             if not self.provisional:
                 return
-            ssid, _ = self.provisional
             self.provisional = None
-            nid = self.sup.networks().get(ssid)
-            if nid is not None and ssid not in self.saved:
-                self.sup.wpa("remove_network", nid)
-            if self.parked:
-                self.sup.wpa("disconnect")
-                subprocess.run(["killall", "-q", "udhcpc"])
-                subprocess.run(["ip", "addr", "flush", "dev", IFACE])
+            self.sup.wpa("disconnect")
+            subprocess.run(["killall", "-q", "udhcpc"])
+            subprocess.run(["ip", "addr", "flush", "dev", IFACE])
+            if not self.parked:
+                self.sup.wpa("reconnect")
             self._settle()
 
     def last_scan(self):
@@ -447,16 +464,16 @@ class WifiManager:
                     **(connectivity() if connected and ip else {"internet": "offline"}))
 
     def list(self):
-        return [{"ssid": s, "last_used": e.get("last_used"), "security": security_of(e),
+        return [{"ssid": s, "last_used": e.get("last_used"), "verified": e.get("verified"), "security": security_of(e),
                  "hidden": bool(e.get("hidden"))}
                 for s, e in sorted(self.saved.items(), key=lambda kv: -kv[1].get("last_used", 0))]
 
     def join(self, ssid, password=None, security=None, hidden=False, use_saved=False, timeout=30, save=True):
         """Try a network; save it only if association and DHCP succeed.
-        use_saved=True reconnects with the stored credentials. save=False keeps a
-        successful join provisional: connected but not saved, until commit_provisional()
-        (or discard_provisional() to drop it). Failures carry a code:
-        not_found | auth_failed | timeout | no_ip."""
+        use_saved=True reconnects with the stored credentials. save=False makes a
+        successful join provisional: saved (the password works) but not settled on
+        until commit_provisional(); discard_provisional() leaves it again. Failures
+        carry a code: not_found | auth_failed | timeout | no_ip."""
         if use_saved:
             if ssid not in self.saved:
                 raise ValueError("%r is not a saved network" % ssid)
@@ -483,9 +500,8 @@ class WifiManager:
                     break
                 time.sleep(0.5)
         if ok and ip:
-            ent["last_used"] = int(time.time())
             if save:
-                self.saved[ssid] = ent
+                self.saved[ssid] = dict(ent, verified=int(time.time()), last_used=int(time.time()))
                 self._save()
                 self._reprioritize()
                 if not self.parked:
@@ -493,7 +509,8 @@ class WifiManager:
                 log.info("wifi: joined and saved %r (%s)", ssid, ip)
             else:
                 self.provisional = (ssid, ent)
-                log.info("wifi: joined %r (%s), not saved until confirmed", ssid, ip)
+                self._remember(ssid, ent)       # the password works: keep it either way
+                log.info("wifi: joined %r (%s); saved, not settled until kept", ssid, ip)
             conn = dict(connectivity(), ssid=ssid)
             self._set_internet(conn)
             return dict(conn, joined=True, ip=ip, security=security_of(ent))
