@@ -12,8 +12,7 @@
   audiolink wifi portal                      log the Pi in to a captive portal from a browser here
   audiolink wifi check                       exit 0 = Pi online, 2 = captive portal, 3 = offline
   audiolink wifi ap [on|off|auto]            the Pi's own setup network (normally automatic)
-  audiolink wifi join NAME --pi PI           over the network: confirm-or-revert (see `wifi --help`)
-  audiolink wifi confirm PI                  keep a Pi's pending network change / show what happened
+  audiolink wifi join NAME --pi PI           over the network (checks the network first when it can)
   audiolink add [CODE]                       add a Pi: plugged in here, on the network, or by code
   audiolink pairing code PI                  a one-time code for adding PI on another machine
   audiolink pis                              list the Pis this machine knows
@@ -79,7 +78,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list-devices", help="list audio devices")
     w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)")
-    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check", "ap", "confirm"],
+    w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check", "ap"],
                    help="omit to pick a network from a list")
     w.add_argument("name", nargs="?", help="network name for join/forget; on|off|auto for ap")
     w.add_argument("--security", choices=["open", "owe", "wpa2", "wpa3"],
@@ -92,13 +91,8 @@ def main(argv=None):
     w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
     w.add_argument("--pi", help="join over the network: which Pi (default: the only one you know)")
     w.add_argument("--via-network", action="store_true", help="join over the network even if plugged in here")
-    w.add_argument("--confirm-by", choices=["me", "any", "none"], default="me",
-                   help="over the network: who confirms the Pi can be reached on the new network "
-                        "(none: keep the change as soon as the network works)")
-    w.add_argument("--confirm-within", type=int, default=180, metavar="SECONDS")
     w.add_argument("--tries", type=int, default=1, help="connection attempts before giving up (max 3)")
     w.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
-    w.add_argument("--token", help="confirm: the one-time token printed by the requesting machine")
     dsc = sub.add_parser("discovery", help="whether the plugged-in Pi publishes on the DHT")
     dsc.add_argument("action", nargs="?", default="status",
                      choices=["enable", "disable", "code", "status", "publish"])
@@ -182,9 +176,6 @@ def main(argv=None):
         from .client import mode
         from .host.wifi_cli import wifi_command, pi_on_usb
         a.control_port = port
-        if a.action == "confirm":
-            a.pi = a.pi or a.name
-            return mode.confirm_command(a)
         if a.action == "join" and (a.via_network or a.pi or not pi_on_usb(port)):
             return mode.change_command(a)
         return wifi_command(a)

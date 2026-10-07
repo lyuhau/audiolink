@@ -23,7 +23,7 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
   browser that browses *as the Pi*), and a setup network the Pi opens whenever
   nobody has been connected to it for a while, next to its Wi-Fi. Changes made over the network are tried first without
   leaving the current network (a wrong password is refused on the spot), then
-  confirm-or-revert; from the setup network, the Pi joins while keeping it up.
+  made; if nobody can reach the Pi there, its setup network opens.
 - **Pure standard-library Python;** the only native code is the bundled PortAudio.
 
 > Status: early. Tested with macOS hosts and a Pi Zero 2 W booting from an SD card
@@ -79,7 +79,7 @@ The binaries aren't code-signed yet:
 | `audiolink pairing code PI` | a one-time code for adding PI on another machine |
 | `audiolink find PI` / `connect PI PORT` | look a Pi up on the DHT / pipe to it (ssh `ProxyCommand`) |
 | `audiolink ssh-config` | `~/.ssh/config` entries for known Pis |
-| `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap\|confirm]` | the Pi's Wi-Fi |
+| `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap]` | the Pi's Wi-Fi |
 | `audiolink discovery [enable\|disable\|status]` | whether the Pi publishes on the DHT |
 | `audiolink audio [status\|sweep\|set RATExCH\|forget]` | the link's audio format (see *How it works*) |
 | `audiolink list-devices` / `dht-size` | audio devices / how big the DHT is |

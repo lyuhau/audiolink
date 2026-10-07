@@ -168,9 +168,14 @@ class SetupApService(Service):
         with self.lock:
             if self.active:
                 return
-            channel = channel_of(self.wifi.freq())
-            if not channel:                     # off Wi-Fi: our own channel, wlan0 parked
-                channel = self.pick_channel()
+            channel = self._wifi_channel()
+            if not channel:
+                if time.monotonic() - self.on_wifi_at < OFFLINE:
+                    # Just left a network, or (re)joining one (it reads as not connected for
+                    # a moment around changes): don't park it; the rule tries again later.
+                    log.info("setup network: waiting for Wi-Fi to settle")
+                    return
+                channel = self.pick_channel()   # off Wi-Fi: our own channel, wlan0 parked
                 self.wifi.park()
             conf = RUN / "audiolink-hostapd.conf"
             conf.write_text("\n".join([
@@ -198,6 +203,15 @@ class SetupApService(Service):
             subprocess.run(["udhcpd", str(dhcp)])
             self.active, self.channel, self.busy_at, self.retry_at = True, channel, 0.0, time.monotonic()
             log.info("setup network: %r is up at %s, channel %d", self.ssid(), AP_ADDR, channel)
+
+    def _wifi_channel(self, wait=5):
+        for _ in range(wait * 2):
+            channel = channel_of(self.wifi.freq())
+            if channel:
+                self.on_wifi_at = time.monotonic()
+                return channel
+            time.sleep(0.5)
+        return None
 
     def _add_iface(self):
         subprocess.run(["iw", "dev", AP_IFACE, "del"], capture_output=True)
