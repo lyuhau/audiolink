@@ -22,6 +22,7 @@
   audiolink find PI                          (any machine) where is it? (DHT lookup)
   audiolink connect PI PORT                  (any machine) ssh ProxyCommand: find the Pi, connect
   audiolink discovery enable|disable|status  whether the plugged-in Pi publishes on the DHT
+  audiolink relay [--listen HOST:PORT]       (a server) the relay Pis and clients meet at
   audiolink dht-size                         estimate how many DHT nodes are out there
   audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
 
@@ -125,6 +126,11 @@ def main(argv=None):
     aud.add_argument("action", nargs="?", default="status", choices=["status", "sweep", "set", "forget"],
                      help="sweep: measure every candidate format and keep the fastest")
     aud.add_argument("format", nargs="?", help="set: RATExCHANNELS (e.g. 96000x8) or baseline")
+    rly = sub.add_parser("relay", help="run a relay that Pis and clients meet at (on a server)")
+    rly.add_argument("--listen", default="0.0.0.0:443", metavar="HOST:PORT")
+    rly.add_argument("--cert", default="keys/relay.crt")
+    rly.add_argument("--key", default="keys/relay.key")
+    rly.add_argument("--status", action="store_true", help="ask the running relay for its counts")
     size = sub.add_parser("dht-size", help="estimate the size of the BitTorrent DHT")
     size.add_argument("--samples", type=int, default=8)
     roles = {"host": sub.add_parser("host", help="run on the Mac/PC the Pi is plugged into"),
@@ -166,6 +172,9 @@ def main(argv=None):
     if a.cmd in ("add", "pis", "share", "forget", "rename", "ssh-config"):
         from .client import pis
         return getattr(pis, a.cmd.replace("-", "_") + "_command")(a)
+    if a.cmd == "relay":
+        from .relay.server import relay_command
+        return relay_command(a)
     if a.cmd in ("find", "connect", "dht-size"):
         from .client import find
         return {"find": find.find_command, "connect": find.connect_command,

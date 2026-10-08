@@ -1,0 +1,220 @@
+"""The relay server, end to end over loopback TLS: registration, joining, refusals."""
+import os
+import shutil
+import socket
+import ssl
+import subprocess
+import tempfile
+import threading
+import unittest
+
+from audiolink.crypto import ed25519_public, ed25519_sign
+from audiolink.relay import wire
+from audiolink.relay.server import Relay, ask_status
+from audiolink.relay.wire import REGISTER, VERSION, Control, Refused, answer, read_line, send_line
+
+from tests.helpers import wait
+
+
+def make_cert(d):
+    cert, key = os.path.join(d, "relay.crt"), os.path.join(d, "relay.key")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                    "-nodes", "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=test"],
+                   check=True, capture_output=True)
+    return cert, key
+
+
+def pin_of(cert):
+    import hashlib
+    return hashlib.sha256(ssl.PEM_cert_to_DER_cert(open(cert).read())).hexdigest()
+
+
+@unittest.skipUnless(shutil.which("openssl"), "needs openssl to make a test certificate")
+class RelayTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp()
+        cls.cert, cls.key = make_cert(cls.dir)
+        cls.pin = pin_of(cls.cert)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def setUp(self):
+        self.relay = Relay(wire.server_context(self.cert, self.key), open_wait=1, control_idle=3)
+        self.srv = self.relay.listen("127.0.0.1", 0)
+        self.addr = self.srv.getsockname()
+        threading.Thread(target=self.relay.serve, args=(self.srv,), daemon=True).start()
+        self.seed = os.urandom(32)
+        self.pub = ed25519_public(self.seed)
+
+    def tearDown(self):
+        self.srv.close()
+
+    def dial(self):
+        sock = wire.dial(self.addr, self.pin, timeout=5)
+        self.addCleanup(sock.close)
+        return sock
+
+    def register(self, seed=None, sign=None):
+        """A Pi's control connection; -> (Control, reply)."""
+        seed = seed or self.seed
+        pub = ed25519_public(seed)
+        sock = self.dial()
+        send_line(sock, {"v": VERSION, "role": "pi", "pub": pub.hex()})
+        challenge = bytes.fromhex(answer(sock)["challenge"])
+        sig = (sign or ed25519_sign)(seed, REGISTER + challenge + pub)
+        send_line(sock, {"sig": sig.hex()})
+        return sock, answer(sock)
+
+    def run_pi(self, sock, serve=True):
+        """Run a Pi's control loop that answers opens with an echoing data connection."""
+        ctl = Control(sock)
+
+        def echo(wid):
+            d = self.dial()
+            send_line(d, {"v": VERSION, "role": "data", "id": wid})
+            answer(d)
+            while True:
+                data = d.recv(65536)
+                if not data:
+                    break
+                d.sendall(data)
+            d.close()
+
+        def on_line(msg):
+            if msg.get("op") == "open" and serve:
+                threading.Thread(target=echo, args=(msg["id"],), daemon=True).start()
+
+        result = {}
+        t = threading.Thread(target=lambda: result.setdefault("why", ctl.run(on_line, 30)), daemon=True)
+        t.start()
+        return ctl, t, result
+
+    def client(self, pub=None):
+        sock = self.dial()
+        send_line(sock, {"v": VERSION, "role": "client", "pub": (pub or self.pub).hex()})
+        return sock, answer(sock)
+
+    def test_joins_client_to_pi(self):
+        sock, reply = self.register()
+        self.assertTrue(reply["ok"])
+        self.assertTrue(reply["addr"].startswith("127.0.0.1:"))
+        self.run_pi(sock)
+        wait(lambda: self.relay.pis)
+        c, ok = self.client()
+        for _ in range(20):             # one thread per SSL socket: send a piece, read it back
+            piece = os.urandom(16384)
+            c.sendall(piece)
+            got = b""
+            while len(got) < len(piece):
+                chunk = c.recv(65536)
+                self.assertTrue(chunk)
+                got += chunk
+            self.assertEqual(got, piece)
+        c.close()
+
+    def test_bad_signature_refused(self):
+        with self.assertRaises(Refused):
+            self.register(sign=lambda seed, msg: ed25519_sign(os.urandom(32), msg))
+        self.assertFalse(self.relay.pis)
+
+    def test_offline_pi(self):
+        with self.assertRaisesRegex(Refused, "offline"):
+            self.client(pub=os.urandom(32))
+
+    def test_pi_that_never_dials_back(self):
+        sock, _ = self.register()
+        self.run_pi(sock, serve=False)
+        wait(lambda: self.relay.pis)
+        with self.assertRaisesRegex(Refused, "no answer"):
+            self.client()
+        self.assertFalse(self.relay.waiting)
+
+    def test_newer_registration_replaces_older(self):
+        first, _ = self.register()
+        ctl, t, result = self.run_pi(first)
+        wait(lambda: self.relay.pis)
+        second, _ = self.register()
+        self.run_pi(second)
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertIs(len(self.relay.pis), 1)
+        c, ok = self.client()          # the newer one answers
+        self.assertTrue(ok["ok"])
+        c.close()
+
+    def test_silent_pi_dropped(self):
+        sock, _ = self.register()
+        wait(lambda: self.relay.pis)
+        wait(lambda: not self.relay.pis, timeout=8)     # control_idle=3, no pings
+        sock.close()
+
+    def test_ping_keeps_pi(self):
+        sock, _ = self.register()
+        ctl, t, result = self.run_pi(sock)
+        for _ in range(5):              # past control_idle=3, kept by pings
+            ctl.post({"op": "ping"})
+            threading.Event().wait(1)
+        self.assertTrue(self.relay.pis)
+
+    def test_unknown_data_id(self):
+        d = self.dial()
+        send_line(d, {"v": VERSION, "role": "data", "id": "nope"})
+        with self.assertRaisesRegex(Refused, "unknown id"):
+            answer(d)
+
+    def test_old_version_refused(self):
+        s = self.dial()
+        send_line(s, {"v": 0, "role": "client", "pub": self.pub.hex()})
+        msg = read_line(s)
+        self.assertEqual(msg["versions"], [1, VERSION])
+
+    def test_garbage_doesnt_hurt(self):
+        s = self.dial()
+        s.sendall(b'{"v": 1, "role": "pi", "pub": 5}\n')
+        self.assertEqual(s.recv(10), b"")
+        s = self.dial()
+        s.sendall(b"x" * 10000)
+        self.assertEqual(s.recv(10), b"")
+        self.assertFalse(self.relay.pis)
+
+    def test_wrong_pin(self):
+        with self.assertRaises(ssl.SSLError):
+            wire.dial(self.addr, "00" * 32, timeout=5)
+
+    def test_status_over_loopback(self):
+        sock, _ = self.register()
+        self.run_pi(sock)
+        wait(lambda: self.relay.pis)
+        st = ask_status(self.addr[1])
+        self.assertEqual(st["pis"], 1)
+
+
+class SpliceTest(unittest.TestCase):
+    def test_half_close_passes_through(self):
+        a1, a2 = socket.socketpair()
+        b1, b2 = socket.socketpair()
+        for s in (a1, a2, b1, b2):
+            self.addCleanup(s.close)
+        t = threading.Thread(target=wire.splice, args=(a2, b1), daemon=True)
+        t.start()
+        a1.sendall(b"request")
+        a1.shutdown(socket.SHUT_WR)
+        got = b""
+        while True:
+            chunk = b2.recv(100)
+            if not chunk:
+                break
+            got += chunk
+        self.assertEqual(got, b"request")
+        b2.sendall(b"reply")
+        b2.close()
+        self.assertEqual(a1.recv(100), b"reply")
+        t.join(5)
+        self.assertFalse(t.is_alive())
+
+
+if __name__ == "__main__":
+    unittest.main()
