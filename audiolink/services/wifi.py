@@ -21,7 +21,7 @@ import threading
 import time
 
 from . import Service, proc
-from ..paths import load_json, save_json
+from ..paths import load_state, save_state
 
 log = logging.getLogger("audiolink")
 
@@ -231,10 +231,10 @@ class WifiManager:
 
     # ---- store
     def _load(self):
-        return load_json(self.store_path, {})
+        return load_state(self.store_path, {})
 
     def _save(self):
-        save_json(self.store_path, self.saved, indent=1)
+        save_state(self.store_path, self.saved)
 
     def _restart_dhcp(self):
         subprocess.run(["killall", "-q", "udhcpc"])

@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+import zlib
 from pathlib import Path
 
 
@@ -116,3 +117,70 @@ def save_json(path, data, indent=None, sort_keys=False):
             pass
     if sys.platform.startswith("linux"):
         os.sync()                       # FAT: make sure the directory entry and FAT are written
+
+
+# ---- the Pi's state on its FAT card: two slots, overwritten in place
+SLOT_SIZE = 64 * 1024
+SLOT_MAGIC = b"AL1"
+
+
+def _slot_paths(path):
+    return [str(path) + ".a", str(path) + ".b"]
+
+
+def _read_slot(slot):
+    """(seq, data) of a valid slot, or None."""
+    try:
+        with open(slot, "rb") as f:
+            raw = f.read(SLOT_SIZE)
+        head, _, rest = raw.partition(b"\n")
+        magic, seq, length, crc = head.split(b" ")
+        body = rest[:int(length)]
+        if magic != SLOT_MAGIC or len(body) != int(length) or zlib.crc32(body) != int(crc):
+            return None
+        return int(seq), json.loads(body.decode())
+    except (OSError, ValueError):
+        return None
+
+
+def load_state(path, default=None):
+    """The newest valid copy of state saved with save_state; falls back to a plain
+    JSON file at `path` (written before slots existed), then to `default`."""
+    found = [r for r in (_read_slot(s) for s in _slot_paths(path)) if r]
+    if found:
+        return max(found, key=lambda r: r[0])[1]
+    return load_json(path, default)
+
+
+def save_state(path, data):
+    """Save state so that losing power at any moment leaves the previous or the new
+    copy. FAT has no journal, and a rename (save_json) changes its directory and
+    allocation table, which a power cut can leave half done. Instead there are two
+    fixed-size slot files, created once; each save overwrites the older slot in place
+    (same size, same clusters: only file data changes) with a sequence number and a
+    checksum, and load_state takes the newest slot that checks out."""
+    body = json.dumps(data, sort_keys=True).encode()
+    slots = _slot_paths(path)
+    current = [_read_slot(s) for s in slots]
+    seqs = [r[0] if r else -1 for r in current]
+    target = slots[0] if seqs[0] <= seqs[1] else slots[1]
+    record = b"%s %d %d %d\n" % (SLOT_MAGIC, max(seqs) + 1, len(body), zlib.crc32(body)) + body
+    if len(record) > SLOT_SIZE:
+        raise ValueError("state too large for a slot (%d bytes)" % len(record))
+    os.makedirs(os.path.dirname(str(path)) or ".", exist_ok=True)
+    for slot in slots:
+        if not os.path.exists(slot) or os.path.getsize(slot) != SLOT_SIZE:
+            with open(slot, "wb") as f:     # created once, full size
+                f.write(bytes(SLOT_SIZE))
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.chmod(slot, 0o600)
+            except OSError:
+                pass
+    with open(target, "r+b") as f:
+        f.write(record + bytes(SLOT_SIZE - len(record)))
+        f.flush()
+        os.fsync(f.fileno())
+    if sys.platform.startswith("linux"):
+        os.sync()

@@ -36,6 +36,42 @@ class Storage(unittest.TestCase):
         self.assertEqual(json.load(open(self.path)), {"new": True})
 
 
+class State(unittest.TestCase):
+    """save_state/load_state: the Pi's state, for a card that can lose power mid-write."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = os.path.join(self.dir.name, "networks.json")
+
+    def test_round_trip_and_newest_wins(self):
+        for i in range(5):
+            paths.save_state(self.path, {"n": i})
+            self.assertEqual(paths.load_state(self.path), {"n": i})
+        self.assertEqual(sorted(os.listdir(self.dir.name)), ["networks.json.a", "networks.json.b"])
+        self.assertEqual({os.path.getsize(os.path.join(self.dir.name, f)) for f in os.listdir(self.dir.name)},
+                         {paths.SLOT_SIZE})
+
+    def test_a_torn_write_leaves_the_previous_copy(self):
+        paths.save_state(self.path, {"n": 1})
+        paths.save_state(self.path, {"n": 2})              # in slot b
+        with open(self.path + ".b", "r+b") as f:           # power lost mid-write of slot b
+            f.seek(20)
+            f.write(b"garbage")
+        self.assertEqual(paths.load_state(self.path), {"n": 1})
+        paths.save_state(self.path, {"n": 3})              # overwrites the damaged slot
+        self.assertEqual(paths.load_state(self.path), {"n": 3})
+
+    def test_reads_a_file_from_before_slots(self):
+        paths.save_json(self.path, {"old": True})
+        self.assertEqual(paths.load_state(self.path, {}), {"old": True})
+        paths.save_state(self.path, {"new": True})
+        self.assertEqual(paths.load_state(self.path, {}), {"new": True})
+
+    def test_missing_is_the_default(self):
+        self.assertEqual(paths.load_state(self.path, {}), {})
+
+
 class Output(unittest.TestCase):
     def tearDown(self):
         ui.VERBOSE = False

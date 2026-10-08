@@ -20,7 +20,7 @@ from pathlib import Path
 from ..crypto import ed25519_public
 from ..discovery.record import code_for, new_identity
 from ..names import NAME_RE, name_for
-from ..paths import is_persistent, load_json, save_json
+from ..paths import is_persistent, load_state, save_state
 from . import Service
 
 log = logging.getLogger("audiolink")
@@ -62,10 +62,10 @@ class IdentityService(Service):
 
     # ---- storage
     def _load(self):
-        return load_json(self.path)
+        return load_state(self.path)
 
     def _save(self):
-        save_json(self.path, self.data)
+        save_state(self.path, self.data)
 
     def _changed(self):
         self.fresh = False
