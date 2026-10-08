@@ -76,7 +76,7 @@ class RelayAgent(Service):
 
     def _online(self):
         conn = self.wifi.connection()
-        return conn["internet"] == "online" and not self.wifi.parked(), conn["ip"]
+        return conn["internet"] == "online" and not self.wifi.parked, conn["ip"]
 
     def _loop(self):
         wait = BACKOFF[0]

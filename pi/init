@@ -19,6 +19,12 @@ set -x
 hostname audiopi
 ip link set lo up
 
+# Hardware watchdog: if the system hangs (nothing gets scheduled for 15 s), reboot.
+# First thing, so a hang anywhere in boot (e.g. setting up the USB gadget) is covered.
+# Crashes of the audiolink daemon are handled by its restart loop (start-audiolink.sh).
+[ -e /dev/watchdog ] && watchdog -T 15 -t 5 /dev/watchdog
+
+
 # ---- USB gadget: UAC2 audio (data); dev images add ECM ethernet (control) ----
 DEV=; [ -e /etc/audiolink-dev ] && DEV=1
 mount -t configfs none /sys/kernel/config
@@ -89,10 +95,6 @@ EOF
     mkdir -p /etc/dropbear
     dropbear -R -E -p 22 2>>/var/log/dropbear.log
 fi
-
-# Hardware watchdog: if the system hangs (nothing gets scheduled for 15 s), reboot.
-# Crashes of the audiolink daemon are handled by its restart loop (start-audiolink.sh).
-[ -e /dev/watchdog ] && watchdog -T 15 -t 5 /dev/watchdog
 
 # ---- SD card: keep /var/lib/audiolink (identity, saved networks) on it ----
 # The card's FAT partition holds the boot files; state goes in its audiolink/ folder.

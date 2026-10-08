@@ -256,6 +256,7 @@ def main():
     add_wifi_fw(tree)
 
     OUT.mkdir(exist_ok=True)
+    (OUT / "image.txt").write_text("dev\n" if DEV else "release\n")    # deploy_card.sh checks it
     (OUT / "overlays").mkdir(exist_ok=True)
     for f in ("bootcode.bin", "start.elf", "fixup.dat", "kernel8.img", "bcm2710-rpi-zero-2-w.dtb"):
         shutil.copy(FW / "boot" / f, OUT / f)

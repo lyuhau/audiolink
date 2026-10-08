@@ -242,8 +242,7 @@ class FakeWifi:
     def connection(self):
         return {"ip": "192.168.1.154", "ssid": "home", "internet": self.internet}
 
-    def parked(self):
-        return False
+    parked = False              # a property on WifiService
 
 
 class FakeStreams:
