@@ -14,10 +14,13 @@ back to the baseline once no host has been seen for HOST_GONE seconds, so the ne
 host (perhaps one that can't run it) always meets the Pi in the baseline.
 
 A restarted daemon (after a crash, or a dev redeploy) finds the gadget still in the
-last format, with the host most likely still using it. It keeps that format, pending
-like a switch (the host checks it and confirms), instead of re-presenting the gadget
-at once: rebinding the USB controller several times in a row can wedge it. Not if it
-did that less than ADOPT_AGAIN seconds ago: the format may be what keeps crashing it.
+last format and re-presents it in the baseline. Not more than once per RESET_GAP
+seconds, though: rebinding the USB controller several times in a row while the host
+streams at a high rate has wedged it (dwc2 endpoint-stop timeouts; the host then
+drops the device until it's replugged). A second restart within the gap leaves the
+audio stopped until the gap has passed. (Keeping the old format instead, without a
+rebind, was tried: after the abrupt stop of aplay/arecord the link ran with heavy
+loss, and the next rebind wedged the controller.)
 """
 import base64
 import hashlib
@@ -34,9 +37,8 @@ log = logging.getLogger("audiolink")
 HOST_GONE = 15.0
 MAX_CONFIRM = 120
 SILENT_REVERT = 6.0             # after a switch, revert early if the host stays silent this long
-ADOPT_CONFIRM = 30.0            # a restarted daemon's kept format: the host has this long to confirm
-ADOPT_AGAIN = 120               # ...and it keeps one at most once in this long (seconds of uptime)
-ADOPTED = "/run/audiolink-adopted"
+RESET_GAP = 120                 # seconds of uptime between restart-time resets of the gadget
+LAST_RESET = "/run/audiolink-gadget-reset"
 
 
 def _uptime():
@@ -44,22 +46,21 @@ def _uptime():
         return float(f.read().split()[0])
 
 
-def _may_adopt():
-    """Once per ADOPT_AGAIN: a daemon that crashed right after keeping a format starts
-    over in the baseline."""
+def _reset_wait():
+    """Seconds to wait before a restart-time reset of the gadget (0: now), and note
+    the reset as done at that time."""
     try:
         now = _uptime()
         try:
-            with open(ADOPTED) as f:
-                if now - float(f.read()) < ADOPT_AGAIN:
-                    return False
+            with open(LAST_RESET) as f:
+                wait = max(0.0, float(f.read()) + RESET_GAP - now)
         except (OSError, ValueError):
-            pass
-        with open(ADOPTED, "w") as f:
-            f.write(str(now))
-        return True
+            wait = 0.0
+        with open(LAST_RESET, "w") as f:
+            f.write(str(now + wait))
+        return wait
     except OSError:
-        return False
+        return 0.0
 
 
 class AudioFormatService(Service):
@@ -72,26 +73,19 @@ class AudioFormatService(Service):
         self.lock = threading.Lock()
         self.pending = None             # deadline (monotonic) for confirming the current format
         self.gone_since = None
-        self.adopted = None             # (format, deadline): kept from the last run, see attach()
         current = gadget.current() if gadget.available() else None
         if current not in (None, BASELINE):
-            if _may_adopt():
-                log.info("audio: gadget still in %r; keeping it unless the host confirms within %.0fs",
-                         current, ADOPT_CONFIRM)
-                with self.lock:
-                    self.audio.stop()
-                    self.audio.start(current)
-                    self.adopted = (current, time.monotonic() + ADOPT_CONFIRM)
-                    self.pending = self.adopted[1]
-            else:
-                log.info("audio: gadget left in %r again; back to %r", current, BASELINE)
-                with self.lock:
-                    self._switch(BASELINE)
+            wait = _reset_wait()
+            log.info("audio: gadget left in %r; back to %r%s", current, BASELINE,
+                     " in %.0fs (it was reset just before)" % wait if wait else "")
+            if wait:
+                self.audio.stop()               # nothing usable until then
+            threading.Thread(target=self._reset_later, args=(wait,), daemon=True).start()
 
-    def attach(self, session):
-        super().attach(session)
-        if self.adopted:
-            threading.Thread(target=self._await_confirm, args=self.adopted, daemon=True).start()
+    def _reset_later(self, wait):
+        time.sleep(wait)
+        with self.lock:
+            self._switch(BASELINE)
 
     @property
     def format(self):

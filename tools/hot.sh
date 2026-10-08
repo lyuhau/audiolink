@@ -7,6 +7,9 @@ cd "$(dirname "$0")/.."
 PI=${PI:-root@10.55.0.2}
 SSH="ssh -i keys/id_ed25519 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR"
 python3 build_pyz.py >/dev/null
+# Restart at the baseline audio format: a daemon that dies mid-stream at a high rate
+# can leave macOS unable to use that format until the Pi is replugged.
+python3 dist/audiolink.pyz audio set baseline >/dev/null 2>&1 || true
 $SSH $PI 'cat > /root/audiolink.pyz.new && mv /root/audiolink.pyz.new /root/audiolink.pyz' < dist/audiolink.pyz
 $SSH $PI 'cat > /root/start-audiolink.sh && chmod +x /root/start-audiolink.sh' < pi/start-audiolink.sh
 # Detached: a restart can re-present the USB gadget (audio format back to the baseline),

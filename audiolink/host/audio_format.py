@@ -29,6 +29,7 @@ log = logging.getLogger("audiolink")
 
 STORE = config_dir() / "audio_formats.json"
 CONFIRM_WITHIN = 20             # the Pi reverts if we haven't confirmed by then
+COOL_OFF = 1800                 # a format that just failed isn't retried automatically for this long
 LINK_WAIT = 12                  # how long a new format gets to carry requests
 MIN_GAIN = 1.25                 # a format must beat the baseline by this much to be kept
 
@@ -79,6 +80,11 @@ class AudioNegotiator(Service):
         self.running = False
         self.state = "idle"
         self.events = []                # [(time, message)] for `audiolink audio`
+        # Formats that just failed: not tried again automatically for COOL_OFF seconds.
+        # A format that worked before can stop working until the device is replugged (a Pi
+        # daemon that died mid-stream at a high rate leaves macOS unable to run it), and
+        # every attempt re-presents the USB gadget, which itself risks wedging it.
+        self.cooling = {}               # key(fmt) -> monotonic time it may be tried again
 
     def _note(self, msg, *args, detail=None):
         """A progress message for `audiolink audio` and the host's log; detail (shown
@@ -164,6 +170,7 @@ class AudioNegotiator(Service):
     def _switch(self, fmt):
         """Switch both ends to fmt and train; returns goodput or None (the Pi is then
         on its way back to the baseline)."""
+        self.cooling[key(fmt)] = time.monotonic() + COOL_OFF     # until it has worked
         self.state = "trying %r" % fmt
         self._note("trying %s", human(fmt))
         self.session.request("audio.switch", {"format": fmt.to_json(), "confirm_within": CONFIRM_WITHIN},
@@ -177,6 +184,8 @@ class AudioNegotiator(Service):
         goodput = self._train(fmt, timeout=max(1, deadline - time.monotonic() - 3))
         if goodput is None:
             self._back_to_baseline()
+        else:
+            self.cooling.pop(key(fmt), None)
         return goodput
 
     def _back_to_baseline(self, asked=True):
@@ -194,15 +203,6 @@ class AudioNegotiator(Service):
         mem = self.store.load(serial)
         failed = set(mem.get("failed", []))
         current, pending = self._status()
-        if pending and current != BASELINE and not sweep and target in (None, current) \
-                and key(current) not in failed:
-            # The Pi's daemon restarted and kept the format the link was in: check it, keep it.
-            self.state = "checking %r" % current
-            goodput = self._train(current, timeout=20)
-            if goodput:
-                self.session.request("audio.confirm", timeout=10)
-                self._note("using %s again", human(current))
-                return
         if pending or (current != BASELINE and (sweep or target not in (None, current))):
             self.state = "reverting"
             self._note("back to baseline first")
@@ -223,6 +223,8 @@ class AudioNegotiator(Service):
                 self._note("already at %s (fastest so far)", human(current))
                 return
             order = ([best] if best else []) + [f for f in CANDIDATES if f != best and key(f) not in failed]
+            now = time.monotonic()
+            order = [f for f in order if self.cooling.get(key(f), 0) <= now]
             if current != BASELINE:     # an earlier host left it in some other format
                 self._back_to_baseline()
                 current = BASELINE
