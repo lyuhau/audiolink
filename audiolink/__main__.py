@@ -22,6 +22,7 @@
   audiolink find PI                          (any machine) where is it? (DHT lookup)
   audiolink connect PI PORT                  (any machine) ssh ProxyCommand: find the Pi, connect
   audiolink discovery enable|disable|status  whether the plugged-in Pi publishes on the DHT
+  audiolink update [PYZ] [--revert|--status] new code for the plugged-in Pi, over the link
   audiolink logs [FILE] [-n N] [--list]      the plugged-in Pi's logs, over the link
   audiolink relay [--listen HOST:PORT]       (a server) the relay Pis and clients meet at
   audiolink dht-size                         estimate how many DHT nodes are out there
@@ -128,6 +129,10 @@ def main(argv=None):
     aud.add_argument("action", nargs="?", default="status", choices=["status", "sweep", "set", "forget"],
                      help="sweep: measure every candidate format and keep the fastest")
     aud.add_argument("format", nargs="?", help="set: RATExCHANNELS (e.g. 96000x8) or baseline")
+    upd = sub.add_parser("update", help="new code for the plugged-in Pi, over the link")
+    upd.add_argument("pyz", nargs="?", help="the .pyz to send (default: this one)")
+    upd.add_argument("--revert", action="store_true", help="back to the code in the Pi's image")
+    upd.add_argument("--status", action="store_true", help="which code the Pi runs")
     lg = sub.add_parser("logs", help="the plugged-in Pi's logs (works when USB networking doesn't)")
     lg.add_argument("file", nargs="?", help="which log (default audiolink.log; --list shows them)")
     lg.add_argument("-n", "--lines", type=int, default=200)
@@ -200,6 +205,10 @@ def main(argv=None):
         from .host.audio_format import audio_command
         a.control_port = port
         return audio_command(a)
+    if a.cmd == "update":
+        from .host.update_cli import update_command
+        a.control_port = port
+        return update_command(a)
     if a.cmd == "logs":
         if a.list:
             print("\n".join(control.call("logs.list", port=port)["files"]))
@@ -261,12 +270,15 @@ def run_pi(a, allow, port, gate):
     endpoint = Endpoint(identity, presence=presence)
     setup_ap = SetupApService(wifi, identity, presence, radio)
     discovery = DiscoveryService(identity, wifi, streams)
+    from .services.button import ResetPins
     from .services.logs import LogsService
+    from .services.update import UpdateService
     from .services.relay import RelayAgent
     relay = RelayAgent(identity, wifi, streams, [] if a.relay == "off" else [a.relay])
+    update = UpdateService()
     session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint),
                              setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery, radio), relay,
-                             LogsService()])
+                             LogsService(), update])
     audio = AlsaAudio(session.link, a.device)
     audio.start()
     formats = AudioFormatService(audio, Gadget())
@@ -277,6 +289,15 @@ def run_pi(a, allow, port, gate):
         streams.forward(*parse_forward(spec))
     setup_ap.run()
     relay.run()
+
+    def revert():
+        update.handle("revert", {})
+
+    def start_over():
+        identity.start_over()
+        wifi.forget_all()
+        revert()
+    ResetPins(revert, start_over).run()
     return session, streams
 
 

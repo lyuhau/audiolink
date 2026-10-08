@@ -634,6 +634,11 @@ class WifiService(Service):
     def saved_names(self):
         return sorted(self.manager.saved)
 
+    def forget_all(self):
+        """Forget every saved network (the reset pins' start over)."""
+        for ssid in self.saved_names():
+            self.handle("forget", {"ssid": ssid})
+
     def remember(self, ssid, ent):
         self.radio.run(self.manager.remember, ssid, ent)
 

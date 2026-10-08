@@ -82,9 +82,17 @@ The binaries aren't code-signed yet:
 | `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap]` | the Pi's Wi-Fi |
 | `audiolink discovery [enable\|disable\|status]` | whether the Pi publishes on the DHT |
 | `audiolink audio [status\|sweep\|set RATExCH\|forget]` | the link's audio format (see *How it works*) |
+| `audiolink update [PYZ] [--revert\|--status]` | new code for the plugged-in Pi, over the link (kept on its card) |
+| `audiolink logs [FILE] [-n N] [--list]` | the plugged-in Pi's logs, over the link |
 | `audiolink list-devices` / `dht-size` | audio devices / how big the DHT is |
 
 `audiolink --help` and `audiolink COMMAND --help` have the details.
+
+**Reset pins.** Short header pins 39 (GND) and 40 (GPIO21), with a jumper or a
+paperclip, and hold. 5 s: back to the code in the Pi's image (drops an update).
+15 s: also start over, with a new identity (unclaimed; codes given out stop working)
+and no saved Wi-Fi. The green light blinks slowly past 5 s, quickly past 15 s; the
+Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
 
 ## How it works
 

@@ -268,6 +268,8 @@ def main():
         "initramfs initrd.img followkernel\n"
         "dtoverlay=dwc2,dr_mode=peripheral\n"
         "disable_splash=1\n"
+        "# reset pins (services/button.py): GPIO21 = header pin 40, shorted to GND = pin 39\n"
+        "gpio=21=ip,pu\n"
     )
     (OUT / "cmdline.txt").write_text("console=tty1 rdinit=/init loglevel=6\n")
     tree.write_cpio(OUT / "initrd.img")

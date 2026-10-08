@@ -100,6 +100,14 @@ class IdentityService(Service):
         """Mark the Pi as claimed (its first pairing). Returns whether it was unclaimed."""
         return self.handle("claim", {})["first"]
 
+    def start_over(self):
+        """A new identity under the board's default name, unclaimed (the reset pins):
+        codes given out stop working, and a host's custody copy isn't put back."""
+        with self.lock:
+            self.data = dict(new_identity(), name=name_for(self.serial), claimed=False, discoverable=True)
+            self._changed()
+        log.info("identity: started over as %s", self.data["name"])
+
     def public(self):
         return ed25519_public(bytes.fromhex(self.data["seed"]))
 
