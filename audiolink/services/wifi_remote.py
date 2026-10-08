@@ -7,7 +7,9 @@ one. Whether clients can still reach the Pi afterwards isn't something the Pi ca
 check, and it doesn't wait to find out: if nobody connects, it opens its setup network
 (services/setup_ap.py, the lonely rule).
 
-How the change is made depends on how the requester reached the Pi:
+The radio part (trying, joining, switching) runs on the radio thread (services/
+radio.py), so the setup network's rule can't act in the middle of it. How the change
+is made depends on how the requester reached the Pi:
   - over Wi-Fi: the Pi first tries the network on a second interface without leaving
     (services/wifi_trial.py), so a wrong password is refused on the spot (a network
     that didn't give an address in time isn't: the trial can't tell that from slow
@@ -39,8 +41,8 @@ MAX_TRIES = 3
 class WifiRemoteService(Service):
     """Not reached over the link (no control requests): only through the endpoint."""
 
-    def __init__(self, wifi, setup_ap, endpoint, discovery):
-        self.wifi, self.setup_ap, self.discovery = wifi, setup_ap, discovery
+    def __init__(self, wifi, setup_ap, endpoint, discovery, radio):
+        self.wifi, self.setup_ap, self.discovery, self.radio = wifi, setup_ap, discovery, radio
         self.lock = threading.Lock()
         self.switching = None               # target network while a change is in progress
         cleanup_trial()                     # a restarted daemon: a trial left half done
@@ -76,26 +78,31 @@ class WifiRemoteService(Service):
         args = {"ssid": ssid, "password": p.get("password"), "security": p.get("security") or "wpa2",
                 "hidden": bool(p.get("hidden")), "use_saved": use_saved}
         via_setup = conn.addr[0].rsplit(".", 1)[0] == AP_ADDR.rsplit(".", 1)[0]
-        ap = self.setup_ap
-        self.setup_ap.pause_policy()
         try:
-            if via_setup and ap.active and seen and channel_of(seen["freq"]) == ap.channel:
-                return self._join_now(args)
-            precheck = None
-            if current and current != ssid and not via_setup and not (ap.active and ap.stations()):
-                ap.stop()                   # the trial needs the radio's second slot
-                precheck = self._trial(ssid, ent, use_saved)
-                if precheck["ok"] is False:
-                    reason = "%s; stayed on %r" % (precheck["reason"], current)
-                    log.info("wifi change: tried %r: %s", ssid, reason)
-                    self._done()
-                    return {"error": "%r: %s" % (ssid, reason), "code": precheck["code"], "stayed_on": current}
             tries = max(1, min(MAX_TRIES, int(p.get("tries") or 1)))
-            threading.Thread(target=self._switch, args=(args, tries), daemon=True).start()
+            reply = self.radio.run(self._prepare, args, ent, current, seen, via_setup)
+            if reply.get("accepted") and not reply.get("joined"):
+                self.radio.submit(self._switch, args, tries)    # after the reply has gone out
+                log.info("wifi change: switching to %r in %ds", ssid, SWITCH_DELAY)
+            return reply
         except Exception:
-            self._done()                        # never leave the setup network's rule paused
+            self._done()
             raise
-        log.info("wifi change: switching to %r in %ds", ssid, SWITCH_DELAY)
+
+    def _prepare(self, args, ent, current, seen, via_setup):
+        """On the radio thread: join right away, or try the network first. Returns the reply."""
+        ssid, ap = args["ssid"], self.setup_ap
+        if via_setup and ap.active and seen and channel_of(seen["freq"]) == ap.channel:
+            return self._join_now(args)
+        precheck = None
+        if current and current != ssid and not via_setup and not (ap.active and ap.stations()):
+            ap.stop()                       # the trial needs the radio's second slot
+            precheck = self._trial(ssid, ent, args["use_saved"])
+            if precheck["ok"] is False:
+                reason = "%s; stayed on %r" % (precheck["reason"], current)
+                log.info("wifi change: tried %r: %s", ssid, reason)
+                self._done()
+                return {"error": "%r: %s" % (ssid, reason), "code": precheck["code"], "stayed_on": current}
         return {"accepted": True, "precheck": precheck}
 
     def _trial(self, ssid, ent, use_saved):
@@ -120,6 +127,7 @@ class WifiRemoteService(Service):
         return {"accepted": True, "joined": True, "ip": r["ip"], "internet": r.get("internet")}
 
     def _switch(self, args, tries):
+        """On the radio thread."""
         time.sleep(SWITCH_DELAY)                # let the reply reach the requester first
         r = None
         try:
@@ -131,12 +139,12 @@ class WifiRemoteService(Service):
             self._done(r)
 
     def _done(self, r=None):
-        """End of a change: record it, let the setup network's rule run again."""
+        """End of a change: log it, let the next one in."""
         if r is not None:
             ssid = r.get("ssid") or self.switching
             log.info("wifi change: %s", "on %r" % ssid if r["joined"] else "couldn't join %r: %s" % (ssid, r["reason"]))
             if r["joined"]:
                 self.discovery.republish()      # so clients can find it on the DHT
+        self.setup_ap.settled()
         with self.lock:
             self.switching = None
-        self.setup_ap.resume_policy()

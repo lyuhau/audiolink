@@ -214,8 +214,9 @@ def _next_use(saved):
 
 
 class WifiManager:
-    def __init__(self, store_path):
+    def __init__(self, store_path, radio):
         self.store_path = store_path
+        self.radio = radio                    # services/radio.py: changes to the radio run there
         self.sup = Supplicant()
         self.lock = threading.Lock()          # one operation at a time
         self.saved = self._load()
@@ -277,6 +278,10 @@ class WifiManager:
                 self.sup.wpa("enable_network", "all")
         return missing
 
+    def _check_supplicant_job(self):
+        with self.lock:
+            self._check_supplicant()
+
     def _check_supplicant(self):
         """Call with self.lock held (monitor): wpa_supplicant running and up to date?"""
         try:
@@ -316,9 +321,13 @@ class WifiManager:
         time.sleep(5)
         while True:
             state = None
+            if not self.radio.busy():
+                try:
+                    self.radio.run(self._check_supplicant_job)
+                except Exception as e:
+                    log.debug("wifi monitor: %s", e)
             if self.lock.acquire(blocking=False):   # skip while a join is in progress
                 try:
-                    self._check_supplicant()
                     state = self._probe()
                     self._set_internet(state)
                 except Exception as e:
@@ -579,8 +588,11 @@ class WifiService(Service):
     name = "wifi"
     caps = ("wifi",)
 
-    def __init__(self, store_path):
-        self.manager = WifiManager(store_path)
+    RADIO_OPS = ("join", "scan", "forget")    # these change the radio's state: run on the radio thread
+
+    def __init__(self, store_path, radio):
+        self.radio = radio
+        self.manager = WifiManager(store_path, radio)
 
     def attach(self, session):
         super().attach(session)
@@ -590,6 +602,8 @@ class WifiService(Service):
         threading.Thread(target=self.manager.announce, daemon=True).start()
 
     def handle(self, op, args):
+        if op in self.RADIO_OPS:
+            return self.radio.run(self.manager.handle, op, args)
         return self.manager.handle(op, args)
 
     # ---- for other services (setup_ap, wifi_remote, discovery, presence, proxy)
@@ -604,13 +618,13 @@ class WifiService(Service):
         return self.manager.current_ssid()
 
     def scan(self):
-        return self.manager.handle("scan", {})
+        return self.radio.run(self.manager.handle, "scan", {})
 
     def last_scan(self):
         return self.manager.last_scan()
 
     def join(self, **args):
-        return self.manager.handle("join", args)
+        return self.radio.run(self.manager.handle, "join", args)
 
     def saved_entry(self, ssid):
         """A copy of a saved network's entry, or None."""
@@ -621,17 +635,17 @@ class WifiService(Service):
         return sorted(self.manager.saved)
 
     def remember(self, ssid, ent):
-        self.manager.remember(ssid, ent)
+        self.radio.run(self.manager.remember, ssid, ent)
 
     @property
     def parked(self):
         return self.manager.parked
 
     def park(self):
-        return self.manager.park()
+        return self.radio.run(self.manager.park)
 
     def unpark(self):
-        self.manager.unpark()
+        self.radio.run(self.manager.unpark)
 
     def note_demand(self):
         self.manager.note_demand()

@@ -223,22 +223,24 @@ def run_pi(a, allow, port, gate):
     from .services.wifi_remote import WifiRemoteService
     from .services.setup_ap import SetupApService
     from .services.presence import Presence
+    from .services.radio import Radio
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
     from .services.audio_format import AudioFormatService
     from .wire.alsa import AlsaAudio
     from .wire.gadget import Gadget
-    wifi = WifiService(a.wifi_store)
+    radio = Radio()                     # the one owner of the Wi-Fi chip
+    wifi = WifiService(a.wifi_store, radio)
     proxy = ProxyService(on_request=wifi.note_demand)
     presence = Presence(wifi.ip)
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports,
                       presence=presence)
     identity = IdentityService(a.state_dir)
     endpoint = Endpoint(identity, presence=presence)
-    setup_ap = SetupApService(wifi, identity, presence)
+    setup_ap = SetupApService(wifi, identity, presence, radio)
     discovery = DiscoveryService(identity, wifi, streams)
     session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint),
-                             setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery)])
+                             setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery, radio)])
     audio = AlsaAudio(session.link, a.device)
     audio.start()
     session.add(AudioFormatService(audio, Gadget()))

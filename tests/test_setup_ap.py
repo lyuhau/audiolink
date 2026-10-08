@@ -59,11 +59,18 @@ class Identity:
         return "test-pi"
 
 
+class InlineRadio:
+    """services/radio.py, without the thread: jobs run where they're called."""
+
+    def run(self, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+
 class Radio(SetupApService):
     """The real rule, with the radio mechanics faked."""
 
     def __init__(self, wifi, presence):
-        super().__init__(wifi, Identity(), presence)
+        super().__init__(wifi, Identity(), presence, InlineRadio())
         self.ups, self.on_it, self.dead = [], [], []
 
     def _bring_up(self, channel):
@@ -196,9 +203,13 @@ class LonelyRule(unittest.TestCase):
         self.run_for(20)
         self.assertTrue(self.ap.active)                 # ...but still the safety net
 
-    def test_paused_does_nothing(self):
-        self.ap.pause_policy()
-        self.run_for(LONELY * 3)
+    def test_on_keeps_it_up_with_a_client_on_wifi(self):
+        self.presence.connect()
+        self.ap.handle("on", {})
+        self.run_for(GRACE * 3)
+        self.assertTrue(self.ap.active)
+        self.ap.handle("auto", {})
+        self.run_for(GRACE + 10)
         self.assertFalse(self.ap.active)
 
 

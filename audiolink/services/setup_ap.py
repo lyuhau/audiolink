@@ -23,9 +23,10 @@ wlan0 join one if it's in range.
 While up, it checks that hostapd and its DHCP server are still running, and restarts
 them if not. `audiolink wifi ap on` keeps it up; `off` closes it for now, but the
 lonely rule still opens it again (it's the Pi's safety net: nothing overrides that).
-A Wi-Fi change from the network (services/wifi_remote.py) pauses the rule while in progress.
-The USB host doesn't count as a client: it can manage the Pi, but can't stand in for
-anyone reaching it.
+The rule runs as a job on the radio thread (services/radio.py), like every other
+change to the radio, so it never acts in the middle of a join or a trial. The USB
+host doesn't count as a client: it can manage the Pi, but can't stand in for anyone
+reaching it.
 """
 import logging
 import subprocess
@@ -58,20 +59,19 @@ class SetupApService(Service):
     name = "setup_ap"
     caps = ("setup_ap",)
 
-    def __init__(self, wifi, identity, presence):
+    def __init__(self, wifi, identity, presence, radio):
         self.wifi = wifi                        # services/wifi.py WifiService
+        self.radio = radio                      # services/radio.py
         self.identity = identity
         self.presence = presence
         self.active = False
         self.manual = False                     # True: kept up (`wifi ap on`)
         self.closed_at = 0.0                    # `wifi ap off`: lonely counts from then
-        self.paused = False                     # a connection-mode change is in progress
         self.channel = None                     # while active
         self.on_wifi_at = time.monotonic()      # last time wlan0 was on a network (or was let loose)
         self.busy_at = 0.0                      # last time someone was on the setup network
         self.retry_at = time.monotonic()
         self.repairs, self.repair_at = 0, 0.0   # health-check restarts in a row
-        self.lock = threading.RLock()
 
     def run(self):
         """Start applying the rule (in the background). First, a restarted daemon takes
@@ -91,39 +91,33 @@ class SetupApService(Service):
                     "channel": self.channel, "stations": len(self.stations()) if self.active else 0,
                     "mode": "on" if self.manual else "auto"}
         if op in ("on", "off", "auto"):
-            self.manual = op == "on"
-            if op == "on":
-                self.start()
-            elif op == "off":
-                self.closed_at = time.monotonic()
-                self.stop()
+            self.radio.run(self._command, op)
             return self.handle("status", {})
         raise ValueError("unknown setup_ap operation %r" % op)
 
-    # ---- for services/wifi_remote.py
-    def pause_policy(self):
-        with self.lock:                         # let a start/stop in progress finish first
-            self.paused = True
-
-    def resume_policy(self):
-        self.on_wifi_at = time.monotonic()
-        self.paused = False
+    def _command(self, op):
+        self.manual = op == "on"
+        if op == "on":
+            self.start()
+        elif op == "off":
+            self.closed_at = time.monotonic()
+            self.stop()
 
     # ---- the lonely rule
     def _policy(self):
         while True:
             time.sleep(5)
             try:
-                self._tick()
+                self.radio.run(self._tick)
             except Exception as e:
                 log.warning("setup network: %s", e)
 
-    def _tick(self):
-        with self.lock:                         # pause_policy() waits for a tick in progress
-            if not self.paused:
-                self._apply_rule()
+    def settled(self):
+        """After a change to wlan0 (services/wifi_remote.py): it may read as off Wi-Fi
+        for a moment; count from now before treating that as being offline."""
+        self.on_wifi_at = time.monotonic()
 
-    def _apply_rule(self):
+    def _tick(self):
         now = time.monotonic()
         channel = channel_of(self.wifi.freq())
         if channel:
@@ -198,25 +192,24 @@ class SetupApService(Service):
         return DEFAULT_CHANNEL
 
     def start(self):
-        with self.lock:
-            if self.active:
+        if self.active:
+            return
+        channel = self._wifi_channel()
+        if not channel:
+            if time.monotonic() - self.on_wifi_at < OFFLINE:
+                # Just left a network, or (re)joining one (it reads as not connected for
+                # a moment around changes): don't park it; the rule tries again later.
+                log.info("setup network: waiting for Wi-Fi to settle")
                 return
-            channel = self._wifi_channel()
-            if not channel:
-                if time.monotonic() - self.on_wifi_at < OFFLINE:
-                    # Just left a network, or (re)joining one (it reads as not connected for
-                    # a moment around changes): don't park it; the rule tries again later.
-                    log.info("setup network: waiting for Wi-Fi to settle")
-                    return
-                channel = self.pick_channel()   # off Wi-Fi: our own channel, wlan0 parked
-                if not self.wifi.park():
-                    return                      # it joined a network meanwhile: next time
-            if not self._bring_up(channel):
-                if self.wifi.parked:
-                    self.wifi.unpark()
-                return
-            self.active, self.channel, self.busy_at, self.retry_at = True, channel, 0.0, time.monotonic()
-            log.info("setup network: %r is up at %s, channel %d", self.ssid(), AP_ADDR, channel)
+            channel = self.pick_channel()   # off Wi-Fi: our own channel, wlan0 parked
+            if not self.wifi.park():
+                return                      # it joined a network meanwhile: next time
+        if not self._bring_up(channel):
+            if self.wifi.parked:
+                self.wifi.unpark()
+            return
+        self.active, self.channel, self.busy_at, self.retry_at = True, channel, 0.0, time.monotonic()
+        log.info("setup network: %r is up at %s, channel %d", self.ssid(), AP_ADDR, channel)
 
     # ---- the radio
     def _bring_up(self, channel):
@@ -285,14 +278,13 @@ class SetupApService(Service):
         return False
 
     def stop(self):
-        with self.lock:
-            if not self.active:
-                return
-            self._take_down()
-            self.active, self.channel = False, None
-            self.on_wifi_at = time.monotonic()
-            if self.wifi.parked:
-                self.wifi.unpark()
+        if not self.active:
+            return
+        self._take_down()
+        self.active, self.channel = False, None
+        self.on_wifi_at = time.monotonic()
+        if self.wifi.parked:
+            self.wifi.unpark()
         log.info("setup network: down")
 
     def _take_down(self):
@@ -304,16 +296,15 @@ class SetupApService(Service):
     def restart(self, channel=None):
         """Bring the setup network up again (on `channel`, or the one it's on), leaving
         wlan0 as it is (parked or not)."""
-        with self.lock:
-            if not self.active:
-                return self.start()
-            self._take_down()
-            channel = channel or self.channel
-            if self._bring_up(channel):
-                self.channel = channel
-                log.info("setup network: %r is up again, channel %d", self.ssid(), channel)
-            else:
-                self.active, self.channel = False, None
-                if self.wifi.parked:
-                    self.wifi.unpark()
-                log.warning("setup network: couldn't bring it back up")
+        if not self.active:
+            return self.start()
+        self._take_down()
+        channel = channel or self.channel
+        if self._bring_up(channel):
+            self.channel = channel
+            log.info("setup network: %r is up again, channel %d", self.ssid(), channel)
+        else:
+            self.active, self.channel = False, None
+            if self.wifi.parked:
+                self.wifi.unpark()
+            log.warning("setup network: couldn't bring it back up")
