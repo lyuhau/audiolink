@@ -233,8 +233,7 @@ def run_pi(a, allow, port, gate):
     wifi = WifiService(a.wifi_store, radio)
     proxy = ProxyService(on_request=wifi.note_demand)
     presence = Presence(wifi.ip)
-    streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports,
-                      presence=presence)
+    streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
     identity = IdentityService(a.state_dir)
     endpoint = Endpoint(identity, presence=presence)
     setup_ap = SetupApService(wifi, identity, presence, radio)

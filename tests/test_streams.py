@@ -7,7 +7,6 @@ import threading
 import time
 import unittest
 
-from audiolink.services.presence import Presence
 from audiolink.services.streams import WINDOW, Streams
 from audiolink.session import Session
 
@@ -57,7 +56,7 @@ class Through:
         self.addCleanup(self.server.srv.close)
         target = "127.0.0.1:%d" % self.server.port
         self.host_streams = Streams("host", allow=[target])
-        self.pi_streams = Streams("pi", presence=Presence(lambda: "127.0.0.1"))
+        self.pi_streams = Streams("pi")
         self.host = Session("host", [self.host_streams])
         self.pi = Session("pi", [self.pi_streams])
         self.running = True
@@ -85,14 +84,6 @@ class Echoing(Through, unittest.TestCase):
                 got += c.recv(65536)
         self.assertEqual(hashlib.sha256(got).digest(), hashlib.sha256(payload).digest())
 
-    def test_counts_the_client_while_connected(self):
-        presence = self.pi_streams.presence
-        with socket.create_connection(("127.0.0.1", self.port)) as c:
-            c.sendall(b"x")
-            self.assertTrue(wait(lambda: presence.connected()))
-        self.assertTrue(wait(lambda: not presence.connected()))
-
-
 class SlowReader(Through, unittest.TestCase):
     server_mode = "sink"
 
@@ -116,15 +107,13 @@ class SlowReader(Through, unittest.TestCase):
 class FarEndClosesEarly(Through, unittest.TestCase):
     server_mode = "early"
 
-    def test_stream_ends_and_client_is_no_longer_counted(self):
-        presence = self.pi_streams.presence
+    def test_stream_ends_when_the_client_closes(self):
         with socket.create_connection(("127.0.0.1", self.port)) as c:
             c.settimeout(10)
             try:
                 c.sendall(bytes(2 * WINDOW))           # far more than the far end ever reads
             except OSError:
                 pass                                    # the Pi may hang up on us first
-        self.assertTrue(wait(lambda: not presence.connected(), timeout=10))
         self.assertTrue(wait(lambda: not self.pi_streams.streams, timeout=10))
 
 

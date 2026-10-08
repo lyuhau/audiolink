@@ -59,7 +59,7 @@ class Conn:
 class Endpoint:
     def __init__(self, identity, port=PORT, presence=None):
         self.identity = identity
-        self.presence = presence                # services/presence.py: counts client connections
+        self.presence = presence                # services/presence.py: requests count as clients
         self.handlers = {}                      # op -> (fn(conn, req) -> reply or None, auth)
         self.slots = threading.Semaphore(4)
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -93,7 +93,8 @@ class Endpoint:
                 self.slots.release()
 
     def _serve(self, sock, addr):
-        path = self.presence.enter(sock) if self.presence else None
+        if self.presence:
+            self.presence.touch(sock)
         try:
             sock.settimeout(30)
             conn = Conn(sock, addr, self.identity)
@@ -129,7 +130,7 @@ class Endpoint:
         except (OSError, ValueError, ConnectionError):
             pass
         finally:
+            if self.presence:
+                self.presence.touch(sock)
             sock.close()
             self.slots.release()
-            if self.presence:
-                self.presence.leave(path)

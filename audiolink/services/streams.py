@@ -20,7 +20,7 @@ credits, so a slow socket at the far end (a client on weak Wi-Fi, or one that we
 sleep) holds up only its own stream, and buffers stay bounded (the Pi has 512 MB).
 DATA for a stream the receiver has already finished is credited and dropped.
 Relayed sockets use TCP keepalive, so a client that vanished without closing (a laptop
-lid shut mid-ssh) is noticed: the Pi counts connected clients (services/presence.py).
+lid shut mid-ssh) is dropped, and stops counting as connected (services/presence.py).
 """
 import logging
 import queue
@@ -81,10 +81,9 @@ def parse_range(spec):
 
 
 class Stream:
-    def __init__(self, sid, sock=None, path=None):
+    def __init__(self, sid, sock=None):
         self.sid = sid
         self.sock = sock
-        self.path = path            # how the client reached us (services/presence.py), if counted
         self.wq = queue.Queue()     # payloads to write to the socket; None = peer EOF
         self.closed_tx = self.closed_rx = False
         self.dead = False           # torn down: stop waiting for credit
@@ -98,9 +97,8 @@ class Streams(Service):
     caps = ("streams", "expose", "stream_credit")
     msg_types = (T_OPEN, T_DATA, T_CLOSE, T_CREDIT)
 
-    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", presence=None):
+    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535"):
         self.role = role
-        self.presence = presence                        # pi: counts client connections
         self.expose = list(expose)                      # host: [(pi_port, (host, port))]
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
@@ -273,10 +271,6 @@ class Streams(Service):
     def _maybe_finish(self, st):
         if st.closed_tx and st.closed_rx:
             self._forget(st)
-            with self.lock:
-                path, st.path = st.path, None   # both pumps can get here: count it once
-            if self.presence:
-                self.presence.leave(path)
             shut(st.sock)
             log.info("stream %d: closed", st.sid)
 
@@ -314,15 +308,12 @@ class Streams(Service):
                     time.sleep(1)
                     continue
                 if not self.session.peer_alive:
-                    if self.presence:
-                        self.presence.touch(sock)           # a client did reach us
                     sock.close()                            # nobody on the other end
                     continue
                 tune(sock)
-                path = self.presence.enter(sock) if self.presence else None
                 with self.lock:
                     sid = self._new_sid()
-                    st = Stream(sid, sock, path)
+                    st = Stream(sid, sock)
                     self.streams[sid] = st
                 log.info("stream %d: %s:%d -> peer %s:%d", sid, addr[0], addr[1], *target)
                 self.session.link.send(T_OPEN, sid, ("%s:%d" % target).encode())
