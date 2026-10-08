@@ -159,6 +159,11 @@ class AudioFormatService(Service):
                 log.warning("audio: %r not confirmed; back to %r", fmt, BASELINE)
                 self._switch(BASELINE)
 
+    def represent(self):
+        """Re-present the gadget in its current format (services/usbnet.py)."""
+        with self.lock:
+            self._switch(self.format)
+
     def _revert(self):
         time.sleep(0.5)
         with self.lock:
