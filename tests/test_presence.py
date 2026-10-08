@@ -53,7 +53,13 @@ class Counting(unittest.TestCase):
                    row("192.168.4.1:47900", "192.168.4.10:5001", "01"),
                    row("10.55.0.2:22", "10.55.0.1:5002", "01"),             # USB: doesn't count
                    row("192.168.1.154:22", "192.168.1.21:5003", "06"))      # TIME_WAIT: over
-        self.assertEqual(self.p.counts(), {"wifi": 1, "setup": 1})
+        self.assertEqual(self.p.counts(), {"wifi": 1, "setup": 1, "relay": 0})
+        self.assertTrue(self.p.connected_except("setup"))
+
+    def test_relayed_connections_count_but_the_usb_hosts_loopback_doesnt(self):
+        self.table(row("127.0.0.1:22", "127.0.0.2:5000", "01"),          # through the relay
+                   row("127.0.0.1:2222", "127.0.0.1:5001", "01"))        # USB host's stream
+        self.assertEqual(self.p.counts(), {"wifi": 0, "setup": 0, "relay": 1})
         self.assertTrue(self.p.connected_except("setup"))
 
     def test_lonely_counts_from_the_last_connection(self):

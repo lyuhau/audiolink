@@ -2,7 +2,8 @@
 
 Asks the kernel rather than keeping count: a client is connected while there's an
 established TCP connection to one of the Pi's listening ports on its Wi-Fi address
-("wifi") or the setup network's ("setup"), from /proc/net/tcp. Whatever the
+("wifi") or the setup network's ("setup"), or one that came through the relay ("relay":
+from RELAY_SOURCE, see services/relay.py), from /proc/net/tcp. Whatever the
 connection is for (a forwarded port, the network endpoint, ssh), and however it ended
 (closed, reset, timed out by keepalive), the kernel's view is the truth; bookkeeping
 in the code that serves connections could miss a close. Short requests that come and
@@ -22,6 +23,7 @@ from .setup_ap import AP_ADDR
 
 TCP_TABLE = "/proc/net/tcp"
 ESTABLISHED, LISTEN = "01", "0A"
+RELAY_SOURCE = "127.0.0.2"          # where relayed connections to local services come from
 
 
 def _addr(hexaddr):
@@ -54,19 +56,21 @@ class Presence:
         self.last = time.monotonic()            # last time anyone was seen (start: nobody)
 
     def counts(self):
-        """{"wifi": n, "setup": n}: clients connected right now."""
+        """{"wifi": n, "setup": n, "relay": n}: clients connected right now."""
         try:
             with open(self.table) as f:
                 conns = connections(f.read())
         except OSError:
             conns = []
         ip = self.wifi_ip()
-        n = {"wifi": 0, "setup": 0}
-        for (lip, _), _ in conns:
+        n = {"wifi": 0, "setup": 0, "relay": 0}
+        for (lip, _), (rip, _) in conns:
             if lip == AP_ADDR:
                 n["setup"] += 1
             elif ip and lip == ip:
                 n["wifi"] += 1
+            elif rip == RELAY_SOURCE:
+                n["relay"] += 1
         if any(n.values()):
             with self.lock:
                 self.last = time.monotonic()
@@ -74,12 +78,13 @@ class Presence:
 
     def touch(self, sock):
         """A client reached the Pi just now over `sock` (for requests that may be over
-        before the next look at the kernel's table). Only Wi-Fi and the setup network count."""
+        before the next look at the kernel's table). Only Wi-Fi, the setup network and the
+        relay count."""
         try:
-            local = sock.getsockname()[0]
+            local, remote = sock.getsockname()[0], sock.getpeername()[0]
         except OSError:
             return
-        if local == AP_ADDR or local == self.wifi_ip():
+        if local == AP_ADDR or local == self.wifi_ip() or remote == RELAY_SOURCE:
             with self.lock:
                 self.last = time.monotonic()
 

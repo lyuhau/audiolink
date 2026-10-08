@@ -42,6 +42,7 @@ import time
 from . import __version__
 from .services.streams import Streams, parse_forward
 from .paths import PI_STATE_DIR
+from .relay import DEFAULT as RELAY_DEFAULT
 from .session import Session
 
 log = logging.getLogger("audiolink")
@@ -155,6 +156,8 @@ def main(argv=None):
     roles["pi"].add_argument("--state-dir", default=PI_STATE_DIR, help="where the Pi keeps its identity")
     roles["pi"].add_argument("--wifi-store", default=PI_STATE_DIR + "/networks.json",
                              help="where saved Wi-Fi networks are kept")
+    roles["pi"].add_argument("--relay", default=RELAY_DEFAULT, metavar="HOST:PORT[#PIN]",
+                             help="relay to stay reachable through from anywhere (off: none)")
     roles["pi"].add_argument("--expose-ports", default="1024-65535", metavar="LO-HI",
                              help="ports the host may ask the Pi to expose")
     for p in sub.choices.values():       # every command: -v shows the technical details
@@ -247,14 +250,17 @@ def run_pi(a, allow, port, gate):
     endpoint = Endpoint(identity, presence=presence)
     setup_ap = SetupApService(wifi, identity, presence, radio)
     discovery = DiscoveryService(identity, wifi, streams)
+    from .services.relay import RelayAgent
+    relay = RelayAgent(identity, wifi, streams, [] if a.relay == "off" else [a.relay])
     session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint),
-                             setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery, radio)])
+                             setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery, radio), relay])
     audio = AlsaAudio(session.link, a.device)
     audio.start()
     session.add(AudioFormatService(audio, Gadget()))
     for spec in a.forward:
         streams.forward(*parse_forward(spec))
     setup_ap.run()
+    relay.run()
     return session, streams
 
 

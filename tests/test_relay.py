@@ -26,7 +26,8 @@ def make_cert(d):
 
 def pin_of(cert):
     import hashlib
-    return hashlib.sha256(ssl.PEM_cert_to_DER_cert(open(cert).read())).hexdigest()
+    with open(cert) as f:
+        return hashlib.sha256(ssl.PEM_cert_to_DER_cert(f.read())).hexdigest()
 
 
 @unittest.skipUnless(shutil.which("openssl"), "needs openssl to make a test certificate")
@@ -76,12 +77,15 @@ class RelayTest(unittest.TestCase):
             d = self.dial()
             send_line(d, {"v": VERSION, "role": "data", "id": wid})
             answer(d)
-            while True:
-                data = d.recv(65536)
-                if not data:
-                    break
-                d.sendall(data)
-            d.close()
+            d.settimeout(None)
+            try:
+                while True:
+                    data = d.recv(65536)
+                    if not data:
+                        break
+                    d.sendall(data)
+            except OSError:
+                pass
 
         def on_line(msg):
             if msg.get("op") == "open" and serve:
@@ -218,3 +222,131 @@ class SpliceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeIdentity:
+    def __init__(self):
+        self.seed, self.secret = os.urandom(32), os.urandom(16)
+
+    def keys(self):
+        return self.seed, self.secret
+
+    def public(self):
+        return ed25519_public(self.seed)
+
+
+class FakeWifi:
+    def __init__(self):
+        self.internet = "online"
+
+    def connection(self):
+        return {"ip": "192.168.1.154", "ssid": "home", "internet": self.internet}
+
+    def parked(self):
+        return False
+
+
+class FakeStreams:
+    def __init__(self, ports):
+        self.open = ports
+
+    def ports(self):
+        return list(self.open)
+
+
+class Echo:
+    def __init__(self):
+        self.srv = socket.create_server(("127.0.0.1", 0))
+        self.port = self.srv.getsockname()[1]
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._echo, args=(c,), daemon=True).start()
+
+    def _echo(self, c):
+        with c:
+            while True:
+                data = c.recv(65536)
+                if not data:
+                    return
+                c.sendall(data)
+
+
+@unittest.skipUnless(shutil.which("openssl"), "needs openssl to make a test certificate")
+class ThroughTheRelay(unittest.TestCase):
+    """Relay, Pi agent and client in one process."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp()
+        cls.cert, cls.key = make_cert(cls.dir)
+        cls.pin = pin_of(cls.cert)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def setUp(self):
+        from unittest import mock
+        from audiolink.services.relay import RelayAgent
+        self.relay = Relay(wire.server_context(self.cert, self.key), open_wait=2)
+        self.srv = self.relay.listen("127.0.0.1", 0)
+        self.addCleanup(self.srv.close)
+        threading.Thread(target=self.relay.serve, args=(self.srv,), daemon=True).start()
+        self.spec = "127.0.0.1:%d#%s" % (self.srv.getsockname()[1], self.pin)
+        patch = mock.patch("audiolink.relay.client.DEFAULT", self.spec)    # never the real relay
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.echo = Echo()
+        self.addCleanup(self.echo.srv.close)
+        self.id, self.wifi = FakeIdentity(), FakeWifi()
+        self.agent = RelayAgent(self.id, self.wifi, FakeStreams([self.echo.port]), [self.spec])
+
+    def connect(self, port, secret=None):
+        from audiolink.relay.client import connect
+        sock = connect(self.id.public(), secret or self.id.secret, port)
+        self.addCleanup(sock.close)
+        return sock
+
+    def test_reaches_a_forwarded_port(self):
+        self.agent.run()
+        wait(lambda: self.agent.status()["relay"] == "up")
+        sock = self.connect(self.echo.port)
+        for size in (1, 5000, 70000):
+            piece = os.urandom(size)
+            sock.sendall(piece)
+            got = b""
+            while len(got) < size:
+                got += sock.recv(65536)
+            self.assertEqual(got, piece)
+        wait(lambda: self.agent.status()["sessions"] == 1)
+
+    def test_unpaired_client_refused(self):
+        from audiolink.relay.client import Denied
+        self.agent.run()
+        wait(lambda: self.agent.status()["relay"] == "up")
+        with self.assertRaisesRegex(Denied, "not paired"):
+            self.connect(self.echo.port, secret=os.urandom(16))
+
+    def test_only_listed_ports(self):
+        from audiolink.relay.client import Denied
+        self.agent.run()
+        wait(lambda: self.agent.status()["relay"] == "up")
+        for port in (3128, self.echo.port + 1):
+            with self.assertRaisesRegex(Denied, "isn't open"):
+                self.connect(port)
+
+    def test_waits_for_internet(self):
+        self.wifi.internet = "portal"
+        self.agent.run()
+        wait(lambda: self.agent.status()["relay"] == "waiting for internet")
+        self.assertFalse(self.relay.pis)
+
+    def test_offline_pi(self):
+        with self.assertRaisesRegex(Refused, "offline"):
+            self.connect(self.echo.port)

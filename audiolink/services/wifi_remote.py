@@ -28,6 +28,7 @@ import threading
 import time
 
 from . import Service
+from .presence import RELAY_SOURCE
 from .setup_ap import AP_ADDR, channel_of
 from .wifi import credentials
 from .wifi_trial import cleanup as cleanup_trial, trial
@@ -50,6 +51,9 @@ class WifiRemoteService(Service):
         endpoint.register("change_status", lambda conn, req: {"saved": self.wifi.saved_names()}, auth=True)
 
     def _change_wifi(self, conn, req):
+        if conn.addr[0] == RELAY_SOURCE:    # it would cut the connection the request came on
+            return {"error": "Can't change Wi-Fi through the relay; use USB or the setup network",
+                    "code": "via_relay"}
         p = conn.open(req["sealed"])
         ssid = (p.get("ssid") or "").strip()
         if not ssid:

@@ -14,6 +14,12 @@ DEFAULT = "relay.lyuhau.com:443"
 PIN = "b063132443c34f3074c07ffd69b4a13b74804f867a0104cb0dd2c1de8a26b2a3"
 
 
+def parse_relay(spec):
+    """'host:port' or 'host:port#pin' -> ((host, port), pin); the default pin when none."""
+    addr, _, pin = spec.partition("#")
+    return parse_addr(addr), pin or PIN
+
+
 def parse_addr(spec, default_port=443):
     """'host:443' or 'host' -> ('host', 443)."""
     host, sep, port = spec.rpartition(":")

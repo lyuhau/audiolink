@@ -2,7 +2,7 @@
 
 `audiolink find PI`            look the Pi's record up on the DHT and decrypt it
 `audiolink connect PI PORT`    stdin/stdout <-> the Pi's port, for an ssh ProxyCommand;
-                               tries the last address found before a DHT lookup
+                               tries the last address found, the relay, then a DHT lookup
 PI is a name from `audiolink pis` (alias or the Pi's own name) or a connect code.
 `audiolink dht-size`           estimate how many DHT nodes answer
 """
@@ -14,6 +14,7 @@ import time
 
 from ..paths import cache_dir, load_json, save_json
 from . import keyring
+from .. import ui
 from ..ui import detail, done, step
 
 
@@ -86,24 +87,41 @@ def _try_connect(ips, port, timeout=3):
     return None
 
 
+def _via_relay(pub, secret, port, relays):
+    """A socket through a relay, or None. Exits if the Pi itself said no."""
+    from ..relay.client import Denied, connect
+    from ..relay.wire import Refused
+    try:
+        return connect(pub, secret, port, relays)
+    except Denied as e:
+        raise SystemExit("audiolink: %s" % e)
+    except Refused:
+        return None
+
+
 def connect_command(a):
-    """stdin/stdout <-> the Pi's port: for `ssh -o ProxyCommand='audiolink connect PI %p'`."""
+    """stdin/stdout <-> the Pi's port: for `ssh -o ProxyCommand='audiolink connect PI %p'`.
+    Tries the Pi's last known address, then its relay, then a DHT lookup."""
     from ..discovery.record import parse_code
     code = code_for(a.pi)
     try:
-        pub, _ = parse_code(code)
+        pub, secret = parse_code(code)
     except ValueError as e:
         raise SystemExit(str(e))
-    sock = None
-    cached = _cached(pub)
-    if cached:
-        sock = _try_connect(cached.get("lan", []), a.port)
+    cached = _cached(pub) or {}
+    sock = _try_connect(cached.get("lan", []), a.port, timeout=1.5)
+    if sock is None:
+        sock = _via_relay(pub, secret, a.port, cached.get("relays", []))
+        if sock is not None and ui.VERBOSE:     # stdout is the connection: say it on stderr
+            sys.stderr.write("audiolink: through the relay\n")
     if sock is None:
         sys.stderr.write("audiolink: looking up the Pi...\n")
         rec, _ = lookup(code)
         if not rec:
-            raise SystemExit("audiolink: Pi not found (online, with discovery on?)")
+            raise SystemExit("audiolink: Pi not found (not on its relay, nor on the DHT)")
         sock = _try_connect(rec.get("lan", []), a.port)
+        if sock is None and set(rec.get("relays", [])) - set(cached.get("relays", [])):
+            sock = _via_relay(pub, secret, a.port, rec["relays"])
         if sock is None:
             raise SystemExit("audiolink: Pi is on %s, unreachable from here (connect to %s too)"
                              % (rec.get("ssid") or "another network", rec.get("ssid") or "that network"))
@@ -112,7 +130,11 @@ def connect_command(a):
 
 
 def _pipe(sock):
-    """Bytes between this process's stdin/stdout and the socket, until either side ends."""
+    """Bytes between this process's stdin/stdout and the socket, until the socket's side
+    ends. The socket may be TLS, which only one thread may drive: stdin/stdout reach it
+    through a socket pair, and splice() drives both in one loop."""
+    from ..relay.wire import splice
+    mine, theirs = socket.socketpair()
     out = sys.stdout.buffer
 
     def up():
@@ -121,18 +143,19 @@ def _pipe(sock):
                 data = os.read(sys.stdin.fileno(), 65536)
                 if not data:
                     break
-                sock.sendall(data)
+                mine.sendall(data)
         except OSError:
             pass
         try:
-            sock.shutdown(socket.SHUT_WR)
+            mine.shutdown(socket.SHUT_WR)
         except OSError:
             pass
 
     threading.Thread(target=up, daemon=True).start()
+    threading.Thread(target=splice, args=(theirs, sock), daemon=True).start()
     try:
         while True:
-            data = sock.recv(65536)
+            data = mine.recv(65536)
             if not data:
                 break
             out.write(data)
