@@ -8,6 +8,7 @@
 # Code: an update on the card (`audiolink update`) runs instead of the built-in copy,
 # except while the reset pins are shorted (services/button.py), and once it has died
 # within a minute 3 times in a row: then it's set aside (.bad) for the built-in one.
+# Exit status 75 is a restart the daemon asked for (an update): no back-off.
 PIDF=/run/audiolink.pid
 LOG=/var/log/audiolink.log
 # The loop and the daemon share a process group: stop both.
@@ -45,7 +46,9 @@ setsid sh -c '
         python3 $PYZ pi "$@" >> $LOG 2>&1 < /dev/null
         status=$?
         killall -q aplay arecord
-        if [ $(( $(cut -d. -f1 /proc/uptime) - started )) -gt 60 ]; then
+        if [ $status = 75 ]; then
+            delay=2
+        elif [ $(( $(cut -d. -f1 /proc/uptime) - started )) -gt 60 ]; then
             delay=2
             fails=0
         elif [ $PYZ = $UPDATE ]; then

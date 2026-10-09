@@ -23,6 +23,7 @@ log = logging.getLogger("audiolink")
 
 MAX_SIZE = 8 * 1024 * 1024
 BUILT_IN = "/root/audiolink.pyz"
+RESTART = 75                    # exit status: "start me again now" (pi/start-audiolink.sh)
 
 
 def pyz_hash(path):
@@ -115,4 +116,4 @@ class UpdateService(Service):
 
     @staticmethod
     def _exit():
-        os._exit(0)                     # pi/start-audiolink.sh starts the new copy
+        os._exit(RESTART)               # pi/start-audiolink.sh starts the new copy at once
