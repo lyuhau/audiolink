@@ -247,3 +247,51 @@ class EndpointAccess(unittest.TestCase):
         c = self.client()
         self.assertEqual(c.ask({"op": "look", "proof": proof_for(self.identity.keys()[1], "look", c.nonce)})
                          ["code"], "not_paired")
+
+
+class DebugCommand(unittest.TestCase):
+    """`audiolink debug`, against a DebugService standing in for the plugged-in Pi."""
+
+    def run_cmd(self, *argv):
+        import contextlib
+        import io
+        from unittest import mock
+        from audiolink.__main__ import main
+        svc = self.svc
+
+        def call(op, args=None, port=None):
+            if op == "peer":
+                return {"connected": True, "peer": {"caps": ["debug"]}}
+            return svc.handle(op.split(".", 1)[1], args or {})
+        out = io.StringIO()
+        with mock.patch("audiolink.host.control.call", call), mock.patch("audiolink.host.debug_cli.call", call), \
+                contextlib.redirect_stdout(out):
+            main(["debug"] + list(argv))
+        return out.getvalue()
+
+    def setUp(self):
+        self.svc = DebugService()
+
+    def test_on_status_off(self):
+        out = self.run_cmd("on", "--for", "2h")
+        self.assertIn("Debug: on, computers that added it", out)
+        self.assertIn("Routes: USB, LAN, setup network, relay", out)
+        self.assertIn("Ends in 2 h", out)
+        self.assertIn("Routes: USB, LAN\n", self.run_cmd("on", "--auth", "none"))
+        self.assertIn("Debug: on", self.run_cmd("status"))
+        self.assertEqual(self.run_cmd("off"), "Debug: off\n")
+        self.assertEqual(self.svc.status()["mode"], "off")
+
+    def test_key_files(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "k.pub")
+        with open(path, "w") as f:
+            f.write("# keys\n%s\n%s\n" % (ed25519_public(b"\1" * 32).hex(), ed25519_public(b"\2" * 32).hex()))
+        self.assertIn("debug keys (2)", self.run_cmd("on", "--key", path))
+        self.assertEqual(len(self.svc.keys()), 2)
+
+    def test_refuses_mismatched_options(self):
+        for argv in (["on", "--auth", "key"], ["on", "--setup"], ["on", "--for", "forever"]):
+            with self.assertRaises(SystemExit, msg=argv):
+                self.run_cmd(*argv)

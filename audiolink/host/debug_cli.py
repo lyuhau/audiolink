@@ -14,6 +14,7 @@ AUTH_NAMES = {"paired": "computers that added it", "key": "debug keys", "none": 
 
 
 def _span(s):
+    s = (s + 30) // 60 * 60                  # whole minutes
     if s >= 86400 and s % 86400 == 0:
         return "%d d" % (s // 86400)
     if s >= 3600:

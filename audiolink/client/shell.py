@@ -102,4 +102,5 @@ def shell_command(a):
     if "error" in r:
         remote.close()
         raise SystemExit(remote.refusal(r))
+    remote.conn.sock.settimeout(None)       # a shell can sit idle
     terminal(remote.conn.sock, remote.conn.f)
