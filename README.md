@@ -151,7 +151,8 @@ tools/hot.sh                          # just the daemon, no reboot (lost at the 
 tools/smoke.sh                        # end-to-end check of the host daemon and the Pi
 ```
 
-With a card reader: `tools/build_card.sh config/pi.toml --install /Volumes/CARD`.
+With a card reader: `tools/build_card.sh config/pi.toml --install /Volumes/CARD`
+(replaces everything on the card, its `audiolink/` state too).
 State (identity, saved networks, updates) is in the card's `audiolink/`; logs
 in `logs/last` and `logs/prev`.
 
