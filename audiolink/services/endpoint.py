@@ -3,12 +3,17 @@ over Wi-Fi, the setup network or the relay. Services register requests on it (pa
 Wi-Fi changes, logs, updates, shells), each with the access level it needs
 (services/access.py decides).
 
-Protocol: one JSON object per line. Every connection starts with
-  {"op":"hello"} -> {"name","tag","pub","claimed","nonce"}
-Proofs a request can carry:
-  "proof"        HMAC-SHA256(read secret, op + nonce): a machine that paired with this Pi;
-                 its sensitive fields travel sealed with the read secret (Conn.seal/open)
-  "key", "sig"   an ed25519 signature of KEY_LABEL + op + nonce (debug key mode)
+Protocol: TLS 1.3 (audiolink/tls.py: the Pi's certificate is for its identity key, which
+clients compare with the one in its connect code), then one JSON object per line.
+Every connection starts with
+  {"op":"hello"} -> {"name","tag","pub","claimed","nonce","tls"}
+Proofs a request can carry (each bound to the Pi's key as the client saw it in TLS, so
+one made for an impostor's connection is no good here):
+  "proof"        HMAC-SHA256(read secret, op + nonce + key): a machine that paired with
+                 this Pi; its sensitive fields travel sealed with the read secret (Conn.seal/open)
+  "key", "sig"   an ed25519 signature of KEY_LABEL + op + nonce + key (debug key mode)
+A connection that starts without TLS (an older audiolink) gets its hello answered and
+every request refused with UPGRADE, so it can say what to do.
 A handler can keep the connection for itself (a shell): it raises Takeover, and the
 endpoint frees the request slot and drops its timeout first.
 """
@@ -21,20 +26,24 @@ import socket
 import threading
 import time
 
+from .. import tls
 from ..crypto import ed25519_verify, open_sealed, seal
 from .access import DEBUG, KEY_LABEL, PUBLIC, decide, route_of
 
 log = logging.getLogger("audiolink")
 
 PORT = 47900
+UPGRADE = {"error": "This Pi's audiolink is newer than this computer's: update audiolink here",
+           "code": "upgrade"}
 
 
-def proof_for(secret, op, nonce):
-    return hmac.new(secret, op.encode() + nonce, hashlib.sha256).hexdigest()
+def proof_for(secret, op, nonce, pub):
+    """pub: the Pi's public key from its TLS certificate."""
+    return hmac.new(secret, tls.bind(op.encode() + nonce, pub), hashlib.sha256).hexdigest()
 
 
-def key_message(op, nonce):
-    return KEY_LABEL + op.encode() + nonce
+def key_message(op, nonce, pub):
+    return tls.bind(KEY_LABEL + op.encode() + nonce, pub)
 
 
 class Takeover(Exception):
@@ -49,9 +58,11 @@ class Takeover(Exception):
 class Conn:
     """One client connection, as seen by request handlers."""
 
-    def __init__(self, sock, addr, identity, route="relay"):
+    def __init__(self, sock, addr, identity, route="relay", secure=True):
         self.sock, self.addr, self.route = sock, addr, route
         self.identity = identity
+        self.secure = secure                # TLS (False: an older client, refused)
+        self.pub = identity.public()        # what proofs are bound to
         self.nonce = os.urandom(16)
         self.f = sock.makefile("rwb")
         self.verified = set()               # (key, sig) already checked on this connection
@@ -101,7 +112,7 @@ class Endpoint:
     def _proven(self, conn, op, req, need, switch):
         proven = set()
         secret = self.identity.keys()[1]
-        if self.identity.claimed() and hmac.compare_digest(proof_for(secret, op, conn.nonce),
+        if self.identity.claimed() and hmac.compare_digest(proof_for(secret, op, conn.nonce, conn.pub),
                                                            str(req.get("proof", ""))):
             proven.add("paired")
         if need == DEBUG and switch.get("mode") == "key" and req.get("key") and req.get("sig"):
@@ -111,7 +122,7 @@ class Endpoint:
             except ValueError:
                 return proven
             if got in conn.verified or (key in self.debug.keys() and
-                                        ed25519_verify(key, key_message(op, conn.nonce), sig)):
+                                        ed25519_verify(key, key_message(op, conn.nonce, conn.pub), sig)):
                 conn.verified.add(got)
                 proven.add("key")
         return proven
@@ -158,14 +169,22 @@ class Endpoint:
                 local = sock.getsockname()[0]
             except OSError:
                 local = None
-            conn = Conn(sock, addr, self.identity, route_of(local, addr[0], self.wifi_ip()))
+            route = route_of(local, addr[0], self.wifi_ip())
+            first = sock.recv(1, socket.MSG_PEEK)
+            secure = first[:1] == bytes([tls.FIRST_BYTE])
+            if secure:
+                sock = tls.server_context(self.identity.keys()[0]).wrap_socket(sock, server_side=True)
+            conn = Conn(sock, addr, self.identity, route, secure)
             while True:
                 req = conn.recv()
                 op = req.get("op")
                 if op == "hello":
                     info = self.identity.info()
                     conn.send({"name": info["name"], "tag": info["tag"], "pub": info["pub"],
-                               "claimed": info["claimed"], "nonce": conn.nonce.hex()})
+                               "claimed": info["claimed"], "nonce": conn.nonce.hex(), "tls": True})
+                    continue
+                if not secure:
+                    conn.send(UPGRADE)
                     continue
                 if op not in self.handlers:
                     conn.send({"error": "unknown op %r" % op})

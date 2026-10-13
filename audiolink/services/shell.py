@@ -72,11 +72,13 @@ def _clean(h):
 
 def join(a, b):
     """Bytes both ways until either side ends; then both close (a shell that exited
-    ends the client's connection, and a client gone hangs the shell up)."""
+    ends the client's connection, and a client gone hangs the shell up). Either may be
+    an SSL socket: what it has decrypted already doesn't show in select()."""
     peer = {a: b, b: a}
     try:
         while True:
-            for s in select.select([a, b], [], [])[0]:
+            ready = [s for s in (a, b) if getattr(s, "pending", lambda: 0)()]
+            for s in ready or select.select([a, b], [], [])[0]:
                 data = s.recv(65536)
                 if not data:
                     return

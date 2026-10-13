@@ -9,9 +9,12 @@ otherwise over the network, proving this machine already knows the Pi).
 import hmac
 import json
 import socket
+import ssl
 import struct
+import threading
 import time
 
+from .. import tls
 from ..crypto import Spake2, open_sealed
 from ..discovery.record import parse_code
 from . import keyring
@@ -56,12 +59,58 @@ def browse(timeout=2.0):
     return sorted(found)
 
 
+class OldPi(ConnectionError):
+    """A Pi whose audiolink predates TLS on its endpoint (hello: what it said)."""
+
+    def __init__(self, hello):
+        super().__init__("too old")
+        self.hello = hello
+
+
+def _plain_hello(ip, port):
+    """The hello of an endpoint that didn't take TLS, or None."""
+    try:
+        with socket.create_connection((ip, port), timeout=3) as s:
+            s.settimeout(3)
+            f = s.makefile("rwb")
+            f.write(b'{"op": "hello"}\n')
+            f.flush()
+            hello = json.loads(f.readline())
+    except (OSError, ValueError):
+        return None
+    return hello if isinstance(hello, dict) and hello.get("pub") else None
+
+
 class PiConn:
-    """One line-delimited JSON conversation with a Pi's pairing endpoint."""
+    """One line-delimited JSON conversation with a Pi's endpoint, over TLS. pub: the Pi's
+    public key from its certificate (hello() checks the Pi claims that one; callers
+    compare it with the code they hold). The TLS socket is driven by one thread
+    (relay.wire.splice); self.sock is the plain end of a socket pair, which any thread
+    may read or write."""
 
     def __init__(self, ip, port=PORT, timeout=3.0, sock=None):
+        from ..relay.wire import splice
+        why = tls.unsupported()
+        if why:
+            raise SystemExit(why)
         self.ip = ip
-        self.sock = sock or socket.create_connection((ip, port), timeout=timeout)
+        raw = sock or socket.create_connection((ip, port), timeout=timeout)
+        raw.settimeout(max(timeout, 10))
+        try:
+            secure, self.pub = tls.client_wrap(raw)
+        except tls.Mismatch:
+            raise
+        except ssl.SSLError:
+            raw.close()
+            hello = _plain_hello(ip, port) if sock is None else None
+            if hello and hello.get("tls"):              # it speaks TLS: the problem is here
+                raise SystemExit("Couldn't set up encryption with the Pi (this Python: %s)"
+                                 % ssl.OPENSSL_VERSION)
+            if hello:
+                raise OldPi(hello)
+            raise
+        self.sock, theirs = socket.socketpair()
+        threading.Thread(target=splice, args=(theirs, secure), daemon=True).start()
         self.sock.settimeout(30)
         self.f = self.sock.makefile("rwb")
 
@@ -73,18 +122,39 @@ class PiConn:
             raise ConnectionError("the Pi closed the connection")
         return json.loads(line)
 
+    def hello(self):
+        """The Pi's hello, which must name the key its certificate is for."""
+        h = self.ask({"op": "hello"})
+        if h.get("pub") != self.pub.hex():
+            raise tls.Mismatch(h.get("pub"))
+        return h
+
     def ask_auth(self, op, hello, secret, sealed=None, **fields):
         """An authenticated request: proves this machine knows the Pi's read secret;
         `sealed` (a dict) travels encrypted with it."""
         from ..crypto import seal
-        proof = proof_for(secret, op, bytes.fromhex(hello["nonce"]))
+        proof = proof_for(secret, op, bytes.fromhex(hello["nonce"]), self.pub)
         req = dict(fields, op=op, proof=proof)
         if sealed is not None:
             req["sealed"] = seal(secret, json.dumps(sealed).encode()).hex()
         return self.ask(req)
 
     def close(self):
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)        # close() alone waits for self.f
+        except OSError:
+            pass
         self.sock.close()
+
+
+def impostor(where, name="the Pi"):
+    return SystemExit("Something %s claims to be %s but couldn't prove it (someone may be in between); "
+                      "stopped" % (where, name))
+
+
+def too_old(name):
+    return SystemExit("%s's audiolink is too old to reach over the network; update it over USB "
+                      "(audiolink update)" % name)
 
 
 def reach(entry, at=(), with_dht=False):
@@ -103,10 +173,23 @@ def reach(entry, at=(), with_dht=False):
     for ip in dict.fromkeys(ips):
         try:
             conn = PiConn(ip, timeout=1.5)
-            hello = conn.ask({"op": "hello"})
+        except OldPi as e:
+            if e.hello.get("pub") == pub:
+                raise too_old(e.hello.get("name") or "The Pi")
+            continue
         except (OSError, ValueError):
             continue
-        if hello.get("pub") == pub:
+        try:
+            hello = conn.hello()
+        except tls.Mismatch as e:
+            conn.close()
+            if e.claimed == pub:
+                raise impostor("at %s" % ip, entry.get("alias") or "this Pi")
+            continue
+        except (OSError, ValueError):
+            conn.close()
+            continue
+        if hello.get("pub") == pub:                 # the key in the code: proven by TLS
             return conn, hello
         conn.close()
     return None, None
@@ -121,9 +204,16 @@ def candidates(at=()):
         seen.add(ip)
         try:
             c = PiConn(ip, timeout=1.5)
-            out.append((c, c.ask({"op": "hello"})))
+        except OldPi as e:
+            print("%s (at %s) runs an audiolink too old to pair over the network; update it over USB"
+                  % (e.hello.get("name", "A Pi"), ip))
+            continue
         except (OSError, ValueError):
             continue
+        try:
+            out.append((c, c.hello()))
+        except (OSError, ValueError):               # including a certificate that doesn't match
+            c.close()
     return out
 
 

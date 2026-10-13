@@ -1,5 +1,4 @@
 """services/shell.py: the pty shell server, and network shells through the endpoint."""
-import json
 import os
 import shutil
 import socket
@@ -8,6 +7,7 @@ import tempfile
 import time
 import unittest
 
+from audiolink.client.pairing import PiConn
 from audiolink.services.access import PAIRED, DebugService
 from audiolink.services.endpoint import Endpoint
 from audiolink.services.identity import IdentityService
@@ -85,23 +85,13 @@ def alive(pid):
         return True
 
 
-class Client:
+class Client(PiConn):
+    """A client of the endpoint over TLS (client/pairing.py)."""
+
     def __init__(self, port):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
-        self.f = self.sock.makefile("rwb")
-        self.hello = self.ask({"op": "hello"})
+        super().__init__("127.0.0.1", port=port)
+        self.hello = super().hello()
 
-    def ask(self, obj):
-        self.f.write((json.dumps(obj) + "\n").encode())
-        self.f.flush()
-        return json.loads(self.f.readline())
-
-    def close(self):
-        try:
-            self.sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        self.sock.close()
 
 
 @unittest.skipIf(sys.platform == "win32", "no pty")

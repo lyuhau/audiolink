@@ -12,11 +12,12 @@ import socket
 import struct
 import threading
 
+from .. import tls
 from ..discovery.record import parse_code
 from ..services.endpoint import PORT, key_message, proof_for
 from ..ui import detail, done, step
 from . import keyring
-from .pairing import PiConn, reach
+from .pairing import OldPi, PiConn, impostor, reach, too_old
 
 
 # ---------------------------------------------------------------- debug keys
@@ -145,15 +146,44 @@ def _over_relay(pub, secret):
     return mine
 
 
+def _through_relay(sock, pub, name):
+    """(PiConn, hello, how) over a relayed socket, or None."""
+    try:
+        conn = PiConn("relay", sock=sock)
+    except (OSError, ValueError):                       # e.g. the Pi's audiolink predates TLS
+        sock.close()
+        return None
+    try:
+        hello = conn.hello()
+    except tls.Mismatch:
+        conn.close()
+        raise impostor("through the relay", name)
+    except (OSError, ValueError):
+        conn.close()
+        return None
+    if hello.get("pub") != pub.hex():                   # the key in the code: proven by TLS
+        conn.close()
+        raise impostor("through the relay", name)
+    return conn, hello, "through the relay"
+
+
 def _find(entry, at):
     """(PiConn, hello, how) or (None, None, None)."""
     if not entry.get("code"):
         for ip in list(at) + [entry["addr"]]:
             try:
                 conn = PiConn(ip, timeout=3)
-                return conn, conn.ask({"op": "hello"}), "at %s" % ip
+            except OldPi as e:
+                raise too_old(e.hello.get("name") or ip)
             except (OSError, ValueError):
                 continue
+            try:
+                return conn, conn.hello(), "at %s" % ip
+            except tls.Mismatch:
+                conn.close()
+                raise impostor("at %s" % ip)
+            except (OSError, ValueError):
+                conn.close()
         return None, None, None
     conn, hello = reach(entry, at)
     if conn:
@@ -161,14 +191,9 @@ def _find(entry, at):
     pub, secret = parse_code(entry["code"])
     sock = _over_relay(pub, secret)
     if sock is not None:
-        conn = PiConn("relay", sock=sock)
-        try:
-            hello = conn.ask({"op": "hello"})
-            if hello.get("pub") == pub.hex():
-                return conn, hello, "through the relay"
-        except (OSError, ValueError):
-            pass
-        conn.close()
+        found = _through_relay(sock, pub, entry.get("alias") or "the Pi")
+        if found:
+            return found
     conn, hello = reach(entry, at, with_dht=True)
     return (conn, hello, "at %s" % conn.ip) if conn else (None, None, None)
 
@@ -191,17 +216,20 @@ class Remote:
                              % self.name)
         if not quiet:
             done("found")
+            if not self.entry.get("code"):
+                print("This computer has no code for %s, so it can't tell it's the real one "
+                      "(the connection is encrypted, but anyone could answer at that address)" % self.name)
         detail("%s", how)
         return self
 
     def ask(self, op, **fields):
         """A request with every proof this machine has."""
-        nonce = bytes.fromhex(self.hello["nonce"])
+        nonce, pub = bytes.fromhex(self.hello["nonce"]), self.conn.pub
         req = dict(fields, op=op)
         if self.secret:
-            req["proof"] = proof_for(self.secret, op, nonce)
+            req["proof"] = proof_for(self.secret, op, nonce, pub)
         if self.key:
-            req["key"], req["sig"] = self.key.pub.hex(), self.key.sign(key_message(op, nonce)).hex()
+            req["key"], req["sig"] = self.key.pub.hex(), self.key.sign(key_message(op, nonce, pub)).hex()
         return self.conn.ask(req)
 
     def call(self, op, args=None):

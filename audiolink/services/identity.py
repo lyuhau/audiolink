@@ -110,7 +110,11 @@ class IdentityService(Service):
         log.info("identity: started over as %s", self.data["name"])
 
     def public(self):
-        return ed25519_public(bytes.fromhex(self.data["seed"]))
+        seed = self.data["seed"]
+        cached = getattr(self, "_public", None)
+        if not cached or cached[0] != seed:             # every connection asks: compute once per key
+            cached = self._public = (seed, ed25519_public(bytes.fromhex(seed)))
+        return cached[1]
 
     def info(self):
         pub = self.public()

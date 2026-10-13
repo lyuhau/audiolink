@@ -1,11 +1,10 @@
 """services/access.py (levels x routes x debug modes) and the endpoint's refusals."""
-import json
 import os
 import shutil
-import socket
 import tempfile
 import unittest
 
+from audiolink.client.pairing import PiConn
 from audiolink.crypto import ed25519_public, ed25519_sign
 from audiolink.paths import save_state
 from audiolink.services import access
@@ -161,20 +160,14 @@ class Switch(unittest.TestCase):
         self.assertEqual(DebugService(self.dir).status()["mode"], "off")
 
 
-class Client:
+class Client(PiConn):
+    """A client of the endpoint over TLS (client/pairing.py)."""
+
     def __init__(self, port):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
-        self.f = self.sock.makefile("rwb")
-        self.hello = self.ask({"op": "hello"})
+        super().__init__("127.0.0.1", port=port)
+        self.hello = super().hello()
         self.nonce = bytes.fromhex(self.hello["nonce"])
 
-    def ask(self, obj):
-        self.f.write((json.dumps(obj) + "\n").encode())
-        self.f.flush()
-        return json.loads(self.f.readline())
-
-    def close(self):
-        self.sock.close()
 
 
 class EndpointAccess(unittest.TestCase):
@@ -199,31 +192,31 @@ class EndpointAccess(unittest.TestCase):
     def test_paired_needs_the_proof(self):
         c = self.client()
         self.assertEqual(c.ask({"op": "look"})["code"], "not_paired")
-        self.assertEqual(c.ask({"op": "look", "proof": proof_for(b"x" * 16, "look", c.nonce)})["code"],
+        self.assertEqual(c.ask({"op": "look", "proof": proof_for(b"x" * 16, "look", c.nonce, c.pub)})["code"],
                          "not_paired")
-        self.assertEqual(c.ask({"op": "look", "proof": proof_for(self.secret, "look", c.nonce)})["route"], "lan")
+        self.assertEqual(c.ask({"op": "look", "proof": proof_for(self.secret, "look", c.nonce, c.pub)})["route"], "lan")
 
     def test_proof_is_per_op(self):
         c = self.client()
-        r = c.ask({"op": "root", "proof": proof_for(self.secret, "look", c.nonce)})
+        r = c.ask({"op": "root", "proof": proof_for(self.secret, "look", c.nonce, c.pub)})
         self.assertEqual(r["code"], "debug_off")
         self.debug.set({"mode": "paired"})
-        self.assertEqual(c.ask({"op": "root", "proof": proof_for(self.secret, "look", c.nonce)})["code"],
+        self.assertEqual(c.ask({"op": "root", "proof": proof_for(self.secret, "look", c.nonce, c.pub)})["code"],
                          "not_paired")
-        self.assertTrue(c.ask({"op": "root", "proof": proof_for(self.secret, "root", c.nonce)})["ok"])
+        self.assertTrue(c.ask({"op": "root", "proof": proof_for(self.secret, "root", c.nonce, c.pub)})["ok"])
 
     def test_key_mode(self):
         seed = os.urandom(32)
         pub = ed25519_public(seed)
         self.debug.set({"mode": "key", "keys": [pub.hex()]})
         c = self.client()
-        self.assertEqual(c.ask({"op": "root", "proof": proof_for(self.secret, "root", c.nonce)})["code"],
+        self.assertEqual(c.ask({"op": "root", "proof": proof_for(self.secret, "root", c.nonce, c.pub)})["code"],
                          "debug_key")
         other = os.urandom(32)
         bad = {"op": "root", "key": ed25519_public(other).hex(),
-               "sig": ed25519_sign(other, key_message("root", c.nonce)).hex()}
+               "sig": ed25519_sign(other, key_message("root", c.nonce, c.pub)).hex()}
         self.assertEqual(c.ask(bad)["code"], "debug_key")
-        good = {"op": "root", "key": pub.hex(), "sig": ed25519_sign(seed, key_message("root", c.nonce)).hex()}
+        good = {"op": "root", "key": pub.hex(), "sig": ed25519_sign(seed, key_message("root", c.nonce, c.pub)).hex()}
         self.assertTrue(c.ask(good)["ok"])
         self.assertTrue(c.ask(good)["ok"])                  # again on the same connection
         replayed = self.client()
@@ -245,7 +238,7 @@ class EndpointAccess(unittest.TestCase):
     def test_unclaimed_pi_has_no_paired_machines(self):
         self.identity.start_over()
         c = self.client()
-        self.assertEqual(c.ask({"op": "look", "proof": proof_for(self.identity.keys()[1], "look", c.nonce)})
+        self.assertEqual(c.ask({"op": "look", "proof": proof_for(self.identity.keys()[1], "look", c.nonce, c.pub)})
                          ["code"], "not_paired")
 
 
