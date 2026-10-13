@@ -5,18 +5,20 @@
 # Log: /var/log/audiolink.log; earlier runs' (each ending with how it ended):
 # audiolink.log.1 .. .3
 #
-# Code: an update on the card (`audiolink update`) runs instead of the built-in copy,
+# Code: the built-in copy is audiolink.pyz next to this script (the image's: /opt/audiolink/).
+# An update on the card (`audiolink update`) runs instead of the built-in copy,
 # except while the reset pins are shorted (services/button.py), and once it has died
 # within a minute 3 times in a row: then it's set aside (.bad) for the built-in one.
 # Exit status 75 is a restart the daemon asked for (an update): no back-off.
 PIDF=/run/audiolink.pid
 LOG=/var/log/audiolink.log
+BUILT_IN=$(cd "$(dirname "$0")" && pwd)/audiolink.pyz
 # The loop and the daemon share a process group: stop both.
 [ -f $PIDF ] && kill -TERM -"$(cat $PIDF)" 2>/dev/null && sleep 1
 killall -q aplay arecord
 setsid sh -c '
     LOG='$LOG'
-    BUILT_IN=/root/audiolink.pyz
+    BUILT_IN='$BUILT_IN'
     UPDATE=/var/lib/audiolink/audiolink.pyz
     pins_shorted() {        # GPIO21 to GND; open reads 1 (pull-up from config.txt)
         for chip in /sys/class/gpio/gpiochip*; do
