@@ -9,7 +9,7 @@
 #   USB_PYTHON    Python 3.11+ for it (default: its .venv, ~/Code/usb/.venv, python3)
 set -e
 # The platform's initramfs branch, until it's merged into ~/Code/usb's main.
-DEFAULT_PLATFORM=$HOME/Code/usb-initramfs
+DEFAULT_PLATFORM=$HOME/Code/usb
 cd "$(dirname "$0")/.."
 CONFIG=${1:-config/pi.toml}
 [ $# -gt 0 ] && shift

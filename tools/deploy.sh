@@ -20,7 +20,7 @@ for a in "$@"; do
 done
 MANIFEST=$CARD.manifest
 [ -f "$MANIFEST" ] || { echo "no $MANIFEST: tools/build_card.sh first" >&2; exit 1; }
-if ! grep -q root/.ssh/authorized_keys "$CARD/boot/initrd.img" && [ -z "$RELEASE" ]; then
+if ! gzip -dc "$CARD/boot/initrd.img" | cpio -it 2>/dev/null | grep -qx root/.ssh/authorized_keys && [ -z "$RELEASE" ]; then
     echo "$CARD has no SSH (a release image); --release to write it anyway" >&2
     exit 1
 fi
