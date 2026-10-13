@@ -37,7 +37,7 @@ def cache_dir():
 PI_STATE_DIR = "/var/lib/audiolink"     # the SD card's audiolink/ folder, or RAM without a card
 
 # The usb platform (config/pi.toml) says where things are in its app.env, which it
-# also puts in [app] run's environment. Not there: the older image (pi/init).
+# also puts in [app] run's environment. Not there: the older, pre-platform image.
 APP_ENV = "/etc/usb-gadget/app.env"
 PLATFORM_KEYS = ("CARD", "APP_STATE", "APP_LOGS", "GADGET", "GADGET_SH", "GADGET_FUNCTIONS")
 

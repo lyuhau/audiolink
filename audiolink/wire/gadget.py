@@ -6,7 +6,7 @@ unplugged), unlink, write the attributes, link back, bind again (the host enumer
 the new format). On the usb platform its gadget.sh does that (`gadget.sh set audio
 c_srate=...`: it relinks every function in order and brings usb0 up after the bind);
 the device starts in the BASELINE format (config/device.toml). Without the platform
-(the older image, pi/init's gadget) it's done here.
+(the older, pre-platform image's gadget) it's done here.
 """
 import glob
 import logging
@@ -20,7 +20,7 @@ from .fmt import BASELINE, AudioFormat
 
 log = logging.getLogger("audiolink")
 
-LEGACY_GADGET = Path("/sys/kernel/config/usb_gadget/audiopi")      # pi/init's
+LEGACY_GADGET = Path("/sys/kernel/config/usb_gadget/audiopi")      # the older image's
 FUNCTION = "uac2.audio"         # config/device.toml's uac2 function, id "audio"
 MAX_PACKET = 1024               # high-speed isochronous, one transaction per microframe
 
@@ -39,7 +39,7 @@ class Gadget:
     def _function(self):
         if (self.root / "functions" / FUNCTION).is_dir():
             return FUNCTION
-        found = sorted(glob.glob(str(self.root / "functions" / "uac2.*")))    # pi/init's uac2.usb0
+        found = sorted(glob.glob(str(self.root / "functions" / "uac2.*")))    # the older image's uac2.usb0
         return os.path.basename(found[0]) if found else FUNCTION
 
     def available(self):

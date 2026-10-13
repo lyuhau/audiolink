@@ -11,8 +11,7 @@ python3 build_pyz.py >/dev/null
 # Restart at the baseline audio format: a daemon that dies mid-stream at a high rate
 # can leave macOS unable to use that format until the Pi is replugged.
 python3 dist/audiolink.pyz audio set baseline >/dev/null 2>&1 || true
-# The built-in code: /opt/audiolink on the usb platform, /root on the older image.
-D=$($SSH $PI '[ -d /opt/audiolink ] && echo /opt/audiolink || echo /root')
+D=/opt/audiolink         # the built-in code (config/pi.toml's [app.files])
 $SSH $PI "cat > $D/audiolink.pyz.new && mv $D/audiolink.pyz.new $D/audiolink.pyz" < dist/audiolink.pyz
 $SSH $PI "cat > $D/start-audiolink.sh && chmod +x $D/start-audiolink.sh" < pi/start-audiolink.sh
 # Detached: a restart can re-present the USB gadget (audio format back to the baseline),

@@ -1,13 +1,14 @@
 """Pi side: its logs, over the link (`audiolink logs`). The audio link keeps working
 when USB networking doesn't, so this is the way in when ssh isn't. "prev/NAME" is the
-boot before's copy on the SD card (the platform's keep_logs; pi/init on the older image)."""
+boot before's copy on the SD card (the platform's keep_logs; /boot/logs on the older,
+pre-platform image)."""
 import os
 
 from ..paths import platform_env
 from . import Service
 
 LOG_DIR = "/var/log"
-LEGACY_PREV_DIR = "/boot/logs/prev"     # pi/init's
+LEGACY_PREV_DIR = "/boot/logs/prev"     # the older image's
 FILES = ("audiolink.log", "audiolink.log.1", "audiolink.log.2", "audiolink.log.3",
          "app.log", "boot.log", "wifi-up.log", "wifi.log", "ntp.log", "fsck.log", "messages",
          "dropbear.log")

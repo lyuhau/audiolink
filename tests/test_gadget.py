@@ -92,7 +92,7 @@ class OnThePlatform(unittest.TestCase):
 
 
 class WithoutThePlatform(unittest.TestCase):
-    """The older image: pi/init's gadget, changed here."""
+    """The older, pre-platform image's gadget, changed here."""
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
