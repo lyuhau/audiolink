@@ -26,8 +26,8 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
   made; if nobody can reach the Pi there, its setup network opens.
 - **Pure standard-library Python;** the only native code is the bundled PortAudio.
 
-> Status: early. Tested with macOS hosts and a Pi Zero 2 W booting from an SD card
-> (or over USB with `rpiboot`). Windows builds exist but are untested on hardware;
+> Status: early. Tested with macOS hosts and a Pi Zero 2 W booting from an SD card.
+> Windows builds exist but are untested on hardware;
 > a ready-made card image and a relay for reaching the Pi from other networks are next.
 
 ## Downloads
@@ -39,7 +39,6 @@ Each [release](../../releases) has:
 | `audiolink-VER.pyz` | any machine with Python 3.9+: `python3 audiolink-VER.pyz ...` (macOS's built-in `/usr/bin/python3` works) |
 | `audiolink-VER-macos-arm64`, `-macos-x86_64` | Macs without Python |
 | `audiolink-VER-windows-x64.exe` | Windows |
-| `audiolink-pi-VER.zip` | the Pi's boot files |
 | `SHA256SUMS` | checksums |
 
 The binaries aren't code-signed yet:
@@ -50,13 +49,10 @@ The binaries aren't code-signed yet:
 
 ## Quick start
 
-1. **Boot the Pi.** Copy the boot files (`audiolink-pi-VER.zip`, unzipped) onto a
-   FAT32-formatted microSD card and put it in the Pi; it boots from the card and
-   keeps its identity and saved networks in the card's `audiolink/` folder. Without
-   a card, serve the same files with Raspberry Pi's
-   [`rpiboot`](https://github.com/raspberrypi/usbboot) (`rpiboot -d bootdir`); it
-   then runs from RAM and the host restores its identity after each reboot. The
-   Pi appears as an audio device.
+1. **Boot the Pi.** Build its microSD card (`tools/build_card.sh
+   config/pi-release.toml --install /Volumes/CARD`, see *Development*) and put it
+   in the Pi; it boots from the card and keeps its identity and saved networks in
+   the card's `audiolink/` folder. The Pi appears as an audio device.
 2. **On the host** (the machine the Pi is plugged into):
    ```
    audiolink host --expose 2222:22          # Pi port 2222 -> this machine's sshd
@@ -116,7 +112,8 @@ Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
   or a new card).
 
 Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
-`build_initramfs.py` builds the Pi's RAM-only Alpine image.
+`config/` and `pi/` make the Pi's image (an app on the usb platform, see
+*Development*).
 
 ## Security notes
 
@@ -137,8 +134,10 @@ python3 build_bin.py                  # dist/ single-file binary for this OS (ne
 python3 -m unittest discover -s tests -t .
 ```
 
-The Pi runs audiolink as an app on the usb platform (Alpine in one initramfs;
-its README: Apps), from a checkout at `USB_PLATFORM` (default `~/Code/usb-initramfs`). `config/` describes the card:
+The Pi runs audiolink as an app on the usb platform (Alpine in one initramfs; a
+separate, private project: `~/Code/usb`, its README: Apps). Building the card needs
+a checkout of it at `USB_PLATFORM` (default `~/Code/usb-initramfs`) and its
+prerequisites (Docker, a venv). `config/` describes the card:
 `pi.toml` (dev: USB ethernet with the Pi at `10.55.0.2`, SSH with
 `keys/id_ed25519.pub`, the debug console) and `pi-release.toml` (no USB
 ethernet, no SSH). `pi/app-start.sh` is the app's start: USB ethernet, the
@@ -152,13 +151,12 @@ tools/smoke.sh                        # end-to-end check of the host daemon and 
 ```
 
 With a card reader: `tools/build_card.sh config/pi.toml --install /Volumes/CARD`
-(replaces everything on the card, its `audiolink/` state too).
+(replaces everything on the card, its `audiolink/` state too). Without one: a
+running dev Pi takes a new card over ssh (`tools/deploy.sh`); otherwise expose the
+card through the Pi with `rpiboot`'s mass-storage mode (the platform's README:
+*Build and install the card*) and install onto it the same way.
 State (identity, saved networks, updates) is in the card's `audiolink/`; logs
 in `logs/last` and `logs/prev`.
-
-Being replaced (kept until the platform image is checked on hardware):
-`build_initramfs.py`, `pi/init`, `deploy_card.sh`, `fetch_firmware.sh` (Raspberry
-Pi kernel 6.12, booted over USB with `rpiboot` or from the card).
 
 ## License
 

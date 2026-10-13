@@ -2,12 +2,7 @@
 wifi.conf
 keys/
 
-# Downloaded / generated (rebuild with build_initramfs.py)
-firmware/
-firmware-nonfree/
-usbboot/
-cache/
-bootdir/
+# Generated (build_pyz.py, build_bin.py, tools/build_card.sh)
 dist/
 build/
 

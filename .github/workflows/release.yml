@@ -1,8 +1,9 @@
 # Builds every distribution; on a v* tag, publishes them as a GitHub release.
 #   audiolink-VER.pyz                 any OS with Python 3.9+ (incl. macOS's /usr/bin/python3), and the Pi
+#                                     (`audiolink update`)
 #   audiolink-VER-macos-arm64|x86_64  single-file binaries, no Python needed
 #   audiolink-VER-windows-x64.exe     single-file binary
-#   audiolink-pi-VER.zip              the Pi's boot files (release image: no dev SSH/ethernet)
+# The Pi's card is built with the usb platform (tools/build_card.sh), not here.
 name: release
 
 on:
@@ -14,23 +15,21 @@ permissions:
   contents: write
 
 jobs:
-  pi:
+  pyz:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: {python-version: "3.12"}
-      - run: sh fetch_firmware.sh
-      - run: python3 build_initramfs.py          # release image (no --dev)
+      - run: python3 build_pyz.py
       - name: Package
         run: |
           V=$(python3 -c "import audiolink; print(audiolink.__version__)")
           mkdir -p out
           cp dist/audiolink.pyz "out/audiolink-$V.pyz"
-          (cd bootdir && zip -qr "../out/audiolink-pi-$V.zip" .)
           python3 "out/audiolink-$V.pyz" --version
       - uses: actions/upload-artifact@v5
-        with: {name: pi, path: out/*}
+        with: {name: pyz, path: out/*}
 
   macos:
     strategy:
@@ -77,7 +76,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [pi, macos, windows]
+    needs: [pyz, macos, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v5
