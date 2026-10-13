@@ -6,7 +6,9 @@ pi/start-audiolink.sh runs it instead. An update that keeps dying soon
 after starting is set aside (.bad) and the built-in copy runs again, so a bad update
 can't take the Pi out of reach. `audiolink update --revert` removes it.
 
-Only the host the Pi is plugged into can send one (these are link requests).
+The host the Pi is plugged into can always send one (link requests); over the network
+(endpoint "update", `audiolink update --pi PI`) it takes debug access
+(services/access.py): new code runs as root.
 """
 import base64
 import hashlib
@@ -19,6 +21,7 @@ import zipfile
 
 from ..paths import PI_STATE_DIR
 from . import Service
+from .access import DEBUG
 
 log = logging.getLogger("audiolink")
 
@@ -38,12 +41,19 @@ class UpdateService(Service):
     name = "update"
     caps = ("update",)
 
-    def __init__(self, state_dir=PI_STATE_DIR, restart=None):
+    def __init__(self, state_dir=PI_STATE_DIR, restart=None, endpoint=None):
         self.path = os.path.join(state_dir, "audiolink.pyz")
         self.new = self.path + ".new"
         self.restart = restart or self._exit        # () -> None, after the reply has gone
         self.lock = threading.Lock()
         self.expect = None                          # (size, sha256) of the upload under way
+        if endpoint:
+            endpoint.register("update", self._remote, DEBUG)
+
+    def _remote(self, conn, req):
+        if req.get("action") not in ("begin", "chunk", "finish", "status", "revert"):
+            return {"error": "update: begin, chunk, finish, status or revert"}
+        return {"result": self.handle(req["action"], req)}
 
     def status(self):
         running = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else None

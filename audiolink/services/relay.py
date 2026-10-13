@@ -4,7 +4,8 @@ While the Pi is online it keeps one connection to its relay, registered under it
 public key. When a client asks for it, the relay passes on an "open"; the Pi dials a
 data connection, checks the client's proof (relay/tunnel.py), and joins it to the
 local port asked for. Only the endpoint, ssh and the ports forwarded from the host
-are reachable; never the proxy (it would put the Pi's network in reach).
+are reachable; never the proxy (it would put the Pi's network in reach) or the shell
+(network shells go through the endpoint's access check).
 
 Connections to local services come from RELAY_SOURCE (127.0.0.2), so the kernel's table
 shows which ones came through the relay: presence counts them as clients, and the
@@ -36,7 +37,7 @@ BACKOFF = (5, 300)          # s, first and longest wait between tries (randomise
 STEADY = 60                 # s up before the wait resets
 SESSIONS = 8                # relayed connections at once
 OPENS_PER_MIN = 20          # opens answered per minute (proven or not)
-ENDPOINT_PORT, SSH_PORT, PROXY_PORT = 47900, 22, 3128
+ENDPOINT_PORT, SSH_PORT, PROXY_PORT, SHELL_PORT = 47900, 22, 3128, 47901
 
 
 class RelayAgent(Service):
@@ -139,7 +140,7 @@ class RelayAgent(Service):
 
     # ---- relayed connections
     def allowed(self, port):
-        if port == PROXY_PORT:
+        if port in (PROXY_PORT, SHELL_PORT):
             return False
         return port in (ENDPOINT_PORT, SSH_PORT) or port in self.streams.ports()
 

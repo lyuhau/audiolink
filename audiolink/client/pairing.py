@@ -59,9 +59,9 @@ def browse(timeout=2.0):
 class PiConn:
     """One line-delimited JSON conversation with a Pi's pairing endpoint."""
 
-    def __init__(self, ip, port=PORT, timeout=3.0):
+    def __init__(self, ip, port=PORT, timeout=3.0, sock=None):
         self.ip = ip
-        self.sock = socket.create_connection((ip, port), timeout=timeout)
+        self.sock = sock or socket.create_connection((ip, port), timeout=timeout)
         self.sock.settimeout(30)
         self.f = self.sock.makefile("rwb")
 
@@ -161,14 +161,25 @@ def request_code(conn, hello, code):
     return json.loads(issued)
 
 
+def _outdated(conn, hello, entry):
+    """Does the Pi refuse this machine's code for it (its secret was rotated)?"""
+    if not hello.get("claimed"):
+        return True
+    try:
+        r = conn.ask_auth("change_status", hello, parse_code(entry["code"])[1])
+    except (OSError, ValueError):
+        return False
+    return r.get("code") == "not_paired" or str(r.get("error", "")).startswith("Not added")
+
+
 # ---------------------------------------------------------------- commands
 def add_over_network(a, ask):
     """The network part of `audiolink add`. Returns the keyring entry or None."""
     known = keyring.load()
     found = [(c, h) for c, h in candidates(a.at or [])]
-    new = [(c, h) for c, h in found if h["pub"] not in known]
+    new = [(c, h) for c, h in found if h["pub"] not in known or _outdated(c, h, known[h["pub"]])]
     for c, h in found:
-        if h["pub"] in known:
+        if (c, h) not in new:
             c.close()
     if not new:
         return None

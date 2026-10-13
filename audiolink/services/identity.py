@@ -7,7 +7,8 @@ identity.json (in the Pi's state directory):
   discoverable   publish the discovery record on the DHT
 
 Requests arrive over the audio link, i.e. from the machine the Pi is physically
-plugged into, so they're trusted. The host that added the Pi keeps a copy ("custody")
+plugged into, so they're trusted. "rotate_secret" is revocation: a new read secret
+(same key, still claimed), so every machine holding the old code has to pair again. The host that added the Pi keeps a copy ("custody")
 and restores it whenever the Pi comes up with a fresh identity (host/identity.py):
 after every reboot if the state directory is in RAM (no SD card), and once when a
 Pi first gets a card. A restore never replaces an established identity on a card.
@@ -44,7 +45,7 @@ def board_serial():
 
 class IdentityService(Service):
     name = "identity"
-    caps = ("identity",)
+    caps = ("identity", "rotate_secret")
 
     def __init__(self, state_dir):
         self.path = Path(state_dir) / "identity.json"
@@ -139,6 +140,11 @@ class IdentityService(Service):
                 self.data["name"] = name
                 self._changed()
                 return self.info()
+            if op == "rotate_secret":
+                self.data["secret"] = new_identity()["secret"]
+                self._changed()
+                log.info("identity: new read secret; the old code stops working")
+                return {"code": code_for(self.data)}
             if op == "set_discoverable":
                 self.data["discoverable"] = bool(args.get("on"))
                 self._changed()

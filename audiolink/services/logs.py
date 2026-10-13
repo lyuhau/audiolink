@@ -1,11 +1,13 @@
 """Pi side: its logs, over the link (`audiolink logs`). The audio link keeps working
 when USB networking doesn't, so this is the way in when ssh isn't. "prev/NAME" is the
 boot before's copy on the SD card (the platform's keep_logs; /boot/logs on the older,
-pre-platform image)."""
+pre-platform image). Paired machines read them over the network too (endpoint "logs",
+`audiolink logs --pi PI`)."""
 import os
 
 from ..paths import platform_env
 from . import Service
+from .access import PAIRED
 
 LOG_DIR = "/var/log"
 LEGACY_PREV_DIR = "/boot/logs/prev"     # the older image's
@@ -23,8 +25,15 @@ MAX_LINES = 5000
 class LogsService(Service):
     name = "logs"
 
-    def __init__(self, log_dir=LOG_DIR, prev=None):
+    def __init__(self, log_dir=LOG_DIR, prev=None, endpoint=None):
         self.dir, self.prev = log_dir, prev or prev_dir()
+        if endpoint:
+            endpoint.register("logs", self._remote, PAIRED)
+
+    def _remote(self, conn, req):
+        if req.get("action") not in ("list", "tail"):
+            return {"error": "logs: list or tail"}
+        return {"result": self.handle(req["action"], req)}
 
     def _path(self, name):
         if name.startswith("prev/") and name[5:] in FILES:

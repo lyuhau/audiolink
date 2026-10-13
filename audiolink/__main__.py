@@ -24,6 +24,10 @@
   audiolink discovery enable|disable|status  whether the plugged-in Pi publishes on the DHT
   audiolink update [PYZ] [--revert|--status] new code for the plugged-in Pi, over the link
   audiolink logs [FILE] [-n N] [--list]      the plugged-in Pi's logs, over the link
+  audiolink logs|update ... --pi PI          the same over the network (update: debug access)
+  audiolink shell [PI]                       root shell: the plugged-in Pi, or PI over the network
+  audiolink debug on|off|status              the plugged-in Pi's debug switch (network root access)
+  audiolink rotate-secret                    new code for the plugged-in Pi: other computers lose access
   audiolink relay [--listen HOST:PORT]       (a server) the relay Pis and clients meet at
   audiolink dht-size                         estimate how many DHT nodes are out there
   audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
@@ -137,6 +141,24 @@ def main(argv=None):
     lg.add_argument("file", nargs="?", help="which log (default audiolink.log; --list shows them)")
     lg.add_argument("-n", "--lines", type=int, default=200)
     lg.add_argument("--list", action="store_true", help="list the Pi's logs")
+    sh = sub.add_parser("shell", help="a root shell on the Pi (plugged in here, or PI over the network)")
+    sh.add_argument("pi", nargs="?", help="over the network: a name, connect code or address")
+    for p in (upd, lg, sh):
+        if p is not sh:
+            p.add_argument("--pi", help="over the network: which Pi (name, connect code or address)")
+        p.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
+    for p in (upd, sh):
+        p.add_argument("--key", metavar="FILE", help="debug key (OpenSSH ed25519 private key, or .pub with ssh-agent)")
+    dbg = sub.add_parser("debug", help="the plugged-in Pi's debug switch: root access over the network")
+    dbg.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
+    dbg.add_argument("--auth", choices=["paired", "key", "none"],
+                     help="on: who gets in (default paired: computers that added the Pi)")
+    dbg.add_argument("--key", action="append", metavar="FILE", help="on: an ed25519 public key file (repeatable)")
+    dbg.add_argument("--setup", action="store_true", help="on, --auth none: also on the setup network (open Wi-Fi)")
+    dbg.add_argument("--for", dest="for_", metavar="DURATION",
+                     help="on: how long (30m, 2h, 1d; default 24h, --auth none 1h)")
+    dbg.add_argument("--persist", action="store_true", help="on: keep it across the Pi's restarts")
+    sub.add_parser("rotate-secret", help="new code for the plugged-in Pi: other computers lose access")
     rly = sub.add_parser("relay", help="run a relay that Pis and clients meet at (on a server)")
     rly.add_argument("--listen", default="0.0.0.0:443", metavar="HOST:PORT")
     rly.add_argument("--cert", default="keys/relay.crt")
@@ -154,12 +176,14 @@ def main(argv=None):
     roles["host"].add_argument("--expose", action="append", default=[], metavar="PIPORT:[HOST:]PORT")
     roles["host"].add_argument("--proxy-port", type=int, default=47801,
                                help="local HTTP proxy that browses as the Pi (0 = off)")
+    roles["host"].add_argument("--shell-port", type=int, default=47802,
+                               help="local port for `audiolink shell` (0 = off)")
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
     roles["host"].add_argument("--audio-format", default="auto", metavar="auto|baseline|RATExCH",
                                help="negotiate a faster audio format with the Pi (default: auto)")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
-    for p in (roles["host"], w, dsc, add, ren, prg, aud):
+    for p in (roles["host"], w, dsc, add, ren, prg, aud, upd, lg, sh, dbg, sub.choices["rotate-secret"]):
         p.add_argument("--control-port", type=int, default=None, help="local control port (default 47800)")
     roles["host"].add_argument("--in-device", help="input device name (substring)")
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
@@ -182,7 +206,10 @@ def main(argv=None):
     if a.cmd == "pairing":
         from .client.pairing import code_command
         return code_command(a)
-    if a.cmd in ("add", "pis", "share", "forget", "rename", "ssh-config"):
+    if a.cmd == "shell":
+        from .client.shell import shell_command
+        return shell_command(a)
+    if a.cmd in ("add", "pis", "share", "forget", "rename", "ssh-config", "rotate-secret"):
         from .client import pis
         return getattr(pis, a.cmd.replace("-", "_") + "_command")(a)
     if a.cmd == "relay":
@@ -210,11 +237,23 @@ def main(argv=None):
         a.control_port = port
         return update_command(a)
     if a.cmd == "logs":
-        if a.list:
-            print("\n".join(control.call("logs.list", port=port)["files"]))
+        if a.pi:
+            from .client.remote import open_remote
+            remote = open_remote(a.pi, a.at or [])
+
+            def call(op, args=None, port=None):
+                return remote.call("logs", dict(args or {}, action=op.split(".", 1)[1]))["result"]
         else:
-            print(control.call("logs.tail", {"file": a.file, "lines": a.lines}, port=port)["text"])
+            call = control.call
+        if a.list:
+            print("\n".join(call("logs.list", port=port)["files"]))
+        else:
+            print(call("logs.tail", {"file": a.file, "lines": a.lines}, port=port)["text"])
         return
+    if a.cmd == "debug":
+        from .host.debug_cli import debug_command
+        a.control_port = port
+        return debug_command(a)
     if a.cmd == "discovery":
         from .host.discovery import discovery_command
         a.control_port = port
@@ -265,7 +304,9 @@ def run_pi(a, allow, port, gate):
     wifi = WifiService(a.wifi_store, radio)
     proxy = ProxyService(on_request=wifi.note_demand)
     presence = Presence(wifi.ip)
-    streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
+    from .services.shell import PORT as SHELL_PORT, NetworkShells, ShellServer
+    streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target, "127.0.0.1:%d" % SHELL_PORT],
+                      expose_ports=a.expose_ports)
     identity = IdentityService(a.state_dir)
     from .services.access import DebugService
     debug = DebugService(a.state_dir)
@@ -277,10 +318,10 @@ def run_pi(a, allow, port, gate):
     from .services.update import UpdateService
     from .services.relay import RelayAgent
     relay = RelayAgent(identity, wifi, streams, [] if a.relay == "off" else [a.relay])
-    update = UpdateService()
+    update = UpdateService(endpoint=endpoint)
     session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint),
                              setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery, radio), relay,
-                             LogsService(), update, debug])
+                             LogsService(endpoint=endpoint), update, debug, NetworkShells(endpoint, debug, identity)])
     audio = AlsaAudio(session.link, a.device)
     audio.start()
     formats = AudioFormatService(audio, Gadget())
@@ -292,6 +333,10 @@ def run_pi(a, allow, port, gate):
     setup_ap.run()
     relay.run()
     debug.run()
+    try:
+        ShellServer().run()
+    except OSError as e:
+        log.warning("shell: can't listen (%s)", e)
 
     def revert():
         debug.off("reset pins")
@@ -327,13 +372,17 @@ def run_host(a, allow, port, gate):
         streams.forward(*parse_forward(spec))
     run_portaudio(session.link, a.out_device, a.in_device)
     local_ops = {"peer": lambda args: {"connected": session.peer_alive, "peer": session.peer_info,
-                                       "proxy_port": a.proxy_port}}
+                                       "proxy_port": a.proxy_port, "shell_port": a.shell_port}}
     local_ops.update(watcher.local_ops())
     local_ops.update(negotiator.local_ops())
     control.serve(session, port, local_ops)
     if a.proxy_port:
         # Browse as the Pi (captive portals): local HTTP proxy -> Pi's proxy.
         streams.forward(a.proxy_port, ("127.0.0.1", PROXY_PORT), bind="127.0.0.1")
+    if a.shell_port:
+        # `audiolink shell`: the Pi's root shell, for anyone on this machine (USB = root).
+        from .services.shell import PORT as SHELL_PORT
+        streams.forward(a.shell_port, ("127.0.0.1", SHELL_PORT), bind="127.0.0.1")
     if startup_wifi:
         try:
             startup_join(session, a.wifi, a, port)

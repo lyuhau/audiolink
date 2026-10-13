@@ -116,6 +116,24 @@ def add_command(a):
     print("Connect: audiolink ssh-config >> ~/.ssh/config, then ssh %s" % entry["alias"])
 
 
+def rotate_secret_command(a):
+    """A new read secret for the plugged-in Pi: every other computer loses access."""
+    from ..host.control import DEFAULT_PORT, call
+    port = getattr(a, "control_port", None) or DEFAULT_PORT
+    peer = call("peer", port=port)
+    if not peer.get("connected"):
+        raise SystemExit("No Pi plugged in")
+    if "rotate_secret" not in (peer.get("peer") or {}).get("caps", []):
+        raise SystemExit("The Pi's audiolink can't do this; update it (audiolink update)")
+    info = call("identity.info", port=port)
+    code = call("identity.rotate_secret", port=port)["code"]
+    custody = None if info["persistent"] else call("identity.export", port=port)
+    entry, _ = keyring.upsert(code, name=info["name"], serial=info["serial"], custody=custody)
+    print("New code for %s (kept here)" % entry["alias"])
+    print("Other computers lost access; to add one again: audiolink pairing code %s, then audiolink add there"
+          % entry["alias"])
+
+
 def share_command(a):
     e = keyring.lookup(a.name)
     print(e["code"])

@@ -63,7 +63,7 @@ class HostIdentity(Service):
             log.info("identity: restored %s's identity from this host's custody copy", ident["name"])
         if ident["pub"] != pub:
             return                      # a different identity on a known board (e.g. reflashed)
-        fields = {"name": ident["name"]}
+        fields = {"name": ident["name"], "code": req("identity.code")["code"]}     # e.g. a rotated secret
         if custody:
             fields["custody"] = req("identity.export")      # keep name/flags current (also a backup)
         keyring.update(pub, last_seen=int(time.time()), **fields)
