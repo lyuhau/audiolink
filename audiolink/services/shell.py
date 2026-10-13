@@ -245,18 +245,26 @@ class NetworkShells(Service):
         except OSError:
             self.slots.release()
             return {"error": "The Pi's shell isn't running", "code": "no_shell"}
-        conn.send({"ok": True})
+        with self.lock:
+            self.open.add(conn.sock)
+        try:
+            conn.send({"ok": True})
+        except OSError:
+            self._ended(conn, target)
+            raise
 
         def run():
-            with self.lock:
-                self.open.add(conn.sock)
             try:
                 if self.debug.snapshot().get("mode", "off") == "off":
                     shut(conn.sock)             # debug ended just now
                 join(conn.sock, target)
             finally:
-                with self.lock:
-                    self.open.discard(conn.sock)
-                self.slots.release()
+                self._ended(conn, target)
                 log.info("shell: network shell from %s ended", conn.addr[0])
         raise Takeover(run)
+
+    def _ended(self, conn, target):
+        shut(target)
+        with self.lock:
+            self.open.discard(conn.sock)
+        self.slots.release()
