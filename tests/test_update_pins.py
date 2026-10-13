@@ -80,7 +80,9 @@ class Pins(unittest.TestCase):
             self.p.step(t)
             t += 0.25
         self.shorted = False
-        self.p.step(t)
+        for _ in range(8):                  # released for longer than BOUNCE
+            self.p.step(t)
+            t += 0.25
 
     def test_brief_touch_does_nothing(self):
         self.hold(2)
@@ -96,6 +98,19 @@ class Pins(unittest.TestCase):
         self.hold(LONG + 1)
         self.assertEqual(self.done, ["start over"])
         self.assertEqual(self.lights, ["slow", "fast", "off"])
+
+    def test_slips_dont_end_the_hold(self):
+        t = 100.0
+        for i in range(16):                 # 8 s, contact lost for 0.5 s every 2 s
+            self.shorted = (i % 4) != 3
+            for _ in range(2):
+                self.p.step(t)
+                t += 0.25
+        self.shorted = False
+        for _ in range(8):
+            self.p.step(t)
+            t += 0.25
+        self.assertEqual(self.done, ["revert"])
 
     def test_gpio_path_finds_the_bcm_chip(self):
         d = tempfile.mkdtemp()

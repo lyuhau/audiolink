@@ -21,6 +21,7 @@ log = logging.getLogger("audiolink")
 
 PIN = 21
 SHORT, LONG = 5, 15
+BOUNCE = 1.0                # s: an open shorter than this is a slip of the paperclip, not a release
 LED = "/sys/class/leds/ACT"
 
 
@@ -94,10 +95,14 @@ class ResetPins:
     held_since = None
     shown = "off"
 
+    open_since = None
+
     def step(self, now=None):
-        """One look at the pins (tests call this directly)."""
+        """One look at the pins (tests call this directly). A hand-held paperclip
+        loses contact now and then: opens shorter than BOUNCE don't end the hold."""
         now = time.monotonic() if now is None else now
         if self.read():
+            self.open_since = None
             if self.held_since is None:
                 self.held_since = now
             held = now - self.held_since
@@ -108,7 +113,11 @@ class ResetPins:
             return
         if self.held_since is None:
             return
-        held, self.held_since = now - self.held_since, None
+        if self.open_since is None:
+            self.open_since = now
+        if now - self.open_since < BOUNCE:
+            return
+        held, self.held_since, self.open_since = self.open_since - self.held_since, None, None
         if self.shown != "off":
             self.shown = "off"
             self.led("off")
