@@ -36,7 +36,7 @@ Each [release](../../releases) has:
 
 | File | Use it on |
 |---|---|
-| `audiolink-VER.pyz` | any machine with Python 3.9+: `python3 audiolink-VER.pyz ...` (macOS's built-in `/usr/bin/python3` works) |
+| `audiolink-VER.pyz` | any machine with Python 3.9+: `python3 audiolink-VER.pyz ...` (macOS's built-in `/usr/bin/python3` works over USB, but its old LibreSSL can't reach a Pi over the network) |
 | `audiolink-VER-macos-arm64`, `-macos-x86_64` | Macs without Python |
 | `audiolink-VER-windows-x64.exe` | Windows |
 | `SHA256SUMS` | checksums |
@@ -122,6 +122,14 @@ RAM). Turning it off, the time running out and holding the reset pins for 5 s en
 and close open network shells (a new code closes them too). Over USB, `audiolink shell` always
 works. The Pi logs every debug request and every refusal.
 
+**Encryption:** every network connection to the Pi (LAN, setup network, relay) is
+TLS 1.3 end to end; the relay only passes it on. The Pi's certificate is for its own
+identity key, and a computer with its code checks that key, so nobody in between can
+read, change or take over a shell, an update or anything else, or pass off a proof
+made for them. Older audiolink versions on either side get "update audiolink"
+instead; macOS's built-in `/usr/bin/python3` can't do it (use the Mac binary, or
+Python from python.org or Homebrew).
+
 **Revoking:** `audiolink rotate-secret` (Pi plugged in) gives the Pi a new code; the
 host keeps it, every other computer has to pair again.
 
@@ -130,8 +138,9 @@ Caveats:
   root on the Pi.
 - The setup network is open Wi-Fi.
 - Any paired computer can issue pairing codes, so can let others in.
-- Network shells and updates aren't encrypted end to end: on an open or shared
-  network, or through the relay, someone on the path could read or take over a shell.
+- Without the Pi's code (`--key` or `none` from a computer that hasn't added it), the
+  connection is encrypted but can't be checked: it stops someone listening, not
+  someone in between pretending to be the Pi (who still can't use your key on it).
 - A network update that breaks networking without crashing leaves USB or the reset
   pins as the way back.
 
@@ -169,7 +178,7 @@ Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
 - The SD card holds the Pi's identity and its saved Wi-Fi keys, readable by anyone
   who has the card; treat it like a key.
 - The setup network is open; pairing over it is protected by SPAKE2, and Wi-Fi
-  passwords sent over the network are encrypted with the Pi's read secret.
+  passwords sent over the network are encrypted with the Pi's read secret (inside TLS).
 
 ## Development
 
