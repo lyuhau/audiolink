@@ -26,7 +26,7 @@ from ..paths import load_state, save_state
 log = logging.getLogger("audiolink")
 
 IFACE = "wlan0"
-SUPPLICANT_PID = "/run/wpa_supplicant.pid"         # wlan0's (pi/init); the trial runs its own
+SUPPLICANT_PID = "/run/wpa_supplicant.pid"         # wlan0's (pi/app-start.sh); the trial runs its own
 SUPPLICANT = ["wpa_supplicant", "-B", "-P", SUPPLICANT_PID, "-i", IFACE, "-c", "/etc/wpa_supplicant/wpa_supplicant.conf"]
 DHCP = ["udhcpc", "-i", IFACE, "-b", "-t", "10", "-s", "/usr/share/udhcpc/default.script",
         "-x", "hostname:audiopi"]

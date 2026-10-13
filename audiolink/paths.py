@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import shlex
 import sys
 import threading
 import time
@@ -33,7 +34,32 @@ def cache_dir():
 
 
 # ---- the Pi
-PI_STATE_DIR = "/var/lib/audiolink"     # the SD card's audiolink/ folder (pi/init), or RAM without a card
+PI_STATE_DIR = "/var/lib/audiolink"     # the SD card's audiolink/ folder, or RAM without a card
+
+# The usb platform (config/pi.toml) says where things are in its app.env, which it
+# also puts in [app] run's environment. Not there: the older image (pi/init).
+APP_ENV = "/etc/usb-gadget/app.env"
+PLATFORM_KEYS = ("CARD", "APP_STATE", "APP_LOGS", "GADGET", "GADGET_SH", "GADGET_FUNCTIONS")
+
+
+def platform_env(path=APP_ENV, environ=None):
+    """The platform's app.env as a dict, the environment's values winning (e.g. a
+    daemon restarted over ssh has only the file). {} off the platform."""
+    env = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                key, eq, value = line.strip().partition("=")
+                if eq and not key.startswith("#"):
+                    try:
+                        env[key] = " ".join(shlex.split(value))
+                    except ValueError:
+                        pass
+    except OSError:
+        pass
+    environ = os.environ if environ is None else environ
+    env.update({k: environ[k] for k in PLATFORM_KEYS if environ.get(k)})
+    return env
 
 
 def is_persistent(path):

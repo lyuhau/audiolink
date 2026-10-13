@@ -11,6 +11,7 @@ import sys
 import time
 
 from .control import call
+from ..paths import PI_STATE_DIR
 from ..ui import detail, done, line_buffered, step
 
 CHUNK = 48 * 1024
@@ -30,7 +31,8 @@ def update_command(a):
         raise SystemExit("The Pi's audiolink can't take updates over the link; put a new image on its card")
     if a.status:
         st = call("update.status", port=port)
-        where = "an update" if st["running"] and not st["running"].startswith("/root/") else "the built-in code"
+        on_card = (st["running"] or "").startswith(PI_STATE_DIR + "/")
+        where = "an update" if on_card else "the built-in code"
         print("Running %s (%s)" % (where, _short(st["running_hash"])))
         if st["set_aside"]:
             print("The update on the card kept failing and is set aside")

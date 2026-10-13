@@ -56,7 +56,7 @@ class Session:
 
     def now(self):
         """Wall-clock time. The Pi has no clock of its own: until NTP has set it (needs
-        internet; pi/init), it goes by the host's clock (from the HELLO)."""
+        internet; pi/app-start.sh), it goes by the host's clock (from the HELLO)."""
         t = time.time()
         return t if t > CLOCK_SANE else t + self.clock_offset
 

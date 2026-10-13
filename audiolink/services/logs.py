@@ -1,22 +1,29 @@
 """Pi side: its logs, over the link (`audiolink logs`). The audio link keeps working
 when USB networking doesn't, so this is the way in when ssh isn't. "prev/NAME" is the
-boot before's copy on the SD card (pi/init keeps it)."""
+boot before's copy on the SD card (the platform's keep_logs; pi/init on the older image)."""
 import os
 
+from ..paths import platform_env
 from . import Service
 
 LOG_DIR = "/var/log"
-PREV_DIR = "/boot/logs/prev"
+LEGACY_PREV_DIR = "/boot/logs/prev"     # pi/init's
 FILES = ("audiolink.log", "audiolink.log.1", "audiolink.log.2", "audiolink.log.3",
-         "boot.log", "wifi.log", "ntp.log", "dropbear.log", "fsck.log")
+         "app.log", "boot.log", "wifi-up.log", "wifi.log", "ntp.log", "fsck.log", "messages",
+         "dropbear.log")
+
+
+def prev_dir(env=None):
+    logs = (platform_env() if env is None else env).get("APP_LOGS")
+    return os.path.join(logs, "prev") if logs else LEGACY_PREV_DIR
 MAX_LINES = 5000
 
 
 class LogsService(Service):
     name = "logs"
 
-    def __init__(self, log_dir=LOG_DIR, prev_dir=PREV_DIR):
-        self.dir, self.prev = log_dir, prev_dir
+    def __init__(self, log_dir=LOG_DIR, prev=None):
+        self.dir, self.prev = log_dir, prev or prev_dir()
 
     def _path(self, name):
         if name.startswith("prev/") and name[5:] in FILES:

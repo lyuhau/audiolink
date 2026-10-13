@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 from audiolink.services import usbnet
-from audiolink.services.logs import LogsService
+from audiolink.services.logs import LogsService, prev_dir
 from audiolink.services.usbnet import UsbNetWatch
 
 
@@ -80,6 +80,10 @@ class Logs(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.s.handle("tail", {"file": "prev/../../etc/shadow"})
         self.assertEqual(self.s.handle("list", {})["files"], ["audiolink.log"])
+
+    def test_prev_dir(self):
+        self.assertEqual(prev_dir({"APP_LOGS": "/media/mmcblk0p1/logs"}), "/media/mmcblk0p1/logs/prev")
+        self.assertEqual(prev_dir({}), "/boot/logs/prev")          # the older image
 
 
 if __name__ == "__main__":

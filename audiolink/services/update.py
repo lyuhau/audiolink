@@ -1,7 +1,8 @@
 """Pi side: new code from the host (`audiolink update`), kept on the SD card.
 
-The image carries a built-in audiolink.pyz; an update goes to the card's audiolink/
-folder and pi/start-audiolink.sh runs it instead. An update that keeps dying soon
+The image carries a built-in audiolink.pyz (/opt/audiolink/; /root/ on the older
+image); an update goes to the card's audiolink/ folder (the state folder) and
+pi/start-audiolink.sh runs it instead. An update that keeps dying soon
 after starting is set aside (.bad) and the built-in copy runs again, so a bad update
 can't take the Pi out of reach. `audiolink update --revert` removes it.
 
@@ -22,7 +23,6 @@ from . import Service
 log = logging.getLogger("audiolink")
 
 MAX_SIZE = 8 * 1024 * 1024
-BUILT_IN = "/root/audiolink.pyz"
 RESTART = 75                    # exit status: "start me again now" (pi/start-audiolink.sh)
 
 
