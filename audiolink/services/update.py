@@ -21,7 +21,7 @@ import zipfile
 
 from ..paths import PI_STATE_DIR
 from . import Service
-from .access import DEBUG
+from .access import DEBUG, PAIRED
 
 log = logging.getLogger("audiolink")
 
@@ -49,6 +49,9 @@ class UpdateService(Service):
         self.expect = None                          # (size, sha256) of the upload under way
         if endpoint:
             endpoint.register("update", self._remote, DEBUG)
+            # read-only, and it must outlive the restart an update causes (which turns
+            # the in-RAM debug switch off): paired is enough
+            endpoint.register("update_status", lambda conn, req: {"result": self.status()}, PAIRED)
 
     def _remote(self, conn, req):
         if req.get("action") not in ("begin", "chunk", "finish", "status", "revert"):
