@@ -58,17 +58,18 @@ echo "$(grep -c . "$MANIFEST") files installed, checked against $MANIFEST"
 
 # busybox reboot (the platform's init saves logs and unmounts the card); the older
 # image's init ignores it: sysrq after 10 s.
+BOOT=$($SSH $PI 'cat /proc/sys/kernel/random/boot_id')
 $SSH $PI '(sleep 1; reboot; sleep 10; echo b > /proc/sysrq-trigger) >/dev/null 2>&1 </dev/null &'
 echo "rebooting"
 [ -n "$RELEASE" ] && exit 0
-sleep 5
 start=$(date +%s)
 for i in $(seq 1 60); do
-    if $SSH -o ConnectTimeout=2 $PI 'grep -q " pi up " /var/log/audiolink.log' 2>/dev/null; then
-        echo "pi up ($(( $(date +%s) - start + 5 ))s after the reboot)"
+    sleep 2
+    if $SSH -o ConnectTimeout=2 $PI "[ \"\$(cat /proc/sys/kernel/random/boot_id)\" != $BOOT ] &&
+            grep -q ' pi up ' /var/log/audiolink.log" 2>/dev/null; then
+        echo "pi up ($(( $(date +%s) - start ))s after the reboot)"
         exit 0
     fi
-    sleep 2
 done
-echo "the Pi didn't come back up within 2 minutes" >&2
+echo "the Pi didn't come back up" >&2
 exit 1
