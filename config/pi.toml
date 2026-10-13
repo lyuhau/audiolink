@@ -1,4 +1,4 @@
-# audiolink on the usb platform (~/Code/usb-initramfs, README: Apps), dev image:
+# audiolink on the usb platform (its README: Apps; tools/build_card.sh finds it), dev image:
 #   tools/build_card.sh [config/pi.toml]     # then tools/deploy.sh
 # USB ethernet (Pi 10.55.0.2) and SSH with keys/id_ed25519.pub, next to the
 # audio. pi-release.toml is the same without them.

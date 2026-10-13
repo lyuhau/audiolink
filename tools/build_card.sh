@@ -5,13 +5,15 @@
 # -> build/card-NAME/ and build/card-NAME.manifest (NAME: the config's, e.g. pi).
 # Install it on a running dev Pi with tools/deploy.sh, or on a card in a reader
 # with --install /Volumes/CARD.
-#   USB_PLATFORM  the platform's checkout (default ~/Code/usb-initramfs)
+#   USB_PLATFORM  the platform's checkout (default: DEFAULT_PLATFORM below)
 #   USB_PYTHON    Python 3.11+ for it (default: its .venv, ~/Code/usb/.venv, python3)
 set -e
+# The platform's initramfs branch, until it's merged into ~/Code/usb's main.
+DEFAULT_PLATFORM=$HOME/Code/usb-initramfs
 cd "$(dirname "$0")/.."
 CONFIG=${1:-config/pi.toml}
 [ $# -gt 0 ] && shift
-USB_PLATFORM=${USB_PLATFORM:-$HOME/Code/usb-initramfs}
+USB_PLATFORM=${USB_PLATFORM:-$DEFAULT_PLATFORM}
 if [ -z "$USB_PYTHON" ]; then
     for p in "$USB_PLATFORM/.venv/bin/python" "$HOME/Code/usb/.venv/bin/python" python3; do
         command -v "$p" >/dev/null && USB_PYTHON=$p && break

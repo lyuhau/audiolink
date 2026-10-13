@@ -136,8 +136,8 @@ python3 -m unittest discover -s tests -t .
 
 The Pi runs audiolink as an app on the usb platform (Alpine in one initramfs; a
 separate, private project: `~/Code/usb`, its README: Apps). Building the card needs
-a checkout of it at `USB_PLATFORM` (default `~/Code/usb-initramfs`) and its
-prerequisites (Docker, a venv). `config/` describes the card:
+a checkout of it at `USB_PLATFORM` (default: `DEFAULT_PLATFORM` in
+`tools/build_card.sh`) and its prerequisites (Docker, a venv). `config/` describes the card:
 `pi.toml` (dev: USB ethernet with the Pi at `10.55.0.2`, SSH with
 `keys/id_ed25519.pub`, the debug console) and `pi-release.toml` (no USB
 ethernet, no SSH). `pi/app-start.sh` is the app's start: USB ethernet, the
