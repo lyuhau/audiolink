@@ -151,7 +151,7 @@ tools/smoke.sh                        # end-to-end check of the host daemon and 
 ```
 
 With a card reader: `tools/build_card.sh config/pi.toml --install /Volumes/CARD`
-(replaces everything on the card, its `audiolink/` state too). Without one: a
+(replaces the card's system files; its `audiolink/` state and `logs/` stay). Without one: a
 running dev Pi takes a new card over ssh (`tools/deploy.sh`); otherwise expose the
 card through the Pi with `rpiboot`'s mass-storage mode (the platform's README:
 *Build and install the card*) and install onto it the same way.
