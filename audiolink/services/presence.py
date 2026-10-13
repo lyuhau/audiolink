@@ -19,11 +19,11 @@ import struct
 import threading
 import time
 
+from .access import RELAY_SOURCE
 from .setup_ap import AP_ADDR
 
 TCP_TABLE = "/proc/net/tcp"
 ESTABLISHED, LISTEN = "01", "0A"
-RELAY_SOURCE = "127.0.0.2"          # where relayed connections to local services come from
 
 
 def _addr(hexaddr):

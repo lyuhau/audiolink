@@ -267,7 +267,9 @@ def run_pi(a, allow, port, gate):
     presence = Presence(wifi.ip)
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target], expose_ports=a.expose_ports)
     identity = IdentityService(a.state_dir)
-    endpoint = Endpoint(identity, presence=presence)
+    from .services.access import DebugService
+    debug = DebugService(a.state_dir)
+    endpoint = Endpoint(identity, presence=presence, debug=debug)
     setup_ap = SetupApService(wifi, identity, presence, radio)
     discovery = DiscoveryService(identity, wifi, streams)
     from .services.button import ResetPins
@@ -278,7 +280,7 @@ def run_pi(a, allow, port, gate):
     update = UpdateService()
     session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint),
                              setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery, radio), relay,
-                             LogsService(), update])
+                             LogsService(), update, debug])
     audio = AlsaAudio(session.link, a.device)
     audio.start()
     formats = AudioFormatService(audio, Gadget())
@@ -289,8 +291,10 @@ def run_pi(a, allow, port, gate):
         streams.forward(*parse_forward(spec))
     setup_ap.run()
     relay.run()
+    debug.run()
 
     def revert():
+        debug.off("reset pins")
         update.handle("revert", {})
 
     def start_over():

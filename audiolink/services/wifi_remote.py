@@ -28,8 +28,8 @@ import threading
 import time
 
 from . import Service
-from .presence import RELAY_SOURCE
-from .setup_ap import AP_ADDR, channel_of
+from .access import PAIRED
+from .setup_ap import channel_of
 from .wifi import credentials
 from .wifi_trial import cleanup as cleanup_trial, trial
 
@@ -47,11 +47,11 @@ class WifiRemoteService(Service):
         self.lock = threading.Lock()
         self.switching = None               # target network while a change is in progress
         cleanup_trial()                     # a restarted daemon: a trial left half done
-        endpoint.register("change_wifi", self._change_wifi, auth=True)
-        endpoint.register("change_status", lambda conn, req: {"saved": self.wifi.saved_names()}, auth=True)
+        endpoint.register("change_wifi", self._change_wifi, PAIRED)
+        endpoint.register("change_status", lambda conn, req: {"saved": self.wifi.saved_names()}, PAIRED)
 
     def _change_wifi(self, conn, req):
-        if conn.addr[0] == RELAY_SOURCE:    # it would cut the connection the request came on
+        if conn.route == "relay":           # it would cut the connection the request came on
             return {"error": "Can't change Wi-Fi through the relay; use USB or the setup network",
                     "code": "via_relay"}
         p = conn.open(req["sealed"])
@@ -81,7 +81,7 @@ class WifiRemoteService(Service):
             self.switching = ssid
         args = {"ssid": ssid, "password": p.get("password"), "security": p.get("security") or "wpa2",
                 "hidden": bool(p.get("hidden")), "use_saved": use_saved}
-        via_setup = conn.addr[0].rsplit(".", 1)[0] == AP_ADDR.rsplit(".", 1)[0]
+        via_setup = conn.route == "setup"
         try:
             tries = max(1, min(MAX_TRIES, int(p.get("tries") or 1)))
             reply = self.radio.run(self._prepare, args, ent, current, seen, via_setup)

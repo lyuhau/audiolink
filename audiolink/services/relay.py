@@ -25,7 +25,7 @@ from ..relay import DEFAULT, parse_relay
 from ..relay.tunnel import serve
 from ..relay.wire import VERSION, REGISTER, Control, Refused, answer, close, dial, send_line, splice
 from . import Service
-from .presence import RELAY_SOURCE
+from .access import RELAY_SOURCE
 
 log = logging.getLogger("audiolink")
 

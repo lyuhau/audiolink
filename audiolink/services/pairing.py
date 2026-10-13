@@ -21,6 +21,7 @@ import time
 
 from ..crypto import Spake2, seal
 from . import Service
+from .access import PAIRED
 
 log = logging.getLogger("audiolink")
 
@@ -41,7 +42,7 @@ class PairingService(Service):
         self.failures = 0
         self.blocked_until = 0.0
         endpoint.register("pair", self._pair)
-        endpoint.register("new_code", self._new_code_remote, auth=True)
+        endpoint.register("new_code", self._new_code_remote, PAIRED)
 
     # ---- codes
     def new_code(self):
