@@ -132,23 +132,32 @@ Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
 ## Development
 
 ```
-sh fetch_firmware.sh                  # pinned Pi firmware, kernel modules, Wi-Fi firmware
-python3 build_initramfs.py --dev      # bootdir/: dev image (+ USB ethernet, SSH with keys/)
-rpiboot -d bootdir                    # boot the Pi over USB (see patches/ for macOS fixes)
 python3 build_pyz.py                  # dist/audiolink.pyz
 python3 build_bin.py                  # dist/ single-file binary for this OS (needs pyinstaller)
+python3 -m unittest discover -s tests -t .
 ```
 
-With the Pi running a dev image, `./deploy_card.sh` copies `bootdir/` onto its SD
-card over USB ethernet and reboots it (no card reader needed). To set up a card
-with no reader: boot the Pi with `rpiboot` *without* the card (an empty card in
-the slot makes USB boot fail), insert the card while it runs, then deploy.
+The Pi runs audiolink as an app on the usb platform (Alpine in one initramfs;
+its README: Apps), from a checkout at `USB_PLATFORM` (default `~/Code/usb-initramfs`). `config/` describes the card:
+`pi.toml` (dev: USB ethernet with the Pi at `10.55.0.2`, SSH with
+`keys/id_ed25519.pub`, the debug console) and `pi-release.toml` (no USB
+ethernet, no SSH). `pi/app-start.sh` is the app's start: USB ethernet, the
+daemon's respawn loop (`pi/start-audiolink.sh`), mDNS, Wi-Fi, the clock.
 
-A dev image adds a USB-ethernet function (Pi at `10.55.0.2`) and SSH with
-`keys/id_ed25519.pub`; release images contain neither. Wi-Fi networks are added
-the same way in both (`audiolink wifi`) and kept on the SD card. Pi firmware is pinned
-to 1.20250915: newer releases break USB boot on the Zero 2 W
-([raspberrypi/firmware#2024](https://github.com/raspberrypi/firmware/issues/2024)).
+```
+tools/build_card.sh [config/pi.toml]  # -> build/card-pi/
+tools/deploy.sh [build/card-pi]       # onto a running dev Pi's card over USB ethernet, then reboot
+tools/hot.sh                          # just the daemon, no reboot (lost at the next boot)
+tools/smoke.sh                        # end-to-end check of the host daemon and the Pi
+```
+
+With a card reader: `tools/build_card.sh config/pi.toml --install /Volumes/CARD`.
+State (identity, saved networks, updates) is in the card's `audiolink/`; logs
+in `logs/last` and `logs/prev`.
+
+Being replaced (kept until the platform image is checked on hardware):
+`build_initramfs.py`, `pi/init`, `deploy_card.sh`, `fetch_firmware.sh` (Raspberry
+Pi kernel 6.12, booted over USB with `rpiboot` or from the card).
 
 ## License
 
