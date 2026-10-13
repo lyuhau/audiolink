@@ -27,7 +27,9 @@ fi
 # ---- audiolink (before Wi-Fi: the audio link doesn't need it)
 "$HERE/start-audiolink.sh" $(grep -v '^#' /etc/audiolink.args)
 
-# ---- mDNS: audiopi.local (avahi follows wlan0 as it comes up)
+# ---- mDNS: audiopi.local (avahi follows wlan0 as it comes up); only audiolink's
+# service, not the package's ssh ones
+rm -f /etc/avahi/services/ssh.service /etc/avahi/services/sftp-ssh.service
 mkdir -p /run/avahi-daemon
 avahi-daemon -D --no-drop-root --no-chroot
 
