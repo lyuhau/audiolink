@@ -78,8 +78,11 @@ The binaries aren't code-signed yet:
 | `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap]` | the Pi's Wi-Fi |
 | `audiolink discovery [enable\|disable\|status]` | whether the Pi publishes on the DHT |
 | `audiolink audio [status\|sweep\|set RATExCH\|forget]` | the link's audio format (see *How it works*) |
-| `audiolink update [PYZ] [--revert\|--status]` | new code for the plugged-in Pi, over the link (kept on its card) |
-| `audiolink logs [FILE] [-n N] [--list]` | the plugged-in Pi's logs, over the link |
+| `audiolink update [PYZ] [--revert\|--status] [--pi PI]` | new code for the plugged-in Pi, over the link (kept on its card); `--pi`: over the network |
+| `audiolink logs [FILE] [-n N] [--list] [--pi PI]` | the plugged-in Pi's logs, over the link; `--pi`: over the network |
+| `audiolink shell [PI] [--key FILE]` | a root shell: the plugged-in Pi, or PI over the network (see *Access*) |
+| `audiolink debug [on\|off\|status]` | the plugged-in Pi's debug switch: root access over the network |
+| `audiolink rotate-secret` | a new code for the plugged-in Pi: every other computer loses access |
 | `audiolink list-devices` / `dht-size` | audio devices / how big the DHT is |
 
 `audiolink --help` and `audiolink COMMAND --help` have the details.
@@ -89,6 +92,48 @@ paperclip, and hold. 5 s: back to the code in the Pi's image (drops an update).
 15 s: also start over, with a new identity (unclaimed; codes given out stop working)
 and no saved Wi-Fi. The green light blinks slowly past 5 s, quickly past 15 s; the
 Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
+
+## Access
+
+What a request needs depends on what it does (level) and how it arrived (route):
+
+| Level | | USB (the host) | LAN | setup network | relay |
+|---|---|---|---|---|---|
+| public | find the Pi, pair | yes | yes | yes | yes |
+| paired | use and manage it, read its logs | yes | yes | yes | yes, but no Wi-Fi changes |
+| debug | `shell`, `update` (root) | yes | per the debug switch | per the debug switch | per the debug switch |
+
+A connection the Pi can't place counts as the relay. **Paired** means the machine
+holds the Pi's code (`audiolink add`): claim an unclaimed Pi over USB, on its LAN or
+on its setup network, or pair with a 6-digit code from a computer that has it
+(`audiolink pairing code PI`), or paste its code (`audiolink share PI`).
+
+**Debug switch** (off by default; only the host changes it, `audiolink debug`):
+
+| `debug on --auth` | who gets debug access | routes | ends after |
+|---|---|---|---|
+| `paired` (default) | computers that added the Pi | LAN, setup network, relay | 24 h |
+| `key --key FILE` | holders of these ed25519 keys (`ssh-keygen -t ed25519`; passphrase-protected ones through ssh-agent) | LAN, setup network, relay* | 24 h |
+| `none` | anyone | LAN; setup network only with `--setup`; never the relay | 1 h |
+
+\* The relay only carries computers that have the Pi's code. `--for 30m|2h|1d` sets
+the time, `--persist` keeps the switch across the Pi's restarts (otherwise it's in
+RAM). Turning it off, the time running out and holding the reset pins for 5 s end it
+and close open network shells (a new code closes them too). Over USB, `audiolink shell` always
+works. The Pi logs every debug request and every refusal.
+
+**Revoking:** `audiolink rotate-secret` (Pi plugged in) gives the Pi a new code; the
+host keeps it, every other computer has to pair again.
+
+Caveats:
+- Anyone who can use the host computer can use its control port (127.0.0.1), so has
+  root on the Pi.
+- The setup network is open Wi-Fi.
+- Any paired computer can issue pairing codes, so can let others in.
+- Network shells and updates aren't encrypted end to end: on an open or shared
+  network, or through the relay, someone on the path could read or take over a shell.
+- A network update that breaks networking without crashing leaves USB or the reset
+  pins as the way back.
 
 ## How it works
 
