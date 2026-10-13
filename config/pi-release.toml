@@ -1,0 +1,9 @@
+# audiolink, release image: pi.toml without USB ethernet or SSH. The debug
+# console stays (a USB serial shell next to the audio).
+include = "pi.toml"
+
+[access]
+ssh_public_key = ""
+
+[device]
+description = "device-release.toml"

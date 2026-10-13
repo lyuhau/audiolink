@@ -1,0 +1,30 @@
+# audiolink's USB device (release): device.toml without the ECM ethernet.
+speed = "high-speed"
+
+[device]
+idVendor = 0x1d6b   # Linux Foundation
+idProduct = 0x0104  # Multifunction Composite Gadget
+
+[strings]
+manufacturer = "audiolink"
+product = "AudioPi"
+serialnumber = "audiopi0001"
+
+[config]
+configuration = "AudioPi"
+max_power_ma = 250
+
+[[functions]]
+kind = "uac2"
+id = "audio"
+function_name = "AudioPi"
+
+[functions.host_to_device]
+channels = 2
+rates = [48000]
+subslot_bytes = 2
+
+[functions.device_to_host]
+channels = 2
+rates = [48000]
+subslot_bytes = 2

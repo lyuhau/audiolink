@@ -1,0 +1,40 @@
+# audiolink's USB device (dev): UAC2 audio both ways, in the baseline format
+# (wire/fmt.py BASELINE; audiolink switches it at runtime with gadget.sh set
+# audio ...), and ECM ethernet for development (the Pi at 10.55.0.2).
+# device-release.toml is the same without ECM: keep the two in step.
+speed = "high-speed"
+
+[device]
+idVendor = 0x1d6b   # Linux Foundation
+idProduct = 0x0104  # Multifunction Composite Gadget
+
+[strings]
+manufacturer = "audiolink"
+product = "AudioPi"
+serialnumber = "audiopi0001"
+
+[config]
+configuration = "AudioPi"
+max_power_ma = 250
+
+# Fixed MACs, so macOS keeps the same interface across boots.
+[[functions]]
+kind = "ecm"
+id = "net"
+dev_addr = "02:a0:00:00:00:01"
+host_addr = "02:a0:00:00:00:02"
+
+[[functions]]
+kind = "uac2"
+id = "audio"          # gadget.sh set audio ...; functions/uac2.audio
+function_name = "AudioPi"
+
+[functions.host_to_device]   # the host plays: c_*
+channels = 2
+rates = [48000]
+subslot_bytes = 2
+
+[functions.device_to_host]   # the host records: p_*
+channels = 2
+rates = [48000]
+subslot_bytes = 2

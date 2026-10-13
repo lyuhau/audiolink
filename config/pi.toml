@@ -1,0 +1,56 @@
+# audiolink on the usb platform (~/Code/usb-initramfs, README: Apps), dev image:
+#   tools/build_card.sh [config/pi.toml]     # then tools/deploy.sh
+# USB ethernet (Pi 10.55.0.2) and SSH with keys/id_ed25519.pub, next to the
+# audio. pi-release.toml is the same without them.
+
+[image]
+type = "initramfs"
+
+[alpine]
+version = "3.24.2"
+arch = "aarch64"
+sha256 = "60e6b9f49ec3d2c9660f2ef775f5af3a98cfd2f939c8f55b6f215d00e5ffcb87"
+
+[system]
+hostname = "audiopi"
+# The platform brings busybox, wpa_supplicant (wpa_cli), dosfstools and, with
+# ssh_public_key, openssh-server.
+packages = [
+  "alpine-base",
+  "python3",         # audiolink
+  "alsa-utils",      # aplay/arecord on the UAC2 gadget
+  "iw", "hostapd",   # Wi-Fi scans, the setup network
+  "busybox-extras",  # udhcpd: DHCP on usb0 and on the setup network
+  "avahi",           # audiopi.local, _audiolink._tcp
+]
+repositories = [
+  "https://dl-cdn.alpinelinux.org/alpine/v3.24/main",
+  "https://dl-cdn.alpinelinux.org/alpine/v3.24/community",
+]
+
+[access]
+wifi = ""                                 # audiolink owns Wi-Fi (saved networks on the card)
+ssh_public_key = "../keys/id_ed25519.pub" # dev key
+debug_console = true                      # USB serial root shell, next to the audio ([device] console)
+
+[device]
+description = "device.toml"
+start_at_boot = true
+console = true
+
+[app]
+name = "audiolink"
+run = "/opt/audiolink/app-start.sh"
+owns = ["wifi", "time"]
+state = true                       # /var/lib/audiolink is the card's audiolink/
+keep_logs = true                   # /var/log on the card: logs/last, logs/prev
+config_txt = ["gpio=21=ip,pu"]     # the reset pins: GPIO21 an input with its pull-up
+
+[app.files]
+"opt/audiolink/audiolink.pyz" = "../dist/audiolink.pyz"
+"opt/audiolink/start-audiolink.sh" = "../pi/start-audiolink.sh"
+"opt/audiolink/app-start.sh" = "../pi/app-start.sh"
+"etc/audiolink.args" = "../pi/audiolink.args"
+"etc/wpa_supplicant/wpa_supplicant.conf" = "../pi/wpa_supplicant.conf"
+"etc/avahi/avahi-daemon.conf" = "../pi/avahi/avahi-daemon.conf"
+"etc/avahi/services/audiolink.service" = "../pi/avahi/audiolink.service"
