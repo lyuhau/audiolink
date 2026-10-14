@@ -83,15 +83,28 @@ def list_devices():
     return 0 if found else 1
 
 
-def main(argv=None):
+def build_parser():
     ap = argparse.ArgumentParser(prog="audiolink", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version="audiolink " + __version__)
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
     sub.add_parser("list-devices", help="list audio devices")
-    w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)")
+    w = sub.add_parser("wifi", help="manage the Pi's Wi-Fi (needs a running `audiolink host`)",
+                       formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+                           "The Pi's Wi-Fi, through `audiolink host` on this computer; join, status and check\n"
+                           "also over the network (--pi PI). The Pi uses 2.4 GHz networks only.\n\n"
+                           "  (none)        pick a network from a list\n"
+                           "  scan          the networks the Pi can see\n"
+                           "  status        which network it's on, its address, whether it's online\n"
+                           "  list          the networks it has saved\n"
+                           "  join NAME     join NAME (asks for a password only if it needs one)\n"
+                           "  forget NAME   drop a saved network\n"
+                           "  portal        sign the Pi in to a network's sign-in page, from a browser here\n"
+                           "  check         exit status 0: online, 3: a sign-in page is in the way, 4: no internet\n"
+                           "  ap on|off|auto  the Pi's setup network, audiopi-NAME (auto: whenever nobody\n"
+                           "                has been connected to the Pi for a while)"))
     w.add_argument("action", nargs="?", choices=["scan", "status", "list", "join", "forget", "portal", "check", "ap"],
-                   help="omit to pick a network from a list")
+                   help="see above; omit to pick a network from a list")
     w.add_argument("name", nargs="?", help="network name for join/forget; on|off|auto for ap")
     w.add_argument("--security", choices=["open", "owe", "wpa2", "wpa3"],
                    help="join: skip detection (needed for hidden networks)")
@@ -103,7 +116,7 @@ def main(argv=None):
     w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
     w.add_argument("--pi", help="join, status, check over the network: which Pi (default: the only one you know)")
     w.add_argument("--via-network", action="store_true", help="over the network even if plugged in here")
-    w.add_argument("--tries", type=int, help="join over the network: connection attempts before giving up (max 3)")
+    w.add_argument("--tries", type=argtypes.positive_int, metavar="N", help="join over the network: connection attempts before giving up (max 3)")
     w.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     dsc = sub.add_parser("discovery", help="whether the plugged-in Pi publishes on the DHT",
                          formatter_class=argparse.RawDescriptionHelpFormatter, epilog="""\
@@ -113,7 +126,7 @@ def main(argv=None):
   publish   publish again now
   code      print its connect code (as: audiolink share)""")
     dsc.add_argument("action", nargs="?", default="status",
-                     choices=["enable", "disable", "code", "status", "publish"])
+                     choices=["enable", "disable", "code", "status", "publish"], help="see below")
     add = sub.add_parser("add", help="add a Pi: the one plugged in here, or by connect code")
     add.add_argument("code", nargs="?", help="a connect code (al1-...) someone shared")
     add.add_argument("--name", help="what to call it on this machine")
@@ -121,7 +134,8 @@ def main(argv=None):
     add.add_argument("--at", action="append", metavar="ADDRESS", help="try a Pi at this address")
     add.add_argument("--pairing-code", metavar="CODE", help="the 6-digit code (instead of being asked)")
     prg = sub.add_parser("pairing", help="pairing codes for adding a Pi on another machine")
-    prg.add_argument("action", choices=["code"])
+    prg.add_argument("action", choices=["code"], help="code: a one-time 6-digit code for `audiolink add` "
+                                                        "on the other machine")
     prg.add_argument("pi", help="name (see: audiolink pis)")
     prg.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     sub.add_parser("pis", help="list the Pis this machine knows")
@@ -134,8 +148,9 @@ def main(argv=None):
     ren.add_argument("--on-pi", action="store_true", help="rename the Pi itself (it must be plugged in here)")
     sshc = sub.add_parser("ssh-config", help="print ~/.ssh/config entries for known Pis")
     sshc.add_argument("--user", help="login user on the computer the Pi is plugged into (default: yours here)")
-    sshc.add_argument("--port", type=argtypes.port, default=2222, help="Pi port to use when unknown")
-    fnd = sub.add_parser("find", help="is a Pi online (its relay), and where (the DHT)")
+    sshc.add_argument("--port", type=argtypes.port, default=2222,
+                      help="the Pi's port for ssh when its exposed ports aren't known (default 2222)")
+    fnd = sub.add_parser("find", help="is a Pi online (on its relay or this network), and where (the DHT)")
     fnd.add_argument("pi", help="name (see: audiolink pis) or connect code")
     con = sub.add_parser("connect", help="pipe stdin/stdout to a Pi port (ssh ProxyCommand)")
     con.add_argument("pi", help="name (see: audiolink pis) or connect code")
@@ -195,12 +210,13 @@ def main(argv=None):
     rly = sub.add_parser("relay", help="run a relay that Pis and clients meet at (on a server)")
     rly.add_argument("--listen", metavar="HOST:PORT",
                      help="where to listen, e.g. 0.0.0.0:443 (every interface) or [::]:443; required")
-    rly.add_argument("--cert", default="keys/relay.crt", help="its TLS certificate (default: %(default)s)")
-    rly.add_argument("--key", default="keys/relay.key", help="the certificate's key (default: %(default)s)")
+    rly.add_argument("--cert", metavar="FILE", default="keys/relay.crt", help="its TLS certificate (default: %(default)s)")
+    rly.add_argument("--key", metavar="FILE", default="keys/relay.key", help="the certificate's key (default: %(default)s)")
     rly.add_argument("--status", action="store_true",
                      help="ask the relay running here for its counts (port from --listen, default 443)")
     size = sub.add_parser("dht-size", help="estimate the size of the BitTorrent DHT")
-    size.add_argument("--samples", type=int, default=8)
+    size.add_argument("--samples", type=argtypes.positive_int, default=8, metavar="N",
+                      help="how many random lookups to average (default 8)")
     roles = {"host": sub.add_parser("host", help="run on the Mac/PC the Pi is plugged into", description=(
                  "Run on the computer the Pi is plugged into: it carries the Pi's connections to\n"
                  "this computer, and other audiolink commands (wifi, audio, update, ...) go\n"
@@ -218,26 +234,31 @@ def main(argv=None):
         p.add_argument("--allow", action="append", default=[], metavar="[HOST:]PORT", type=argtypes.allow,
                        help="let %s open connections to HOST:PORT from here (HOST default: 127.0.0.1); "
                             "anything else is refused" % peer)
-        p.add_argument("--stats", type=float, default=0, help="log link stats every N seconds")
+        p.add_argument("--stats", type=float, default=0, metavar="SECONDS", help="log link stats this often")
         p.add_argument("-v", "--verbose", action="store_true",
                        help="show technical details too (streams, link restarts, audio measurements)")
     roles["host"].add_argument("--expose", action="append", default=[], metavar="PIPORT:[HOST:]PORT",
                                type=argtypes.expose,
                                help="the Pi listens on PIPORT; connections reach HOST:PORT from here "
                                     "(HOST default: this computer). E.g. 2222:22")
-    roles["host"].add_argument("--proxy-port", type=argtypes.port_or_off, default=47801,
-                               help="local HTTP proxy that browses as the Pi (0 = off)")
-    roles["host"].add_argument("--shell-port", type=argtypes.port_or_off, default=47802,
-                               help="local port for `audiolink shell` (0 = off)")
+    roles["host"].add_argument("--proxy-port", type=argtypes.port_or_off, default=47801, metavar="PORT",
+                               help="an HTTP proxy at 127.0.0.1:PORT that browses as the Pi "
+                                    "(default 47801; 0 = off)")
+    roles["host"].add_argument("--shell-port", type=argtypes.port_or_off, default=47802, metavar="PORT",
+                               help="local port for `audiolink shell` (default 47802; 0 = off)")
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
     roles["host"].add_argument("--audio-format", default="auto", metavar="auto|baseline|RATExCH",
                                type=argtypes.audio_format,
                                help="negotiate a faster audio format with the Pi (default: auto)")
-    roles["host"].add_argument("--out-device", help="output device name (substring)")
+    roles["host"].add_argument("--out-device", metavar="NAME",
+                               help="the Pi's output sound device, if not found (part of its name: "
+                                    "audiolink list-devices)")
     for p in (roles["host"], w, dsc, add, ren, prg, aud, upd, lg, sh, dbg, sub.choices["rotate-secret"]):
-        p.add_argument("--control-port", type=argtypes.port, default=None, help="local control port (default 47800)")
-    roles["host"].add_argument("--in-device", help="input device name (substring)")
+        p.add_argument("--control-port", type=argtypes.port, default=None, metavar="PORT",
+                       help="the port other audiolink commands reach this on (default 47800)" if p is roles["host"]
+                       else "audiolink host's control port (default 47800), if it runs with another")
+    roles["host"].add_argument("--in-device", metavar="NAME", help="likewise, its input sound device")
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
     roles["pi"].add_argument("--state-dir", default=PI_STATE_DIR, help="where the Pi keeps its identity")
     roles["pi"].add_argument("--wifi-store", default=PI_STATE_DIR + "/networks.json",
@@ -251,6 +272,15 @@ def main(argv=None):
     for p in sub.choices.values():       # every command: -v shows the technical details
         if not any("--verbose" in act.option_strings for act in p._actions):
             p.add_argument("-v", "--verbose", action="store_true", help="show technical details too")
+    for name, p in sub.choices.items():     # `audiolink X --help` starts with what X does
+        if not p.description:
+            text = next(c.help for c in sub._choices_actions if c.dest == name)
+            p.description = text[:1].upper() + text[1:] + "."
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     command = None
     first = next((x for x in argv if not x.startswith("-")), None)

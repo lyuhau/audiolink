@@ -362,3 +362,14 @@ class WifiNetwork(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Help(unittest.TestCase):
+    def test_every_command_and_argument_says_what_it_is(self):
+        import argparse
+        from audiolink.__main__ import build_parser
+        sub = [a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)][0]
+        for name, p in sub.choices.items():
+            self.assertTrue(p.description, name)
+            for act in p._actions:
+                self.assertTrue(act.help, (name, act.option_strings or act.dest))
