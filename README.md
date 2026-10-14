@@ -14,56 +14,172 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
 - **No admin, no drivers, no install** on the host: it's a sound card, and
   audiolink is one file (`.pyz` for any Python 3.9+, or a single binary).
 - **The host decides what's reachable** (`--expose 2222:22`); everything else is denied.
-- **Find the Pi from anywhere:** it publishes a signed, encrypted record on the
-  BitTorrent DHT; clients holding its code look it up.
 - **Pairing like Bluetooth:** USB is trusted; over the network, the first machine
   claims an unclaimed Pi, and later ones use a one-time 6-digit code (SPAKE2, so
   the code never crosses the network).
-- **Wi-Fi managed from the host,** including captive portals (logged in from a
-  browser that browses *as the Pi*), and a setup network the Pi opens whenever
-  nobody has been connected to it for a while, next to its Wi-Fi. Changes made over the network are tried first without
-  leaving the current network (a wrong password is refused on the spot), then
-  made; if nobody can reach the Pi there, its setup network opens.
+- **Find it from anywhere:** through its relay (`relay.lyuhau.com`), or its
+  record on the BitTorrent DHT.
+- **Wi-Fi managed from the host,** including sign-in pages (loaded in a browser that
+  browses *as the Pi*), and an open setup network the Pi opens whenever nobody has
+  been connected to it for a while, next to its Wi-Fi. Changes made over the network
+  are tried first without leaving the current network (a wrong password is refused on
+  the spot), then made; if nobody can reach the Pi there, its setup network opens.
 - **Pure standard-library Python;** the only native code is the bundled PortAudio.
 
 > Status: early. Tested with macOS hosts and a Pi Zero 2 W booting from an SD card.
-> Windows builds exist but are untested on hardware;
-> a ready-made card image and a relay for reaching the Pi from other networks are next.
+> Windows builds exist but are untested on hardware. No card image is published yet
+> (see *Where card images come from*). The relay (`relay.lyuhau.com`), for reaching a
+> Pi from other networks, is running.
 
-## Downloads
+## Quick start: got a ready Pi? Start here
 
-Each [release](../../releases) has:
+You need the Pi with its card, a USB data cable to its port marked **USB** (not PWR
+IN; it powers the Pi too), and audiolink on each computer you'll use.
 
-| File | Use it on |
-|---|---|
-| `audiolink-VER.pyz` | any machine with Python 3.9+: `python3 audiolink-VER.pyz ...` (macOS's built-in `/usr/bin/python3` works over USB, but its old LibreSSL can't reach a Pi over the network) |
-| `audiolink-VER-macos-arm64`, `-macos-x86_64` | Macs without Python |
-| `audiolink-VER-windows-x64.exe` | Windows |
-| `SHA256SUMS` | checksums |
+**1. Get audiolink.** From the latest [release](../../releases):
 
-The binaries aren't code-signed yet:
-- **macOS:** the first run of a downloaded binary is blocked; allow it in System
-  Settings → Privacy & Security, or run `xattr -d com.apple.quarantine audiolink-*`.
-  The `.pyz` isn't affected.
-- **Windows:** SmartScreen warns about an unknown publisher; choose "Run anyway".
+| Your computer | File | |
+|---|---|---|
+| Mac with Apple silicon | `audiolink-VER-macos-arm64` | single binary, no Python needed |
+| Intel Mac | `audiolink-VER-macos-x86_64` | |
+| Windows | `audiolink-VER-windows-x64.exe` | |
+| Linux, or anything with Python 3.9+ | `audiolink-VER.pyz` | run it as `python3 audiolink-VER.pyz ...`; a Linux host also needs PortAudio (e.g. `libportaudio2`) |
 
-## Quick start
+`SHA256SUMS` has the checksums. Put the file somewhere permanent and call it
+`audiolink`: the ssh entries from `audiolink ssh-config` run it from where it is.
 
-1. **Boot the Pi.** Build its microSD card (`tools/build_card.sh
-   config/pi-release.toml --install /Volumes/CARD`, see *Development*) and put it
-   in the Pi; it boots from the card and keeps its identity and saved networks in
-   the card's `audiolink/` folder. The Pi appears as an audio device.
-2. **On the host** (the machine the Pi is plugged into):
-   ```
-   audiolink host --expose 2222:22          # Pi port 2222 -> this machine's sshd
-   audiolink add                            # remember this Pi (named e.g. green-rowan)
-   audiolink wifi                           # pick a Wi-Fi network for the Pi
-   ```
-3. **On a client** on the same network:
-   ```
-   ssh -p 2222 you@audiopi.local            # mDNS (one Pi per network for now)
-   audiolink ssh-config >> ~/.ssh/config    # or: then just `ssh green-rowan`, from anywhere it's reachable
-   ```
+```
+chmod +x audiolink-*-macos-arm64
+mkdir -p ~/bin && mv audiolink-*-macos-arm64 ~/bin/audiolink     # ~/bin on your PATH, or use the full path
+xattr -d com.apple.quarantine ~/bin/audiolink                     # macOS: not code-signed yet
+```
+
+Without the `xattr`, macOS blocks the first run; allowing it in System Settings →
+Privacy & Security works too. On Windows, rename it to `audiolink.exe`, keep it in a
+folder such as `C:\Tools`, and choose "Run anyway" if SmartScreen warns about an
+unknown publisher. Apple's own `/usr/bin/python3` runs the `.pyz` over USB but can't
+do the network commands (its LibreSSL is too old): use the binary, or Python from
+python.org or Homebrew.
+
+**2. Plug the Pi in and start the host.** On the computer the Pi is plugged into:
+
+```
+audiolink host
+```
+
+Keep it running in its own terminal window; the other commands go through it. Once
+the Pi has started it says `Connected to NAME` (each Pi has a name like
+`green-rowan`). The first time, macOS may ask to "Allow accessory" (allow it), and
+asks whether your terminal may use the microphone: allow that too, it's how data
+comes in from the Pi. The computer has to stay awake (on a Mac:
+`caffeinate -i audiolink host`).
+
+**3. Put the Pi on Wi-Fi.** In another terminal on the same computer:
+
+```
+audiolink add                      # remember the Pi on this computer
+audiolink wifi                     # pick a network from a list; asks for its password
+```
+
+The Pi uses 2.4 GHz networks. If a network needs a sign-in page (hotels, cafés),
+`audiolink wifi` offers it; later, `audiolink wifi portal`.
+
+**4. Add the Pi on your other computers.** On the host: `audiolink pairing code
+NAME` gives a one-time 6-digit code. On the other computer, on the same network as
+the Pi (or on its setup network, see *Troubleshooting*): `audiolink add`, which finds
+the Pi and asks for the code. Not on the same network: `audiolink share NAME` on the
+host prints the Pi's connect code (`al1-...`); `audiolink add al1-...` on the other
+computer. Treat that code like a password: whoever has it can use the Pi.
+
+**5. Reach the host computer from anywhere.** Stop the host (Ctrl-C) and start it
+again with a port for ssh:
+
+```
+audiolink host --expose 2222:22    # the Pi's port 2222 -> this computer's ssh
+```
+
+and turn on its ssh server: on a Mac, System Settings → General → Sharing → Remote
+Login; on Windows, Settings → System → Optional features → OpenSSH Server, then start
+the `sshd` service (both need an admin, once). Then on the other computer:
+
+```
+audiolink ssh-config --user YOU >> ~/.ssh/config    # YOU: your login on the host computer
+ssh NAME
+```
+
+That logs in to the computer the Pi is plugged into, not the Pi: directly when you're
+on the Pi's network, through the relay otherwise. `audiolink find NAME` says whether
+the Pi is online. In Windows PowerShell, append with
+`audiolink ssh-config --user YOU | Out-File -Append -Encoding ascii $HOME\.ssh\config`
+(its `>>` writes UTF-16, which ssh can't read).
+
+### Browse as the Pi
+
+`audiolink host` also runs an HTTP proxy at `127.0.0.1:47801` (this computer only)
+whose connections leave from the Pi, over its Wi-Fi. Sign-in pages need it (`audiolink
+wifi portal` opens a browser that uses it), and it's handy for checking what the Pi's
+network can reach: `curl -x http://127.0.0.1:47801 https://example.com`, or set
+`127.0.0.1:47801` as a browser's HTTP and HTTPS proxy. `--proxy-port 0` turns it off.
+
+### Keep `audiolink host` running
+
+To start it at login and restart it if it stops, instead of a terminal window (stop
+the one in the terminal first: only one host runs at a time):
+
+**macOS:** save as `~/Library/LaunchAgents/com.audiolink.host.plist` (with your paths),
+then `launchctl load ~/Library/LaunchAgents/com.audiolink.host.plist`. `caffeinate -i`
+keeps the Mac from sleeping while it runs. If it doesn't connect, look in
+`/tmp/audiolink-host.log`, and under System Settings → Privacy & Security →
+Microphone: a program started this way may need its own permission.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.audiolink.host</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string><string>-i</string>
+    <string>/Users/you/bin/audiolink</string><string>host</string>
+    <string>--expose</string><string>2222:22</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/audiolink-host.log</string>
+  <key>StandardErrorPath</key><string>/tmp/audiolink-host.log</string>
+</dict>
+</plist>
+```
+
+`launchctl unload` with the same path stops it.
+
+**Linux:** save as `~/.config/systemd/user/audiolink-host.service`, then
+`systemctl --user enable --now audiolink-host` (`journalctl --user -u audiolink-host`
+for its output; `loginctl enable-linger $USER` to run it without logging in).
+
+```ini
+[Unit]
+Description=audiolink host
+
+[Service]
+ExecStart=/usr/bin/python3 %h/bin/audiolink.pyz host --expose 2222:22
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+**Windows:** a task that starts it at logon, in its own window:
+`schtasks /Create /SC ONLOGON /TN audiolink-host /TR "C:\Tools\audiolink.exe host --expose 2222:22"`
+(`schtasks /Delete /TN audiolink-host` removes it).
+
+### Where card images come from
+
+None are published yet: the Pi's system comes from a separate, private platform
+project, so for now cards are built from source with it (*Development*). A ready Pi
+keeps everything it needs on its card.
 
 ## Commands
 
@@ -73,25 +189,56 @@ The binaries aren't code-signed yet:
 | `audiolink add [CODE] [--at ADDR] [--pairing-code N]` | add a Pi: over USB, found on the network, or by connect code |
 | `audiolink pis` / `share PI` / `forget PI` / `rename PI NEW [--on-pi]` | the Pis this machine knows |
 | `audiolink pairing code PI` | a one-time code for adding PI on another machine |
-| `audiolink find PI` / `connect PI PORT` | is it online (its relay) and where (the DHT) / pipe to it (ssh `ProxyCommand`) |
+| `audiolink find PI` | online or offline (on its relay, or this network), and where (its DHT record) |
+| `audiolink connect PI PORT` | pipe to a Pi port (ssh `ProxyCommand`): this network, then the relay |
 | `audiolink ssh-config [--user NAME]` | `~/.ssh/config` entries for known Pis (logging in to the computer each is plugged into) |
-| `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap]` | the Pi's Wi-Fi; `join`, `status`, `check` also over the network (`--pi PI`) |
+| `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap]` | the Pi's Wi-Fi; `join`, `status`, `check` also over the network (`--pi PI`); `check` exits 0 online, 3 sign-in page, 4 no internet |
 | `audiolink discovery [status\|enable\|disable\|publish\|code]` | whether the plugged-in Pi publishes where it is on the DHT (the relay works either way) |
 | `audiolink audio [status\|sweep\|set RATExCH\|forget]` | the link's audio format (see *How it works*) |
 | `audiolink update [PYZ] [--revert\|--status] [--pi PI]` | new code for the plugged-in Pi, over the link (kept on its card); `--pi`: over the network |
-| `audiolink logs [FILE] [-n N] [--list] [--pi PI]` | the plugged-in Pi's logs, over the link; `--pi`: over the network |
-| `audiolink shell [PI] [--key FILE]` | a root shell: the plugged-in Pi, or PI over the network (see *Access*) |
+| `audiolink logs [FILE] [-n N] [--list] [--pi PI] [--key FILE]` | the plugged-in Pi's logs, over the link; `--pi`: over the network |
+| `audiolink shell [PI] [--key FILE] [-- CMD]` | a root shell: the plugged-in Pi, or PI over the network (see *Access*); `-- CMD` runs one command |
 | `audiolink debug [on\|off\|status]` | the plugged-in Pi's debug switch: root access over the network |
 | `audiolink rotate-secret` | a new code for the plugged-in Pi: every other computer loses access |
 | `audiolink list-devices` / `dht-size` | audio devices / how big the DHT is |
 
-`audiolink --help` and `audiolink COMMAND --help` have the details.
+`audiolink --help` and `audiolink COMMAND --help` have the details. Commands that talk
+to the plugged-in Pi need `audiolink host` running on that computer.
 
 **Reset pins.** Short header pins 39 (GND) and 40 (GPIO21), with a jumper or a
 paperclip, and hold. 5 s: back to the code in the Pi's image (drops an update).
 15 s: also start over, with a new identity (unclaimed; codes given out stop working)
 and no saved Wi-Fi. The green light blinks slowly past 5 s, quickly past 15 s; the
 Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
+
+## Troubleshooting
+
+- **"No Pi plugged in."** Is `audiolink host` running on this computer, and does it
+  say `Connected`? Is the cable in the Pi's USB port (not PWR), and is it a data
+  cable? On a Mac, look for an "Allow accessory" prompt (it comes back when the Pi
+  shows up as a new kind of USB device, e.g. after a new card). Then unplug and replug.
+  `audiolink list-devices` shows whether the computer sees the Pi's sound devices.
+- **"The Pi's sound device dropped off USB."** Unplug it and plug it back in.
+- **Slow, or the link keeps dropping.** Back to the starting audio format:
+  `audiolink audio set baseline` (`audiolink host --audio-format baseline` keeps it
+  there); `audiolink audio sweep` measures the others again.
+- **Wi-Fi.** `audiolink wifi status` says where the Pi is. It only sees 2.4 GHz
+  networks. Sign-in pages: `audiolink wifi portal`. When nobody has been connected to
+  it for a while, the Pi opens its own open setup network, `audiopi-NAME`: join it
+  from any computer and `audiolink add`, `audiolink wifi join NETWORK --pi NAME`
+  work there.
+- **Can't reach it from elsewhere.** `audiolink find NAME`: "offline" means the Pi
+  isn't on the internet (check its Wi-Fi on the host: `audiolink wifi check`);
+  "online" with ssh failing means the host isn't running with `--expose 2222:22`, or
+  its ssh server is off.
+- **An update broke it.** Over USB: `audiolink update --revert`. Or hold the reset
+  pins for 5 s (back to the image's code), 15 s to also start over. With a card
+  reader, the card's `logs/last` (and `logs/prev`, the boot before) has the Pi's logs,
+  and `audiolink/` its state: deleting `audiolink/audiolink.pyz` drops an update.
+- **Looking inside.** Over USB, `audiolink shell` is a root shell on the Pi and
+  `audiolink logs` shows its logs. Over the network, `audiolink logs --pi NAME` works
+  from any computer that added it; a shell needs the debug switch: `audiolink debug
+  on` on the host, then `audiolink shell NAME` elsewhere.
 
 ## Access
 
@@ -122,8 +269,11 @@ until the Pi restarts; audiolink restarting, as after a network update, keeps it
 and close open network shells; so do a new code and narrowing the switch (another mode,
 a key taken off, no more `--setup`). Over USB, `audiolink shell` always works. The Pi logs every debug request and every refusal.
 
-**Encryption:** every network connection to the Pi (LAN, setup network, relay) is
-TLS 1.3 end to end; the relay only passes it on. The Pi's certificate is for its own
+**Encryption:** every audiolink connection to the Pi over the network (LAN, setup
+network, relay) is TLS 1.3 end to end; the relay only passes it on. An exposed port
+carries whatever its service sends: as is on the Pi's network, and through the relay
+over TLS to the relay and from it to the Pi (the relay itself could read it). ssh
+encrypts itself. The Pi's certificate is for its own
 identity key, and a computer with its code checks that key, so nobody in between can
 read, change or take over a shell, an update or anything else, or pass off a proof
 made for them. Older audiolink versions on either side get "update audiolink"
@@ -196,7 +346,9 @@ python3 -m unittest discover -s tests -t .
 
 The Pi runs audiolink as an app on the usb platform (Alpine in one initramfs; a
 separate, private project: `~/Code/usb`, its README: Apps). Building the card needs
-a checkout of it at `USB_PLATFORM` (default: `~/Code/usb`) and its venv. `config/` describes the card:
+a checkout of it at `USB_PLATFORM` (default: `~/Code/usb`), its venv, and Docker. A card
+for someone else: `tools/build_card.sh config/pi-release.toml --install /Volumes/CARD`
+(a FAT32-formatted microSD card, see the platform's README); the Pi boots from it. `config/` describes the card:
 `pi.toml` (dev: USB ethernet with the Pi at `10.55.0.2`, SSH with
 `keys/id_ed25519.pub`, the debug console) and `pi-release.toml` (no USB
 ethernet, no SSH). `pi/app-start.sh` is the app's start: USB ethernet, the

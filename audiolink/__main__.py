@@ -1,37 +1,44 @@
 """audiolink command line.
 
-  audiolink host --expose 2222:22            Mac/PC: Pi listens on 2222, connections reach local sshd
+On the computer the Pi is plugged into (the host):
+  audiolink host --expose 2222:22            the Pi listens on 2222; connections reach this computer's sshd
   audiolink host --wifi NAME --expose ...    same, after first putting the Pi on Wi-Fi NAME
-  audiolink host --allow 22                  Mac/PC: let the Pi's own --forward streams reach local sshd
-  audiolink host --forward 8080:pi-lan:80    Mac/PC: tunnel local :8080 to a host on the Pi's side
-  audiolink pi --forward 2222:22             Pi: expose the host's port 22 as Pi port 2222
-  audiolink list-devices                     show audio devices (host side)
+  audiolink host --allow 22                  let the Pi's own --forward streams reach local sshd
+  audiolink host --forward 8080:pi-lan:80    tunnel local :8080 to a host on the Pi's side
+  audiolink list-devices                     show audio devices (* = the Pi's)
   audiolink wifi                             pick a network for the Pi from a list
   audiolink wifi join NAME                   join (detects the security type, asks only if needed)
-  audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
-  audiolink wifi portal                      log the Pi in to a captive portal from a browser here
+  audiolink wifi scan|status|list|forget     the Pi's Wi-Fi, through the running host
+  audiolink wifi portal                      sign the Pi in to a sign-in page, from a browser here
   audiolink wifi check                       exit 0 = Pi online, 3 = sign-in page, 4 = no internet
   audiolink wifi ap [on|off|auto]            the Pi's own setup network (normally automatic)
-  audiolink wifi join NAME --pi PI           over the network (checks the network first when it can)
-  audiolink wifi status|check --pi PI        over the network, the relay included
+  audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
+  audiolink discovery enable|disable|status  whether the plugged-in Pi publishes on the DHT
+  audiolink update [PYZ] [--revert|--status] new code for the plugged-in Pi, over the link
+  audiolink logs [FILE] [-n N] [--list]      the plugged-in Pi's logs, over the link
+  audiolink shell [-- CMD]                   root shell on the plugged-in Pi (or run CMD there)
+  audiolink debug on|off|status              the plugged-in Pi's debug switch (network root access)
+  audiolink rotate-secret                    new code for the plugged-in Pi: other computers lose access
+
+Any computer:
   audiolink add [CODE]                       add a Pi: plugged in here, on the network, or by code
   audiolink pairing code PI                  a one-time code for adding PI on another machine
   audiolink pis                              list the Pis this machine knows
   audiolink share|forget PI                  print a Pi's connect code / forget it
   audiolink rename PI NEW [--on-pi]          rename here (or on the Pi itself)
-  audiolink ssh-config                       ~/.ssh/config entries: then just `ssh PI`
-  audiolink find PI                          (any machine) is it online, and where? (relay, DHT)
-  audiolink connect PI PORT                  (any machine) ssh ProxyCommand: find the Pi, connect
-  audiolink discovery enable|disable|status  whether the plugged-in Pi publishes on the DHT
-  audiolink update [PYZ] [--revert|--status] new code for the plugged-in Pi, over the link
-  audiolink logs [FILE] [-n N] [--list]      the plugged-in Pi's logs, over the link
-  audiolink logs|update ... --pi PI          the same over the network (update: debug access)
-  audiolink shell [PI]                       root shell: the plugged-in Pi, or PI over the network
-  audiolink debug on|off|status              the plugged-in Pi's debug switch (network root access)
-  audiolink rotate-secret                    new code for the plugged-in Pi: other computers lose access
-  audiolink relay --listen HOST:PORT         (a server) the relay Pis and clients meet at
+  audiolink ssh-config [--user NAME]         ~/.ssh/config entries: then just `ssh PI`
+  audiolink find PI                          online or offline (its relay, this network), and where (DHT)
+  audiolink connect PI PORT                  ssh ProxyCommand: find the Pi, connect
+  audiolink wifi join NAME --pi PI           over the network (checks the network first when it can)
+  audiolink wifi status|check --pi PI        over the network, the relay included
+  audiolink logs ... --pi PI [--key FILE]    the Pi's logs over the network
+  audiolink update ... --pi PI [--key FILE]  over the network (debug access)
+  audiolink shell PI [--key FILE] [-- CMD]   root shell on PI over the network (debug access)
   audiolink dht-size                         estimate how many DHT nodes are out there
-  audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
+
+Elsewhere:
+  audiolink pi --forward 2222:22             (the Pi, started at boot) expose the host's port 22 as Pi port 2222
+  audiolink relay --listen HOST:PORT         (a server) the relay Pis and clients meet at
 
 --forward LPORT:[HOST:]PORT  listen on LPORT here (the host: on 127.0.0.1 only); each connection
                              asks the peer to connect to HOST:PORT (HOST defaults to the peer's 127.0.0.1)
