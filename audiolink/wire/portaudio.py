@@ -12,6 +12,7 @@ directory when running from a .pyz), then from the system as a fallback.
 import ctypes
 import ctypes.util
 import hashlib
+import os
 import pkgutil
 from array import array
 import sys
@@ -146,6 +147,26 @@ def lib():
         _check(pa.Pa_Initialize(), pa)
         _pa = pa
     return _pa
+
+
+def quiet_stdout():
+    """macOS: PortAudio's Core Audio layer printf()s its errors to stdout ("||PaMacCore
+    (AUHAL)|| ... on line ..."), from its own threads too: expected whenever the Pi's
+    device goes away, and only noise. (Not through PaUtil_SetDebugPrintFunction, so
+    that hook can't catch them.) C's stdout goes to /dev/null; Python's sys.stdout
+    keeps the real one through a duplicate descriptor. Call once, before PortAudio."""
+    if sys.platform != "darwin":
+        return
+    try:
+        sys.stdout.flush()
+        keep = os.dup(1)
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.close(null)
+        sys.stdout = os.fdopen(keep, "w", buffering=1, encoding=sys.stdout.encoding,
+                               errors=sys.stdout.errors)
+    except (OSError, AttributeError, ValueError):
+        pass
 
 
 def reinit():

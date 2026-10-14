@@ -26,8 +26,8 @@ def find_devices(out_name=None, in_name=None):
         else:
             cands = [d for d in cands if any(h in d["name"].lower() for h in DEVICE_HINTS)]
         if not cands:
-            raise LookupError("no AudioPi %s device found%s"
-                              % (kind, " matching %r" % name if name else ""))
+            raise LookupError("No %s audio device matching %r (see: audiolink list-devices)" % (kind, name)
+                              if name else "no AudioPi %s device found" % kind)
         cands.sort(key=lambda d: d["hostapi_type"] != portaudio.paWASAPI)
         return cands[0]
 
@@ -44,12 +44,14 @@ def device_format(out_dev, in_dev):
     return fmt
 
 
-def run_portaudio(link, out_name=None, in_name=None):
+def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
     """Host: blocking PortAudio streams on the gadget's devices.
 
     A supervisor reopens the devices whenever they error out or stall, e.g. when
     the Pi reboots, is unplugged or re-presents itself in another format, and waits
     for them if they aren't present yet. Streams open in the format the device reports.
+    expected(): the device being away now is part of the plan (an audio format
+    change), so waiting for it is -v detail.
     """
     from . import portaudio
 
@@ -65,8 +67,8 @@ def run_portaudio(link, out_name=None, in_name=None):
             inp.close()
             raise
         link.set_format(fmt)
-        log.info("audio out: %s [%s]", out_dev["name"], out_dev["hostapi"])
-        log.info("audio in:  %s [%s], %r", in_dev["name"], in_dev["hostapi"], fmt)
+        log.debug("audio out: %s [%s]", out_dev["name"], out_dev["hostapi"])
+        log.debug("audio in:  %s [%s], %r", in_dev["name"], in_dev["hostapi"], fmt)
         return out, inp, fmt
 
     def run_session(out, inp, fmt):
@@ -129,7 +131,8 @@ def run_portaudio(link, out_name=None, in_name=None):
         state["ok"] = False
         if watch:
             watch.close()
-        log.warning("audio device lost (%s); reopening", state["err"])
+        # -v detail: an unplugged Pi is reported in words once the peer goes quiet (host/console.py)
+        log.debug("audio device lost (%s); reopening", state["err"])
         for t in threads:
             t.join(10)
             if t.is_alive():
@@ -147,7 +150,11 @@ def run_portaudio(link, out_name=None, in_name=None):
                 out, inp, fmt = open_streams()
             except (LookupError, portaudio.PortAudioError) as e:
                 if not waiting:
-                    log.warning("%s; waiting for the AudioPi to appear", e)
+                    log.debug("audio: %s", e)
+                    if out_name or in_name:
+                        log.warning("%s; waiting for it", e)
+                    elif not expected():
+                        log.info("Waiting for the Pi (plug it in)")
                     waiting = True
                 time.sleep(2)
                 continue

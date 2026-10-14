@@ -45,6 +45,18 @@ def allow(text):
     return text
 
 
+def audio_format(text):
+    """--audio-format auto|baseline|RATExCH: kept as text; only formats the link can run."""
+    if text in ("auto", "baseline"):
+        return text
+    from .host.audio_format import parse_format
+    try:
+        parse_format(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("%s (or auto)" % e)
+    return text
+
+
 def _pair(text, wants):
     lport, sep, target = text.partition(":")
     if not sep or _port(lport) is None or _target(target) is None:

@@ -32,8 +32,8 @@
   audiolink dht-size                         estimate how many DHT nodes are out there
   audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
 
---forward LPORT:[HOST:]PORT  listen on LPORT here; each connection asks the peer to
-                             connect to HOST:PORT (HOST defaults to the peer's 127.0.0.1)
+--forward LPORT:[HOST:]PORT  listen on LPORT here (the host: on 127.0.0.1 only); each connection
+                             asks the peer to connect to HOST:PORT (HOST defaults to the peer's 127.0.0.1)
 --allow [HOST:]PORT          let the peer open streams to HOST:PORT here (default deny)
 --expose PIPORT:[HOST:]PORT  (host) ask the Pi to listen on PIPORT and bring connections to
                              HOST:PORT here (HOST defaults to 127.0.0.1); implies --allow
@@ -72,11 +72,14 @@ def report(session, streams, interval):
 def list_devices():
     from .wire import portaudio
     from .wire.host_audio import DEVICE_HINTS
+    found = False
     for d in portaudio.devices():
         mark = "*" if any(h in d["name"].lower() for h in DEVICE_HINTS) else " "
+        found = found or mark == "*"
         print("%s %3d  %-40s %-20s in=%d out=%d" % (mark, d["index"], d["name"], d["hostapi"],
                                                     d["inputs"], d["outputs"]))
-    print("\n* = Pi audio device")
+    print("\n* = Pi audio device" if found else "\nNo Pi audio device found (plugged in?)")
+    return 0 if found else 1
 
 
 def main(argv=None):
@@ -175,21 +178,38 @@ def main(argv=None):
     rly.add_argument("--status", action="store_true", help="ask the running relay for its counts")
     size = sub.add_parser("dht-size", help="estimate the size of the BitTorrent DHT")
     size.add_argument("--samples", type=int, default=8)
-    roles = {"host": sub.add_parser("host", help="run on the Mac/PC the Pi is plugged into"),
-             "pi": sub.add_parser("pi", help="run on the Pi")}
+    roles = {"host": sub.add_parser("host", help="run on the Mac/PC the Pi is plugged into", description=(
+                 "Run on the computer the Pi is plugged into: it carries the Pi's connections to\n"
+                 "this computer, and other audiolink commands (wifi, audio, update, ...) go\n"
+                 "through it. E.g. `audiolink host --expose 2222:22`: ssh to the Pi's port 2222\n"
+                 "reaches this computer's ssh."), formatter_class=argparse.RawDescriptionHelpFormatter),
+             "pi": sub.add_parser("pi", help="run on the Pi", description=(
+                 "The Pi's side (started at boot by start-audiolink.sh; arguments in "
+                 "/etc/audiolink.args)."))}
     for name, p in roles.items():
-        p.add_argument("--forward", action="append", default=[], metavar="LPORT:[HOST:]PORT")
-        p.add_argument("--allow", action="append", default=[], metavar="[HOST:]PORT")
-        p.add_argument("--stats", type=float, default=0, help="log stats every N seconds")
-        p.add_argument("-v", "--verbose", action="store_true")
-    roles["host"].add_argument("--expose", action="append", default=[], metavar="PIPORT:[HOST:]PORT")
-    roles["host"].add_argument("--proxy-port", type=int, default=47801,
+        peer = "the Pi" if name == "host" else "the host"
+        p.add_argument("--forward", action="append", default=[], metavar="LPORT:[HOST:]PORT", type=argtypes.forward,
+                       help="listen on LPORT here%s; each connection goes to HOST:PORT as seen from %s "
+                            "(HOST default: %s itself)" % (" (this computer only)" if name == "host" else "",
+                                                           peer, peer))
+        p.add_argument("--allow", action="append", default=[], metavar="[HOST:]PORT", type=argtypes.allow,
+                       help="let %s open connections to HOST:PORT from here (HOST default: 127.0.0.1); "
+                            "anything else is refused" % peer)
+        p.add_argument("--stats", type=float, default=0, help="log link stats every N seconds")
+        p.add_argument("-v", "--verbose", action="store_true",
+                       help="show technical details too (streams, link restarts, audio measurements)")
+    roles["host"].add_argument("--expose", action="append", default=[], metavar="PIPORT:[HOST:]PORT",
+                               type=argtypes.expose,
+                               help="the Pi listens on PIPORT; connections reach HOST:PORT from here "
+                                    "(HOST default: this computer). E.g. 2222:22")
+    roles["host"].add_argument("--proxy-port", type=argtypes.port, default=47801,
                                help="local HTTP proxy that browses as the Pi (0 = off)")
-    roles["host"].add_argument("--shell-port", type=int, default=47802,
+    roles["host"].add_argument("--shell-port", type=argtypes.port, default=47802,
                                help="local port for `audiolink shell` (0 = off)")
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
     roles["host"].add_argument("--audio-format", default="auto", metavar="auto|baseline|RATExCH",
+                               type=argtypes.audio_format,
                                help="negotiate a faster audio format with the Pi (default: auto)")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
     for p in (roles["host"], w, dsc, add, ren, prg, aud, upd, lg, sh, dbg, sub.choices["rotate-secret"]):
@@ -270,7 +290,8 @@ def main(argv=None):
     session, streams = run(a, allow, port, gate)
     if session is None:
         return 130
-    log.info("audiolink %s %s up (session %08x); allow=%s%s", __version__, a.cmd, session.link.session,
+    (log.info if a.cmd == "pi" else log.debug)(      # tools/hot.sh waits for the Pi's
+        "audiolink %s %s up (session %08x); allow=%s%s", __version__, a.cmd, session.link.session,
              ",".join("%s:%d" % t for t in sorted(streams.allow)) or "none",
              "; expose=" + ",".join("pi:%d->%s:%d" % (p, h, tp) for p, (h, tp) in streams.expose)
              if streams.expose else "")
@@ -354,34 +375,51 @@ def run_host(a, allow, port, gate):
     audio-format negotiation; PortAudio."""
     from .host import control
     from .host.audio_format import AudioNegotiator, parse_format
+    from .host.console import HostConsole
     from .host.identity import HostIdentity
     from .host.portal import PortalWatcher
     from .host.wifi_cli import startup_join
     from .services.proxy import PROXY_PORT
+    from .services.shell import PORT as SHELL_PORT
     from .wire.host_audio import run_portaudio
+    # Every port before the Pi's audio device: a second host, or a port in use, must stop
+    # here, not after it has opened the device (two hosts on it corrupt the link).
+    ctl = control.listen(port)
     startup_wifi = bool(a.wifi)
     if startup_wifi:
         gate.pause()             # the Wi-Fi prompts own the terminal until startup is done
-    streams = Streams("host", allow=allow, expose=[parse_forward(x) for x in a.expose])
+    expose = [parse_forward(x) for x in a.expose]
+    streams = Streams("host", allow=allow, expose=expose)
     watcher = PortalWatcher(port, gate)
     negotiator = AudioNegotiator(a.audio_format if a.audio_format in ("auto", "baseline")
                                  else parse_format(a.audio_format))
-    session = Session("host", [streams, watcher, HostIdentity(), negotiator])
+    session = Session("host", [streams, watcher, HostIdentity(), negotiator,
+                               HostConsole(expose, busy=lambda: negotiator.running)])
+
+    def listen(lport, target, what, flag=None):
+        try:
+            streams.forward(lport, target, bind="127.0.0.1")
+        except OSError as e:
+            log.debug("listen on %d: %s", lport, e)
+            raise SystemExit("Port %d (%s) is in use; pick another%s" % (
+                lport, what, ": %s PORT, or turn it off: %s 0" % (flag, flag) if flag else ""))
     for spec in a.forward:
-        streams.forward(*parse_forward(spec))
-    run_portaudio(session.link, a.out_device, a.in_device)
+        listen(*parse_forward(spec), "--forward " + spec)
+    if a.proxy_port:
+        # Browse as the Pi (captive portals): local HTTP proxy -> Pi's proxy.
+        listen(a.proxy_port, ("127.0.0.1", PROXY_PORT), "the browse-as-the-Pi proxy", "--proxy-port")
+    if a.shell_port:
+        # `audiolink shell`: the Pi's root shell, for anyone on this machine (USB = root).
+        listen(a.shell_port, ("127.0.0.1", SHELL_PORT), "for audiolink shell", "--shell-port")
+    if not a.verbose:
+        from .wire.portaudio import quiet_stdout
+        quiet_stdout()
+    run_portaudio(session.link, a.out_device, a.in_device, expected=lambda: negotiator.running)
     local_ops = {"peer": lambda args: {"connected": session.peer_alive, "peer": session.peer_info,
                                        "proxy_port": a.proxy_port, "shell_port": a.shell_port}}
     local_ops.update(watcher.local_ops())
     local_ops.update(negotiator.local_ops())
-    control.serve(session, port, local_ops)
-    if a.proxy_port:
-        # Browse as the Pi (captive portals): local HTTP proxy -> Pi's proxy.
-        streams.forward(a.proxy_port, ("127.0.0.1", PROXY_PORT), bind="127.0.0.1")
-    if a.shell_port:
-        # `audiolink shell`: the Pi's root shell, for anyone on this machine (USB = root).
-        from .services.shell import PORT as SHELL_PORT
-        streams.forward(a.shell_port, ("127.0.0.1", SHELL_PORT), bind="127.0.0.1")
+    control.serve(session, ctl, local_ops)
     if startup_wifi:
         try:
             startup_join(session, a.wifi, a, port)
