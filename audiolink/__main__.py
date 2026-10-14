@@ -45,7 +45,7 @@ import sys
 import threading
 import time
 
-from . import __version__
+from . import __version__, argtypes
 from .services.streams import Streams, parse_forward
 from .paths import PI_STATE_DIR
 from .relay import DEFAULT as RELAY_DEFAULT
@@ -147,7 +147,8 @@ def main(argv=None):
     upd.add_argument("--status", action="store_true", help="which code the Pi runs")
     lg = sub.add_parser("logs", help="the plugged-in Pi's logs (works when USB networking doesn't)")
     lg.add_argument("file", nargs="?", help="which log (default audiolink.log; --list shows them)")
-    lg.add_argument("-n", "--lines", type=int, default=200)
+    lg.add_argument("-n", "--lines", type=argtypes.positive_int, default=200,
+                    help="how many of the last lines (default 200, max 5000)")
     lg.add_argument("--list", action="store_true", help="list the Pi's logs")
     sh = sub.add_parser("shell", help="a root shell on the Pi (plugged in here, or PI over the network)")
     sh.add_argument("pi", nargs="?", help="over the network: a name, connect code or address")
@@ -245,19 +246,9 @@ def main(argv=None):
         a.control_port = port
         return update_command(a)
     if a.cmd == "logs":
-        if a.pi:
-            from .client.remote import open_remote
-            remote = open_remote(a.pi, a.at or [])
-
-            def call(op, args=None, port=None):
-                return remote.call("logs", dict(args or {}, action=op.split(".", 1)[1]))["result"]
-        else:
-            call = control.call
-        if a.list:
-            print("\n".join(call("logs.list", port=port)["files"]))
-        else:
-            print(call("logs.tail", {"file": a.file, "lines": a.lines}, port=port)["text"])
-        return
+        from .host.logs_cli import logs_command
+        a.control_port = port
+        return logs_command(a)
     if a.cmd == "debug":
         from .host.debug_cli import debug_command
         a.control_port = port

@@ -33,14 +33,17 @@ class LogsService(Service):
     def _remote(self, conn, req):
         if req.get("action") not in ("list", "tail"):
             return {"error": "logs: list or tail"}
-        return {"result": self.handle(req["action"], req)}
+        try:
+            return {"result": self.handle(req["action"], req)}
+        except ValueError as e:                 # the same words as over USB
+            return {"error": str(e)}
 
     def _path(self, name):
         if name.startswith("prev/") and name[5:] in FILES:
             return os.path.join(self.prev, name[5:])
         if name in FILES:
             return os.path.join(self.dir, name)
-        raise ValueError("no log called %r" % name)
+        raise ValueError("No log called %s (see: audiolink logs --list)" % name)
 
     def handle(self, op, args):
         if op == "list":
@@ -49,7 +52,8 @@ class LogsService(Service):
         if op == "tail":
             name = args.get("file") or FILES[0]
             path = self._path(name)
-            lines = max(1, min(MAX_LINES, int(args.get("lines") or 200)))
+            lines = args.get("lines")
+            lines = max(1, min(MAX_LINES, int(200 if lines is None else lines)))
             try:
                 with open(path, "rb") as f:
                     f.seek(0, os.SEEK_END)
@@ -57,6 +61,6 @@ class LogsService(Service):
                     f.seek(max(0, size - lines * 200))
                     text = f.read().decode("utf-8", "replace")
             except FileNotFoundError:
-                raise ValueError("%s isn't there (yet)" % name)
+                raise ValueError("The Pi has no %s (yet)" % name)
             return {"file": name, "text": "\n".join(text.splitlines()[-lines:])}
         return super().handle(op, args)
