@@ -1,7 +1,14 @@
 """Shared test helpers: a fake clock, and two link ends joined by an in-memory wire."""
 import random
 import time as _time
+import unittest
 from unittest import mock
+
+from audiolink import tls
+
+# For tests that connect to a Pi's endpoint (TLS 1.3 with an Ed25519 key): macOS's
+# /usr/bin/python3 (LibreSSL) can't, and audiolink says so to its users instead.
+needs_tls = unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
 
 
 class FakeClock:

@@ -13,7 +13,7 @@ from audiolink.services.access import (DEBUG, PAIRED, PUBLIC, DebugService, deci
 from audiolink.services.endpoint import Endpoint, key_message, proof_for
 from audiolink.services.identity import IdentityService
 
-from .helpers import FakeClock, patch_time
+from .helpers import FakeClock, needs_tls, patch_time
 
 NOW = 1000.0
 LIVE, EXPIRED = NOW + 60, NOW - 1
@@ -170,6 +170,7 @@ class Client(PiConn):
 
 
 
+@needs_tls
 class EndpointAccess(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

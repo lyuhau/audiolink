@@ -22,7 +22,7 @@ from audiolink.services.identity import IdentityService
 from audiolink.services.logs import LogsService
 from audiolink.services.update import UpdateService
 
-from .helpers import FakeClock, patch_time
+from .helpers import FakeClock, needs_tls, patch_time
 
 
 class FakeUpdate(UpdateService):
@@ -48,6 +48,7 @@ def pyz():
     return buf.getvalue()
 
 
+@needs_tls
 class Harness(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

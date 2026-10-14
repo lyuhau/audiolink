@@ -13,7 +13,7 @@ from audiolink.services.endpoint import Endpoint
 from audiolink.services.identity import IdentityService
 from audiolink.services.shell import NetworkShells, ShellServer, header
 
-from .helpers import wait
+from .helpers import needs_tls, wait
 
 
 def read_all(read, timeout=10):
@@ -95,6 +95,7 @@ class Client(PiConn):
 
 
 @unittest.skipIf(sys.platform == "win32", "no pty")
+@needs_tls
 class OverTheNetwork(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
