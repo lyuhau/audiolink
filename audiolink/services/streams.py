@@ -21,6 +21,11 @@ sleep) holds up only its own stream, and buffers stay bounded (the Pi has 512 MB
 DATA for a stream the receiver has already finished is credited and dropped.
 Relayed sockets use TCP keepalive, so a client that vanished without closing (a laptop
 lid shut mid-ssh) is dropped, and stops counting as connected (services/presence.py).
+
+The Pi's listeners don't take connections that arrive on its setup network (open
+Wi-Fi: anyone nearby) unless it was started with --expose-setup; whatever is behind
+them sees every connection come from the host itself (127.0.0.1), so its own address
+rules can't tell. Each listener carries PER_LISTENER connections at once.
 """
 import logging
 import queue
@@ -37,6 +42,7 @@ log = logging.getLogger("audiolink")
 WINDOW = 512 * 1024             # bytes in flight per stream (about the link's bandwidth x latency)
 CREDIT_EVERY = WINDOW // 4
 CREDIT = struct.Struct(">I")
+PER_LISTENER = 32               # connections at once through one listening port
 
 
 def tune(sock):
@@ -97,8 +103,9 @@ class Streams(Service):
     caps = ("streams", "expose", "stream_credit")
     msg_types = (T_OPEN, T_DATA, T_CLOSE, T_CREDIT)
 
-    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535"):
+    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", setup=False):
         self.role = role
+        self.setup = setup                              # pi: listeners take setup network connections
         self.expose = list(expose)                      # host: [(pi_port, (host, port))]
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
@@ -268,6 +275,10 @@ class Streams(Service):
         st.closed_rx = True
         self._maybe_finish(st)
 
+    @staticmethod
+    def _over(st):
+        return st.dead or (st.closed_tx and st.closed_rx)
+
     def _maybe_finish(self, st):
         if st.closed_tx and st.closed_rx:
             self._forget(st)
@@ -288,6 +299,20 @@ class Streams(Service):
                 return sid
 
     # ---- forward: accept local TCP connections and open streams on the peer
+    def _refuse(self, sock, mine):
+        """Why a listener turns this connection away, or None. mine: its streams."""
+        if self.role == "pi" and not self.setup:
+            from .setup_ap import AP_ADDR
+            try:
+                if sock.getsockname()[0] == AP_ADDR:
+                    return "it came over the setup network (--expose-setup lets it)"
+            except OSError:
+                return "gone"
+        mine[:] = [st for st in mine if not self._over(st)]
+        if len(mine) >= PER_LISTENER:
+            return "%d connections already" % len(mine)
+        return None
+
     def forward(self, lport, target, bind="0.0.0.0", exposed=False):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -298,6 +323,8 @@ class Streams(Service):
         log.info("%s %s:%d -> peer %s:%d", "exposing" if exposed else "forwarding", bind, lport, *target)
 
         def accept_loop():
+            mine = []                                       # this listener's streams
+            warned = set()
             while True:
                 try:
                     sock, addr = srv.accept()
@@ -310,6 +337,13 @@ class Streams(Service):
                 if not self.session.peer_alive:
                     sock.close()                            # nobody on the other end
                     continue
+                why = self._refuse(sock, mine)
+                if why:
+                    sock.close()
+                    if why not in warned:                   # once per listener and reason
+                        warned.add(why)
+                        log.warning("stream on :%d from %s refused: %s", lport, addr[0], why)
+                    continue
                 tune(sock)
                 with self.lock:
                     sid = self._new_sid()
@@ -317,7 +351,15 @@ class Streams(Service):
                     self.streams[sid] = st
                 log.info("stream %d: %s:%d -> peer %s:%d", sid, addr[0], addr[1], *target)
                 self.session.link.send(T_OPEN, sid, ("%s:%d" % target).encode())
-                threading.Thread(target=self._reader, args=(st,), daemon=True).start()
-                threading.Thread(target=self._writer, args=(st,), daemon=True).start()
+                try:
+                    threading.Thread(target=self._reader, args=(st,), daemon=True).start()
+                    threading.Thread(target=self._writer, args=(st,), daemon=True).start()
+                except RuntimeError as e:                   # out of threads: drop this one, keep listening
+                    log.warning("stream %d: %s", sid, e)
+                    self._forget(st)
+                    self._kill(st)
+                    self.session.link.send(T_CLOSE, sid)
+                    continue
+                mine.append(st)
 
         threading.Thread(target=accept_loop, daemon=True).start()

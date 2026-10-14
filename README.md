@@ -136,7 +136,10 @@ host keeps it, every other computer has to pair again.
 Caveats:
 - Anyone who can use the host computer can use its control port (127.0.0.1), so has
   root on the Pi.
-- The setup network is open Wi-Fi.
+- The setup network is open Wi-Fi. Exposed ports don't take connections from it (the
+  Pi's `--expose-setup` lets them).
+- An exposed port is open to anyone who can reach the Pi on its LAN, and the service
+  behind it sees every connection come from the host itself (127.0.0.1).
 - Any paired computer can issue pairing codes, so can let others in.
 - Without the Pi's code (`--key` or `none` from a computer that hasn't added it), the
   connection is encrypted but can't be checked: it stops someone listening, not
