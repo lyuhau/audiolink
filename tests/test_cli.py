@@ -48,7 +48,7 @@ class Codes(KeyringCase):
                              (pis.rename_command, {"name": bad, "new": "x", "on_pi": False}),
                              (find.find_command, {"pi": bad}), (find.connect_command, {"pi": bad, "port": 22})):
                 _, _, code = self.run_cmd(fn, **args)
-                self.assertEqual(code, keyring.NOT_A_CODE, (fn.__name__, bad))
+                self.assertTrue(code.endswith(keyring.NOT_A_CODE), (fn.__name__, bad, code))
 
     def test_unknown_code_isnt_a_pi_here(self):
         code = new_code()
@@ -145,6 +145,55 @@ class Lock(KeyringCase):
         with keyring.changing():
             keyring.upsert(new_code(), name="pi")                   # nests changing()
         self.assertEqual(len(keyring.load()), 1)
+
+
+class Reaching(KeyringCase):
+    def setUp(self):
+        super().setUp()
+        from audiolink.client import find
+        self.find = find
+        self.code = new_code()
+        keyring.upsert(self.code, name="kitchen")
+        keyring.update(keyring.pub_of(self.code), last_record={"ts": 1, "ssid": "HomeWifi", "lan": [], "ports": []})
+        for target, value in (("_cached", None), ("_try_connect", None)):
+            p = mock.patch.object(find, target, return_value=value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_offline_on_the_relay_skips_the_dht(self):
+        from audiolink.relay.wire import Refused
+        with mock.patch("audiolink.relay.client.connect", side_effect=Refused("offline")), \
+                mock.patch.object(self.find, "lookup") as lookup:
+            _, _, msg = self.run_cmd(self.find.connect_command, pi="kitchen", port=2222)
+        lookup.assert_not_called()
+        self.assertRegex(msg, r"^audiolink: kitchen is offline \(not on its relay; last record .* on HomeWifi\)$")
+
+    def test_port_not_offered(self):
+        from audiolink.relay.client import Denied
+        with mock.patch("audiolink.relay.client.connect", side_effect=Denied("port 2222 isn't open over the relay")):
+            _, _, msg = self.run_cmd(self.find.connect_command, pi="kitchen", port=2222)
+        self.assertEqual(msg, "audiolink: kitchen isn't offering port 2222 (on its host: audiolink host "
+                              "--expose 2222:22)")
+
+    def test_find(self):
+        rec = {"ts": 1, "ssid": "HomeWifi", "lan": [], "ports": [], "name": "kitchen"}
+        with mock.patch.object(self.find, "_relay_state", return_value="offline"), \
+                mock.patch.object(self.find, "lookup", return_value=(rec, 1.0)):
+            out, _, msg = self.run_cmd(self.find.find_command, pi="kitchen")
+        self.assertIn("kitchen: offline (not on its relay)", out)
+        self.assertIn("Ports: none", out)
+        with mock.patch.object(self.find, "_relay_state", return_value="offline"), \
+                mock.patch.object(self.find, "lookup", return_value=(None, 1.0)):
+            _, _, msg = self.run_cmd(self.find.find_command, pi="kitchen")
+        self.assertIn("ask its owner", msg)
+
+    def test_ssh_config(self):
+        out, err, _ = self.run_cmd(pis.ssh_config_command, user=None, port=2222)
+        self.assertIn("plugged into", out)
+        self.assertIn("offered no ports", err)
+        self.assertIn("--user", err)
+        self.assertEqual(pis._quote(r"C:\Program Files\audiolink.exe", windows=True),
+                         r'"C:\Program Files\audiolink.exe"')
 
 
 def wifi_args(**kw):

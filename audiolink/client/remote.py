@@ -136,9 +136,8 @@ def _over_relay(pub, secret):
     caller gets the other end of a socket pair."""
     from ..relay.client import Denied, connect
     from ..relay.wire import Refused, splice
-    from .find import _cached
     try:
-        tls = connect(pub, secret, PORT, (_cached(pub) or {}).get("relays", []))
+        tls = connect(pub, secret, PORT)
     except Denied as e:
         raise SystemExit(str(e))
     except Refused:

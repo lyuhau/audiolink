@@ -14,33 +14,32 @@ import getpass
 import os
 import shlex
 import socket
+import subprocess
 import sys
 import threading
 import time
 
 from ..names import NAME_RE
 from . import keyring
-from ..ui import Prompter, detail, done, step
+from ..ui import Prompter, ago, detail, done, step
+
+
+def _quote(arg, windows=None):
+    """One argument of a ProxyCommand: shell quoting, or Windows' (double quotes, backslashes
+    kept as they are; shlex would put C:\\... in single quotes, which Windows doesn't know)."""
+    if windows if windows is not None else sys.platform == "win32":
+        return subprocess.list2cmdline([arg])
+    return shlex.quote(arg)
 
 
 def _launcher():
     """How to run this same audiolink from an ssh ProxyCommand."""
     if getattr(sys, "frozen", False):
-        return shlex.quote(sys.executable)
+        return _quote(sys.executable)
     arg0 = os.path.abspath(sys.argv[0])
     if arg0.endswith(".pyz"):
-        return "%s %s" % (shlex.quote(sys.executable), shlex.quote(arg0))
-    return "%s -m audiolink" % shlex.quote(sys.executable)
-
-
-def _ago(ts):
-    if not ts:
-        return "never"
-    s = time.time() - ts
-    for unit, n in (("d", 86400), ("h", 3600), ("min", 60)):
-        if s >= n:
-            return "%d %s ago" % (s // n, unit)
-    return "just now"
+        return "%s %s" % (_quote(sys.executable), _quote(arg0))
+    return "%s -m audiolink" % _quote(sys.executable)
 
 
 def pis_command(a):
@@ -57,13 +56,13 @@ def pis_command(a):
         notes = ["calls itself %s" % own] if own and own != e["alias"] else []
         if own and (called[own] > 1 or (own != e["alias"] and own in aliases)):
             notes.append("tag %s" % pub[:4])      # names alone don't tell these apart
-        rows.append((e["alias"], _ago(e.get("last_seen")), rec.get("ssid") or "-",
+        rows.append((e["alias"], ago(e.get("last_seen")), rec.get("ssid") or "-",
                      "  (%s)" % ", ".join(notes) if notes else "", pub, e, rec))
     w0 = max(len("NAME"), max(len(r[0]) for r in rows))
     w1 = max(len("LAST SEEN"), max(len(r[1]) for r in rows))
     print("%-*s  %-*s  %s" % (w0, "NAME", w1, "LAST SEEN", "NETWORK"))
-    for alias, ago, where, notes, pub, e, rec in rows:
-        print("%-*s  %-*s  %s%s" % (w0, alias, w1, ago, where, notes))
+    for alias, when, where, notes, pub, e, rec in rows:
+        print("%-*s  %-*s  %s%s" % (w0, alias, w1, when, where, notes))
         detail("tag %s, addresses %s%s", pub[:4], ", ".join(rec.get("lan", [])) or "-",
                ", identity backup kept here" if e.get("custody") else "")
 
@@ -258,9 +257,16 @@ def ssh_config_command(a):
     if not pis:
         raise SystemExit("No Pis yet (add one: audiolink add)")
     user = a.user or getpass.getuser()
-    print("# audiolink: add to ~/.ssh/config, then: ssh NAME")
+    if not a.user:
+        sys.stderr.write("Logging in as %s, this computer's user (another: --user NAME)\n" % user)
+    print("# audiolink: add to ~/.ssh/config once (appending again adds duplicates; ssh uses the first),\n"
+          "# then: ssh NAME. Each entry logs in to the computer that Pi is plugged into, as %s." % user)
     for e in sorted(pis.values(), key=lambda e: e["alias"]):
-        ports = (e.get("last_record") or {}).get("ports") or [a.port]
-        port = a.port if a.port in ports or not e.get("last_record") else ports[0]
+        rec = e.get("last_record")
+        ports = (rec or {}).get("ports") or [a.port]
+        port = a.port if a.port in ports or not rec else ports[0]
+        if rec and not rec.get("ports"):
+            sys.stderr.write("%s offered no ports when last found (on its host: audiolink host --expose %d:22)\n"
+                             % (e["alias"], a.port))
         print("\nHost %s\n  HostName %s\n  Port %d\n  User %s\n  ProxyCommand %s connect %s %%p"
               % (e["alias"], e["alias"], port, user, _launcher(), e["alias"]))

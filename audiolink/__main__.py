@@ -20,7 +20,7 @@
   audiolink share|forget PI                  print a Pi's connect code / forget it
   audiolink rename PI NEW [--on-pi]          rename here (or on the Pi itself)
   audiolink ssh-config                       ~/.ssh/config entries: then just `ssh PI`
-  audiolink find PI                          (any machine) where is it? (DHT lookup)
+  audiolink find PI                          (any machine) is it online, and where? (relay, DHT)
   audiolink connect PI PORT                  (any machine) ssh ProxyCommand: find the Pi, connect
   audiolink discovery enable|disable|status  whether the plugged-in Pi publishes on the DHT
   audiolink update [PYZ] [--revert|--status] new code for the plugged-in Pi, over the link
@@ -80,6 +80,13 @@ def list_devices():
     print("\n* = Pi audio device")
 
 
+def port_number(text):
+    """argparse type: a TCP port."""
+    if not text.isdigit() or not 0 < int(text) < 65536:
+        raise argparse.ArgumentTypeError("not a port (1-65535): %s" % text)
+    return int(text)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="audiolink", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -108,7 +115,7 @@ def main(argv=None):
     add = sub.add_parser("add", help="add a Pi: the one plugged in here, or by connect code")
     add.add_argument("code", nargs="?", help="a connect code (al1-...) someone shared")
     add.add_argument("--name", help="what to call it on this machine")
-    add.add_argument("--no-lookup", action="store_true", help="don't look its name up on the DHT")
+    add.add_argument("--no-lookup", action="store_true", help="with a code: don't check it on the DHT")
     add.add_argument("--at", action="append", metavar="ADDRESS", help="try a Pi at this address")
     add.add_argument("--pairing-code", metavar="CODE", help="the 6-digit code (instead of being asked)")
     prg = sub.add_parser("pairing", help="pairing codes for adding a Pi on another machine")
@@ -124,13 +131,13 @@ def main(argv=None):
     ren.add_argument("new", help="the new name: lowercase letters, digits and dashes")
     ren.add_argument("--on-pi", action="store_true", help="rename the Pi itself (it must be plugged in here)")
     sshc = sub.add_parser("ssh-config", help="print ~/.ssh/config entries for known Pis")
-    sshc.add_argument("--user", help="login user on the host behind the Pi (default: you)")
-    sshc.add_argument("--port", type=int, default=2222, help="Pi port to use when unknown")
-    fnd = sub.add_parser("find", help="look a Pi up on the DHT")
-    fnd.add_argument("pi", help="name (see `audiolink pis`) or connect code")
+    sshc.add_argument("--user", help="login user on the computer the Pi is plugged into (default: yours here)")
+    sshc.add_argument("--port", type=port_number, default=2222, help="Pi port to use when unknown")
+    fnd = sub.add_parser("find", help="is a Pi online (its relay), and where (the DHT)")
+    fnd.add_argument("pi", help="name (see: audiolink pis) or connect code")
     con = sub.add_parser("connect", help="pipe stdin/stdout to a Pi port (ssh ProxyCommand)")
-    con.add_argument("pi", help="name (see `audiolink pis`) or connect code")
-    con.add_argument("port", type=int)
+    con.add_argument("pi", help="name (see: audiolink pis) or connect code")
+    con.add_argument("port", type=port_number, help="the Pi's port (one its host exposes, e.g. 2222)")
     aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)")
     aud.add_argument("action", nargs="?", default="status", choices=["status", "sweep", "set", "forget"],
                      help="sweep: measure every candidate format and keep the fastest")
