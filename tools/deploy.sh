@@ -2,7 +2,8 @@
 # Dev: install a built card (tools/build_card.sh) on a running dev Pi over USB
 # ethernet, then reboot it. Each file goes to the card as NAME.new, all are
 # checked against the build's manifest on the Pi, then renamed into place. The
-# card's audiolink/ (state) and logs/ are left alone.
+# card's audiolink/ (state), logs/ and settings.txt are left alone (unlike
+# --install, new settings aren't added to it).
 #   tools/deploy.sh [build/card-pi] [--release] [--no-reboot]
 # --release: write an image without SSH (after it, this script can't reach the Pi).
 # Works from the older image too (card at /boot).
@@ -43,7 +44,10 @@ if ! sed "s/\$/.new/" .deploy.manifest | sha256sum -c -s; then
     echo "the copy on the card is damaged; nothing changed" >&2
     exit 1
 fi
-sed "s/^[0-9a-f]*  //" .deploy.manifest | while read -r f; do mv "$f.new" "$f"; done
+sed "s/^[0-9a-f]*  //" .deploy.manifest | while read -r f; do
+    if [ "$f" = settings.txt ] && [ -f settings.txt ]; then rm -f settings.txt.new; continue; fi
+    mv "$f.new" "$f"
+done
 rm -f .deploy.manifest
 sync
 '
