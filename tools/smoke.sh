@@ -11,10 +11,11 @@ check() {   # check NAME COMMAND...: run it, show the outcome
     if out=$("$@" 2>&1); then echo "ok    $name"; else echo "FAIL  $name"; echo "$out" | sed 's/^/      /'; fails=$((fails+1)); fi
 }
 check "link up, Wi-Fi status"   $AL wifi status
+[ $fails = 0 ] || { echo "the link is down (is the host daemon running, the Pi plugged in?): stopping here"; exit 1; }
 check "audio format"            $AL audio
 check "setup network status"    $AL wifi ap
 check "streams over the link (proxy -> internet)" \
-      sh -c 'curl -s -m 20 -x http://127.0.0.1:47801 http://captive.apple.com/hotspot-detect.html | grep -q Success'
+      sh -c 'curl -sS -m 20 -x http://127.0.0.1:47801 http://captive.apple.com/hotspot-detect.html | grep -q Success'
 check "Pi daemon under its restart loop" \
       $SSH $PI 'ps | awk "\$4==\"python3\" && \$5 ~ /audiolink[.]pyz\$/ {d=1} /while :; do/ {l=1} END {exit !(d && l)}"'
 check "no tracebacks in the Pi log" \
