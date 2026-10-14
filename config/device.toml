@@ -28,6 +28,10 @@ host_addr = "02:a0:00:00:00:02"
 kind = "uac2"
 id = "audio"          # gadget.sh set audio ...; functions/uac2.audio
 function_name = "AudioPi"
+# macOS names the two sound devices after the streaming interfaces' alternate-setting
+# strings, "Playback Inactive" and "Capture Inactive". Stock f_uac2 hard-codes those
+# (only the platform's patched uac1 takes alt_names), so they stay; audiolink finds the
+# devices by them (wire/host_audio.py DEVICE_HINTS).
 
 [functions.host_to_device]   # the host plays: c_*
 channels = 2

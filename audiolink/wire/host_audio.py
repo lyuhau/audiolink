@@ -27,7 +27,7 @@ def find_devices(out_name=None, in_name=None):
             cands = [d for d in cands if any(h in d["name"].lower() for h in DEVICE_HINTS)]
         if not cands:
             raise LookupError("No %s audio device matching %r (see: audiolink list-devices)" % (kind, name)
-                              if name else "no AudioPi %s device found" % kind)
+                              if name else "no Pi %s audio device found" % kind)
         cands.sort(key=lambda d: d["hostapi_type"] != portaudio.paWASAPI)
         return cands[0]
 
@@ -39,7 +39,7 @@ def device_format(out_dev, in_dev):
     the same both ways, so the devices themselves say what the Pi is running."""
     fmt = AudioFormat(round(out_dev["rate"]), out_dev["outputs"])
     if (round(in_dev["rate"]), in_dev["inputs"]) != (fmt.rate, fmt.channels):
-        raise LookupError("AudioPi input (%d Hz x%d) and output (%r) disagree"
+        raise LookupError("The Pi's audio input (%d Hz x%d) and output (%r) disagree"
                           % (in_dev["rate"], in_dev["inputs"], fmt))
     return fmt
 
