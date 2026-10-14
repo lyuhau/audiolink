@@ -134,7 +134,8 @@ class Endpoint:
 
     def register(self, op, fn, level=PUBLIC):
         """fn(conn, req) returns a reply dict, or None if it replied itself; it raises
-        StopIteration to end the connection after replying, or Takeover to keep it."""
+        StopIteration to end the connection after replying, or Takeover to keep it.
+        level: the access level it needs, or a tuple of levels any one of which will do."""
         self.handlers[op] = (fn, level)
 
     def _proven(self, conn, op, req, need, switch):
@@ -156,18 +157,24 @@ class Endpoint:
         return proven
 
     def check(self, conn, op, req, need):
-        """None if the request may go ahead, else the refusal reply (logged)."""
-        if need == PUBLIC:
+        """None if the request may go ahead, else the refusal reply (logged). need: a
+        level, or a tuple of levels any one of which will do."""
+        levels = need if isinstance(need, tuple) else (need,)
+        if PUBLIC in levels:
             return None
         switch = self.debug.snapshot() if self.debug else {"mode": "off"}
-        why = decide(need, conn.route, self._proven(conn, op, req, need, switch), switch, time.monotonic())
-        if why:
-            log.warning("access: refused %s from %s (%s): %s", op, conn.addr[0], conn.route, why[0])
-            return {"error": why[1], "code": why[0]}
-        if need == DEBUG and op not in conn.logged:
-            conn.logged.add(op)
-            log.info("access: %s from %s (%s, debug %s)", op, conn.addr[0], conn.route, switch.get("mode"))
-        return None
+        refusals = []
+        for level in levels:
+            why = decide(level, conn.route, self._proven(conn, op, req, level, switch), switch, time.monotonic())
+            if not why:
+                if level == DEBUG and op not in conn.logged:
+                    conn.logged.add(op)
+                    log.info("access: %s from %s (%s, debug %s)", op, conn.addr[0], conn.route, switch.get("mode"))
+                return None
+            refusals.append(why)
+        why = refusals[-1] if req.get("key") else refusals[0]      # what the asker went by
+        log.warning("access: refused %s from %s (%s): %s", op, conn.addr[0], conn.route, why[0])
+        return {"error": why[1], "code": why[0]}
 
     def _accept(self, srv):
         while True:
@@ -282,7 +289,7 @@ class Endpoint:
                 if refused:
                     conn.send(refused)
                     continue
-                if level != PUBLIC:
+                if PUBLIC not in (level if isinstance(level, tuple) else (level,)):
                     conn.prove()
                 try:
                     reply = fn(conn, req)

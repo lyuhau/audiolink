@@ -100,7 +100,7 @@ What a request needs depends on what it does (level) and how it arrived (route):
 | Level | | USB (the host) | LAN | setup network | relay |
 |---|---|---|---|---|---|
 | public | find the Pi, pair | yes | yes | yes | yes |
-| paired | use and manage it, read its logs | yes | yes | yes | yes, but no Wi-Fi changes |
+| paired | use and manage it, read its logs (debug access can too) | yes | yes | yes | yes, but no Wi-Fi changes |
 | debug | `shell`, `update` (root) | yes | per the debug switch | per the debug switch | per the debug switch |
 
 A connection the Pi can't place counts as the relay. **Paired** means the machine

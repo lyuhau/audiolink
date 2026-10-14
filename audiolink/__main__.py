@@ -147,7 +147,7 @@ def main(argv=None):
         if p is not sh:
             p.add_argument("--pi", help="over the network: which Pi (name, connect code or address)")
         p.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
-    for p in (upd, sh):
+    for p in (upd, lg, sh):
         p.add_argument("--key", metavar="FILE", help="debug key (OpenSSH ed25519 private key, or .pub with ssh-agent)")
     dbg = sub.add_parser("debug", help="the plugged-in Pi's debug switch: root access over the network")
     dbg.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
@@ -241,7 +241,7 @@ def main(argv=None):
     if a.cmd == "logs":
         if a.pi:
             from .client.remote import open_remote
-            remote = open_remote(a.pi, a.at or [])
+            remote = open_remote(a.pi, a.at or [], a.key)
 
             def call(op, args=None, port=None):
                 return remote.call("logs", dict(args or {}, action=op.split(".", 1)[1]))["result"]
