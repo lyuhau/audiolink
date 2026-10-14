@@ -100,7 +100,7 @@ What a request needs depends on what it does (level) and how it arrived (route):
 | Level | | USB (the host) | LAN | setup network | relay |
 |---|---|---|---|---|---|
 | public | find the Pi, pair | yes | yes | yes | yes |
-| paired | use and manage it, read its logs | yes | yes | yes | yes, but no Wi-Fi changes |
+| paired | use and manage it, read its logs (debug access can too) | yes | yes | yes | yes, but no Wi-Fi changes |
 | debug | `shell`, `update` (root) | yes | per the debug switch | per the debug switch | per the debug switch |
 
 A connection the Pi can't place counts as the relay. **Paired** means the machine
@@ -117,10 +117,10 @@ on its setup network, or pair with a 6-digit code from a computer that has it
 | `none` | anyone | LAN; setup network only with `--setup`; never the relay | 1 h |
 
 \* The relay only carries computers that have the Pi's code. `--for 30m|2h|1d` sets
-the time, `--persist` keeps the switch across the Pi's restarts (otherwise it's in
-RAM). Turning it off, the time running out and holding the reset pins for 5 s end it
-and close open network shells (a new code closes them too). Over USB, `audiolink shell` always
-works. The Pi logs every debug request and every refusal.
+the time, `--persist` keeps the switch across the Pi's restarts (otherwise it lasts
+until the Pi restarts; audiolink restarting, as after a network update, keeps it). Turning it off, the time running out and holding the reset pins for 5 s end it
+and close open network shells; so do a new code and narrowing the switch (another mode,
+a key taken off, no more `--setup`). Over USB, `audiolink shell` always works. The Pi logs every debug request and every refusal.
 
 **Encryption:** every network connection to the Pi (LAN, setup network, relay) is
 TLS 1.3 end to end; the relay only passes it on. The Pi's certificate is for its own
@@ -136,7 +136,10 @@ host keeps it, every other computer has to pair again.
 Caveats:
 - Anyone who can use the host computer can use its control port (127.0.0.1), so has
   root on the Pi.
-- The setup network is open Wi-Fi.
+- The setup network is open Wi-Fi. Exposed ports don't take connections from it (the
+  Pi's `--expose-setup` lets them).
+- An exposed port is open to anyone who can reach the Pi on its LAN, and the service
+  behind it sees every connection come from the host itself (127.0.0.1).
 - Any paired computer can issue pairing codes, so can let others in.
 - Without the Pi's code (`--key` or `none` from a computer that hasn't added it), the
   connection is encrypted but can't be checked: it stops someone listening, not

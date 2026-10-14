@@ -49,9 +49,9 @@ class UpdateService(Service):
         self.expect = None                          # (size, sha256) of the upload under way
         if endpoint:
             endpoint.register("update", self._remote, DEBUG)
-            # read-only, and it must outlive the restart an update causes (which turns
-            # the in-RAM debug switch off): paired is enough
-            endpoint.register("update_status", lambda conn, req: {"result": self.status()}, PAIRED)
+            # read-only, and it must outlive the restart an update causes: paired is
+            # enough, and so is what the update itself took (a debug key, or none)
+            endpoint.register("update_status", lambda conn, req: {"result": self.status()}, (PAIRED, DEBUG))
 
     def _remote(self, conn, req):
         if req.get("action") not in ("begin", "chunk", "finish", "status", "revert"):

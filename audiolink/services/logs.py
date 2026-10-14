@@ -7,7 +7,7 @@ import os
 
 from ..paths import platform_env
 from . import Service
-from .access import PAIRED
+from .access import DEBUG, PAIRED
 
 LOG_DIR = "/var/log"
 LEGACY_PREV_DIR = "/boot/logs/prev"     # the older image's
@@ -28,7 +28,7 @@ class LogsService(Service):
     def __init__(self, log_dir=LOG_DIR, prev=None, endpoint=None):
         self.dir, self.prev = log_dir, prev or prev_dir()
         if endpoint:
-            endpoint.register("logs", self._remote, PAIRED)
+            endpoint.register("logs", self._remote, (PAIRED, DEBUG))
 
     def _remote(self, conn, req):
         if req.get("action") not in ("list", "tail"):

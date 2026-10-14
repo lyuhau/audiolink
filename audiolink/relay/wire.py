@@ -18,6 +18,8 @@ import socket
 import ssl
 import time
 
+from ..tls import half_close
+
 VERSION = 1
 MIN_VERSION = 1
 LINE_MAX = 4096
@@ -47,6 +49,7 @@ def server_context(cert, key):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(cert, key)
+    half_close(ctx)
     if hasattr(ctx, "num_tickets"):
         ctx.num_tickets = 0         # no resumption, and nothing unasked-for to read
     return ctx
@@ -62,6 +65,7 @@ def dial(addr, pin, timeout=10):
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE         # the pin below is the check
+    half_close(ctx)
     raw = socket.create_connection(addr, timeout=timeout)
     try:
         tune(raw)
@@ -135,7 +139,10 @@ def _pending(sock):
 
 def splice(a, b, idle=None):
     """Join two sockets until both directions end (or idle s pass with nothing moving).
-    A direction that ends is passed on as a half-close. Closes both.
+    A direction that ends is passed on as a half-close: a bare TCP FIN even on TLS, since
+    SSLSocket.shutdown() drops the TLS state and what arrives afterwards would be read
+    as raw records (the far side takes the FIN as the end of reading: tls.half_close).
+    Closes both.
     -> (bytes a->b, bytes b->a)."""
     peer = {a: b, b: a}
     reading = {a: True, b: True}
@@ -158,7 +165,7 @@ def splice(a, b, idle=None):
                 if not data:
                     reading[s] = False
                     try:
-                        peer[s].shutdown(socket.SHUT_WR)
+                        socket.socket.shutdown(peer[s], socket.SHUT_WR)
                     except OSError:
                         pass
                     continue

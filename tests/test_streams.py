@@ -7,6 +7,9 @@ import threading
 import time
 import unittest
 
+from unittest import mock
+
+from audiolink.services import setup_ap, streams
 from audiolink.services.streams import WINDOW, Streams
 from audiolink.session import Session
 
@@ -115,6 +118,53 @@ class FarEndClosesEarly(Through, unittest.TestCase):
             except OSError:
                 pass                                    # the Pi may hang up on us first
         self.assertTrue(wait(lambda: not self.pi_streams.streams, timeout=10))
+
+
+
+class Listening(Through, unittest.TestCase):
+    def echoes(self):
+        with socket.create_connection(("127.0.0.1", self.port)) as c:
+            c.settimeout(5)
+            c.sendall(b"ping")
+            return c.recv(10) == b"ping"
+
+    def refused(self):
+        with socket.create_connection(("127.0.0.1", self.port)) as c:
+            c.settimeout(5)
+            try:
+                return c.recv(10) == b""
+            except ConnectionResetError:
+                return True
+
+    def test_not_from_the_setup_network_unless_asked(self):
+        with mock.patch.object(setup_ap, "AP_ADDR", "127.0.0.1"):   # loopback stands in for it
+            self.assertTrue(self.refused())
+            self.pi_streams.setup = True
+            self.assertTrue(self.echoes())
+
+    def test_connections_per_listener_are_capped(self):
+        with mock.patch.object(streams, "PER_LISTENER", 1):
+            c = socket.create_connection(("127.0.0.1", self.port))
+            self.addCleanup(c.close)
+            c.settimeout(5)
+            c.sendall(b"one")
+            self.assertEqual(c.recv(10), b"one")
+            self.assertTrue(self.refused())
+
+    def test_out_of_threads_keeps_listening(self):
+        real, fails, reader = threading.Thread, [1], self.pi_streams._reader
+
+        class Thread(real):
+            def start(self):
+                if fails and self._target == reader:
+                    fails.pop()
+                    raise RuntimeError("can't start new thread")
+                super().start()
+        with mock.patch.object(streams.threading, "Thread", Thread):
+            self.assertTrue(self.refused())
+            c = socket.create_connection(("127.0.0.1", self.port))
+            self.addCleanup(c.close)
+            self.assertTrue(wait(lambda: self.pi_streams.streams))     # still listening
 
 
 if __name__ == "__main__":

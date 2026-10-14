@@ -115,6 +115,15 @@ def cert_public(der):
 
 
 # ---------------------------------------------------------------- contexts
+def half_close(ctx):
+    """Let a peer's end of sending (a bare TCP FIN: relay.wire.splice's half-close) end
+    reading only, like a close_notify, so this side can still send. Without it OpenSSL 3
+    treats it as a fatal error and the next send fails."""
+    ctx.options |= getattr(ssl, "OP_IGNORE_UNEXPECTED_EOF",
+                           0x80 if ssl.OPENSSL_VERSION_INFO >= (3,) else 0)
+    return ctx
+
+
 _server = {}                                     # seed -> SSLContext (the cert is signed once)
 
 
@@ -124,6 +133,7 @@ def server_context(seed):
     if ctx is None:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        half_close(ctx)
         if hasattr(ctx, "num_tickets"):
             ctx.num_tickets = 0
         fd, path = tempfile.mkstemp(prefix="audiolink-tls-")
@@ -143,7 +153,7 @@ def client_context():
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE              # the pin is the check (client_wrap)
-    return ctx
+    return half_close(ctx)
 
 
 class Mismatch(ssl.SSLError):

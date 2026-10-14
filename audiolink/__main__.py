@@ -174,7 +174,7 @@ def main(argv=None):
         if p is not sh:
             p.add_argument("--pi", help="over the network: which Pi (name, connect code or address)")
         p.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
-    for p in (upd, sh):
+    for p in (upd, lg, sh):
         p.add_argument("--key", metavar="FILE", help="debug key (OpenSSH ed25519 private key, or .pub with ssh-agent)")
     dbg = sub.add_parser("debug", help="the plugged-in Pi's debug switch: root access over the network")
     dbg.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
@@ -241,6 +241,8 @@ def main(argv=None):
                              help="relay to stay reachable through from anywhere (off: none)")
     roles["pi"].add_argument("--expose-ports", default="1024-65535", metavar="LO-HI",
                              help="ports the host may ask the Pi to expose")
+    roles["pi"].add_argument("--expose-setup", action="store_true",
+                             help="exposed and forwarded ports take connections from the setup network too")
     for p in sub.choices.values():       # every command: -v shows the technical details
         if not any("--verbose" in act.option_strings for act in p._actions):
             p.add_argument("-v", "--verbose", action="store_true", help="show technical details too")
@@ -347,10 +349,10 @@ def run_pi(a, allow, port, gate):
     presence = Presence(wifi.ip)
     from .services.shell import PORT as SHELL_PORT, NetworkShells, ShellServer
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target, "127.0.0.1:%d" % SHELL_PORT],
-                      expose_ports=a.expose_ports)
+                      expose_ports=a.expose_ports, setup=a.expose_setup)
     identity = IdentityService(a.state_dir)
-    from .services.access import DebugService
-    debug = DebugService(a.state_dir)
+    from .services.access import RUN_DIR, DebugService
+    debug = DebugService(a.state_dir, run_dir=RUN_DIR)
     endpoint = Endpoint(identity, presence=presence, debug=debug)
     setup_ap = SetupApService(wifi, identity, presence, radio)
     discovery = DiscoveryService(identity, wifi, streams)

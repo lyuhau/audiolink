@@ -68,7 +68,12 @@ class NetCaller:
                 if self.remote.conn is None:
                     self.remote.open(quiet=True)
                 if action == "status":              # allowed with debug off (after a restart)
-                    return self.remote.call("update_status", {})["result"]
+                    r = self.remote.ask("update_status")
+                    if r.get("code") == "not_paired" and self.remote.key:   # a Pi before keys could
+                        r = self.remote.ask("update", action="status")
+                    if "error" in r:
+                        raise SystemExit(self.remote.refusal(r))
+                    return r["result"]
                 return self.remote.call("update", dict(args or {}, action=action))["result"]
             except (OSError, ValueError, ConnectionError):
                 self.remote.close()

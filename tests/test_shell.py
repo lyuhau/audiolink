@@ -8,8 +8,9 @@ import time
 import unittest
 
 from audiolink.client.pairing import PiConn
+from audiolink.crypto import ed25519_public, ed25519_sign
 from audiolink.services.access import PAIRED, DebugService
-from audiolink.services.endpoint import Endpoint
+from audiolink.services.endpoint import Endpoint, key_message
 from audiolink.services.identity import IdentityService
 from audiolink.services.shell import NetworkShells, ShellServer, header
 
@@ -91,6 +92,7 @@ class Client(PiConn):
     def __init__(self, port):
         super().__init__("127.0.0.1", port=port)
         self.hello = super().hello()
+        self.nonce = bytes.fromhex(self.hello["nonce"])
 
 
 
@@ -140,11 +142,7 @@ class OverTheNetwork(unittest.TestCase):
         busy, r = self.shell()
         self.assertEqual(r["code"], "busy")
         busy.close()
-        self.assertTrue(wait(lambda: self.ep.slots._value == 4))
-        others = [self.client() for _ in range(4)]           # the endpoint's 4 slots are all free
-        self.assertTrue(all(o.hello.get("nonce") for o in others))
-        for o in others:
-            o.close()
+        self.assertTrue(wait(lambda: self.ep.active == 0))     # the shells hold no request slots
         for c, _ in open_:
             c.sock.sendall(b"exit\n")
         self.assertTrue(wait(lambda: self.shells.count() == 0))
@@ -159,6 +157,27 @@ class OverTheNetwork(unittest.TestCase):
         read_all(lambda: c.f.read1(4096), timeout=5)       # ends: EOF
         self.assertTrue(wait(lambda: self.shells.count() == 0))
         self.assertTrue(wait(lambda: self.server.slots._value == 6, 5))
+
+    def test_narrowing_debug_closes_them(self):
+        seed = os.urandom(32)
+        k1, k2 = ed25519_public(seed).hex(), ed25519_public(os.urandom(32)).hex()
+        for before, after, closes in (
+                ({"mode": "none"}, {"mode": "none", "for": 7200}, False),           # longer: stays
+                ({"mode": "key", "keys": [k1]}, {"mode": "key", "keys": [k1, k2]}, False),
+                ({"mode": "none"}, {"mode": "paired"}, True),
+                ({"mode": "none", "setup": True}, {"mode": "none"}, True),
+                ({"mode": "key", "keys": [k1, k2]}, {"mode": "key", "keys": [k1]}, True)):
+            self.debug.set(before)
+            c = self.client()
+            req = {"op": "shell"}
+            if before["mode"] == "key":
+                req.update(key=k1, sig=ed25519_sign(seed, key_message("shell", c.nonce, c.pub)).hex())
+            self.assertTrue(c.ask(req)["ok"], before)
+            self.assertTrue(wait(lambda: self.shells.count() == 1))
+            self.debug.set(after)
+            self.assertEqual(wait(lambda: self.shells.count() == 0, 0.5), closes, (before, after))
+            self.shells.close_all("next")
+            self.assertTrue(wait(lambda: self.server.slots._value == 6, 5))
 
     def test_a_new_read_secret_closes_them(self):
         self.debug.set({"mode": "none"})

@@ -17,7 +17,7 @@ from ..discovery.record import parse_code
 from ..services.endpoint import PORT, key_message, proof_for
 from ..ui import detail, done, step
 from . import keyring
-from .pairing import OldPi, PiConn, impostor, reach, too_old
+from .pairing import Busy, OldPi, PiConn, busy, impostor, reach, too_old
 
 
 # ---------------------------------------------------------------- debug keys
@@ -168,14 +168,18 @@ def _through_relay(sock, pub, name):
     return conn, hello, "through the relay"
 
 
-def _find(entry, at):
-    """(PiConn, hello, how) or (None, None, None)."""
+def _find(entry, at, turned_away):
+    """(PiConn, hello, how) or (None, None, None). Addresses that turned this machine
+    away (the Pi is busy) go in turned_away."""
     if not entry.get("code"):
         for ip in list(at) + [entry["addr"]]:
             try:
                 conn = PiConn(ip, timeout=3)
             except OldPi as e:
                 raise too_old(e.hello.get("name") or ip)
+            except Busy:
+                turned_away.append(ip)
+                continue
             except (OSError, ValueError):
                 continue
             try:
@@ -186,7 +190,7 @@ def _find(entry, at):
             except (OSError, ValueError):
                 conn.close()
         return None, None, None
-    conn, hello = reach(entry, at)
+    conn, hello = reach(entry, at, busy=turned_away)
     if conn:
         return conn, hello, "at %s" % conn.ip
     pub, secret = parse_code(entry["code"])
@@ -195,7 +199,7 @@ def _find(entry, at):
         found = _through_relay(sock, pub, entry.get("alias") or "the Pi")
         if found:
             return found
-    conn, hello = reach(entry, at, with_dht=True)
+    conn, hello = reach(entry, at, with_dht=True, busy=turned_away)
     return (conn, hello, "at %s" % conn.ip) if conn else (None, None, None)
 
 
@@ -209,10 +213,13 @@ class Remote:
     def open(self, quiet=False):
         if not quiet:
             step("Finding %s" % self.name)
-        self.conn, self.hello, how = _find(self.entry, self.at)
+        turned_away = []
+        self.conn, self.hello, how = _find(self.entry, self.at, turned_away)
         if not self.conn:
             if not quiet:
                 done("not found")
+            if turned_away:
+                raise busy(self.name)
             raise SystemExit("%s isn't reachable from here (not on this network, its setup network or its relay)"
                              % self.name)
         if self.entry.get("code"):

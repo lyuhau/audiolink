@@ -7,7 +7,9 @@ from RELAY_SOURCE, see services/relay.py), from /proc/net/tcp. Whatever the
 connection is for (a forwarded port, the network endpoint, ssh), and however it ended
 (closed, reset, timed out by keepalive), the kernel's view is the truth; bookkeeping
 in the code that serves connections could miss a close. Short requests that come and
-go between two looks (the endpoint's) are reported with touch().
+go between two looks (the endpoint's) are reported with touch(), and the endpoint's
+connections that haven't proven anything yet are left out (hold()): a stranger holding
+connections open mustn't keep the setup network shut.
 
 The USB host doesn't count (it can manage the Pi, but says nothing about whether
 anyone else can reach it), nor does the Pi itself (loopback). The Pi can't know what
@@ -54,6 +56,7 @@ class Presence:
         self.wifi_ip = wifi_ip                  # () -> the Pi's Wi-Fi address, or None
         self.table = table
         self.last = time.monotonic()            # last time anyone was seen (start: nobody)
+        self.held = set()                       # ((local ip, port), (remote ip, port)) left out
 
     def counts(self):
         """{"wifi": n, "setup": n, "relay": n}: clients connected right now."""
@@ -64,7 +67,12 @@ class Presence:
             conns = []
         ip = self.wifi_ip()
         n = {"wifi": 0, "setup": 0, "relay": 0}
-        for (lip, _), (rip, _) in conns:
+        with self.lock:
+            held = set(self.held)
+        for ends in conns:
+            if ends in held:
+                continue
+            (lip, _), (rip, _) = ends
             if lip == AP_ADDR:
                 n["setup"] += 1
             elif ip and lip == ip:
@@ -87,6 +95,15 @@ class Presence:
         if local == AP_ADDR or local == self.wifi_ip() or remote == RELAY_SOURCE:
             with self.lock:
                 self.last = time.monotonic()
+
+    def hold(self, ends):
+        """Leave this connection ((local ip, port), (remote ip, port)) out of the counts."""
+        with self.lock:
+            self.held.add((tuple(ends[0][:2]), tuple(ends[1][:2])))
+
+    def release(self, ends):
+        with self.lock:
+            self.held.discard((tuple(ends[0][:2]), tuple(ends[1][:2])))
 
     def connected(self):
         return any(self.counts().values())

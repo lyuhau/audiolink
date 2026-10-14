@@ -132,6 +132,32 @@ class Keys(Harness):
             self.remote(key=self.key()).call("update", {"action": "status"})
 
 
+class WithoutTheCode(Harness):
+    """Debug access without the Pi's code (--auth key or none) reaches what it needs:
+    the update's status (also after the restart) and the logs."""
+    key = Keys.key
+
+    def status(self, remote):
+        return update_cli.NetCaller(remote)("update.status")
+
+    def test_key(self):
+        k = self.key()
+        self.debug.set({"mode": "key", "keys": [k.pub.hex()]})
+        self.assertIn("running_hash", self.status(self.remote(code="", key=k)))
+        r = self.remote(code="", key=k)
+        self.assertEqual(r.call("logs", {"action": "tail", "lines": 1})["result"]["text"], "line 9")
+        with self.assertRaisesRegex(SystemExit, "debug key"):
+            self.remote(code="", key=self.key()).call("logs", {"action": "list"})
+
+    def test_none(self):
+        self.debug.set({"mode": "none"})
+        self.assertIn("running_hash", self.status(self.remote(code="")))
+        self.remote(code="").call("logs", {"action": "list"})
+        self.debug.off("test")
+        with self.assertRaisesRegex(SystemExit, "Not added"):     # nothing to go by: the paired refusal
+            self.status(self.remote(code=""))
+
+
 class Rotate(Harness):
     def test_rotate_secret(self):
         old = self.identity.code()

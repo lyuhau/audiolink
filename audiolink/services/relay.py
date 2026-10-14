@@ -12,6 +12,11 @@ shows which ones came through the relay: presence counts them as clients, and th
 endpoint treats them like Wi-Fi clients (they can use the Pi but not move it to
 another network).
 
+Opens cost the Pi a connection and a TLS handshake before it knows who's asking, so
+they're limited: per client address (the relay names it), and those from addresses
+that haven't proven themselves lately share OPENS_PER_MIN, so a stranger who knows
+the Pi's public key can't use up what its owners need.
+
 Relay state is its own fact ("relay": up/down), never the Pi's internet state: a
 relay outage mustn't look like the Pi going offline.
 """
@@ -36,7 +41,10 @@ IDLE = 75                   # s without a pong before it counts as dead
 BACKOFF = (5, 300)          # s, first and longest wait between tries (randomised)
 STEADY = 60                 # s up before the wait resets
 SESSIONS = 8                # relayed connections at once
-OPENS_PER_MIN = 20          # opens answered per minute (proven or not)
+OPENS_PER_MIN = 20          # opens answered per minute from addresses not known to be paired
+PER_CLIENT_PER_MIN = 30     # opens answered per minute from one address
+KNOWN_FOR = 24 * 3600       # s an address that proved itself is known
+MAX_TRACKED = 1000          # addresses remembered at most
 ENDPOINT_PORT, SSH_PORT, PROXY_PORT, SHELL_PORT = 47900, 22, 3128, 47901
 
 
@@ -50,7 +58,9 @@ class RelayAgent(Service):
         self.state = {"relay": "off" if not self.relays else "connecting", "since": time.time()}
         self.sessions = threading.BoundedSemaphore(SESSIONS)
         self.active = 0
-        self.opens = []                 # times of recent opens
+        self.opens = []                 # times of recent opens from unknown addresses
+        self.by_client = {}             # address -> times of its recent opens
+        self.known = {}                 # address -> when it last proved itself
         self.ctl = None
 
     def handle(self, op, args):
@@ -123,7 +133,8 @@ class RelayAgent(Service):
 
         def on_line(msg):
             if msg.get("op") == "open":
-                threading.Thread(target=self._open, args=(addr, pin, str(msg.get("id"))),
+                client = msg.get("from") if isinstance(msg.get("from"), str) else None
+                threading.Thread(target=self._open, args=(addr, pin, str(msg.get("id")), client),
                                  daemon=True).start()
 
         def tick():
@@ -144,17 +155,37 @@ class RelayAgent(Service):
             return False
         return port in (ENDPOINT_PORT, SSH_PORT) or port in self.streams.ports()
 
-    def _rate_ok(self):
+    def _rate_ok(self, client):
+        """May an open from this client address (None: the relay didn't say) go ahead?"""
         now = time.monotonic()
         with self.lock:
+            if client:
+                self.by_client = {k: v for k, v in self.by_client.items() if now - v[-1] < 60}
+                times = [t for t in self.by_client.get(client, []) if now - t < 60]
+                if len(times) >= PER_CLIENT_PER_MIN or (not times and len(self.by_client) >= MAX_TRACKED):
+                    return False
+                self.by_client[client] = times + [now]
+                if now - self.known.get(client, now - KNOWN_FOR) < KNOWN_FOR:
+                    return True
             self.opens = [t for t in self.opens if now - t < 60]
             if len(self.opens) >= OPENS_PER_MIN:
                 return False
             self.opens.append(now)
             return True
 
-    def _open(self, addr, pin, wid):
-        if not self._rate_ok() or not self.sessions.acquire(blocking=False):
+    def _proved(self, client):
+        if not client:
+            return
+        now = time.monotonic()
+        with self.lock:
+            if client not in self.known and len(self.known) >= MAX_TRACKED:
+                self.known = {k: t for k, t in self.known.items() if now - t < KNOWN_FOR}
+                if len(self.known) >= MAX_TRACKED:
+                    del self.known[min(self.known, key=self.known.get)]
+            self.known[client] = now
+
+    def _open(self, addr, pin, wid, client=None):
+        if not self._rate_ok(client) or not self.sessions.acquire(blocking=False):
             return                      # the client hears "no answer" from the relay
         try:
             data = dial(addr, pin)
@@ -169,6 +200,7 @@ class RelayAgent(Service):
             if not got:
                 close(data)
                 return
+            self._proved(client)
             port, target = got
             data.settimeout(None)
             with self.lock:

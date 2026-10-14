@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 
+from audiolink import tls
 from audiolink.crypto import ed25519_public, ed25519_sign
 from audiolink.relay import wire
 from audiolink.relay.server import Relay, ask_status
@@ -219,6 +220,72 @@ class SpliceTest(unittest.TestCase):
         t.join(5)
         self.assertFalse(t.is_alive())
 
+    def tls_pair(self):
+        """(TLS client end, TLS server end) over a socket pair, as the endpoint makes them."""
+        c, s = socket.socketpair()
+        server = {}
+
+        def accept():
+            server["sock"] = tls.server_context(os.urandom(32)).wrap_socket(s, server_side=True)
+        t = threading.Thread(target=accept, daemon=True)
+        t.start()
+        client = tls.client_context().wrap_socket(c)
+        t.join(5)
+        for sock in (client, server["sock"]):
+            sock.settimeout(5)
+            self.addCleanup(sock.close)
+        return client, server["sock"]
+
+    @staticmethod
+    def read_all(sock):
+        got = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return got
+            got += chunk
+
+    @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
+    def test_half_close_onto_tls_keeps_it_readable(self):
+        # The plain side ends: splice half-closes the TLS side, whose reply must still
+        # arrive as plaintext (SSLSocket.shutdown would have dropped TLS: raw records).
+        a1, a2 = socket.socketpair()
+        self.addCleanup(a1.close)
+        client, server = self.tls_pair()
+        t = threading.Thread(target=wire.splice, args=(a2, client), daemon=True)
+        t.start()
+        a1.sendall(b"request")
+        a1.shutdown(socket.SHUT_WR)
+        self.assertEqual(self.read_all(server), b"request")
+        reply = os.urandom(200000)
+
+        def answer():
+            server.sendall(reply)
+            socket.socket.shutdown(server, socket.SHUT_WR)
+        threading.Thread(target=answer, daemon=True).start()
+        a1.settimeout(5)
+        self.assertEqual(self.read_all(a1), reply)
+        t.join(5)
+        self.assertFalse(t.is_alive())
+
+    @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
+    def test_tls_half_close_keeps_it_writable(self):
+        # The TLS side ends first: splice can still send it what the plain side says.
+        a1, a2 = socket.socketpair()
+        self.addCleanup(a1.close)
+        client, server = self.tls_pair()
+        t = threading.Thread(target=wire.splice, args=(a2, client), daemon=True)
+        t.start()
+        server.sendall(b"banner")
+        socket.socket.shutdown(server, socket.SHUT_WR)
+        a1.settimeout(5)
+        self.assertEqual(self.read_all(a1), b"banner")
+        a1.sendall(b"after")
+        a1.shutdown(socket.SHUT_WR)
+        self.assertEqual(self.read_all(server), b"after")
+        t.join(5)
+        self.assertFalse(t.is_alive())
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -349,6 +416,36 @@ class ThroughTheRelay(unittest.TestCase):
     def test_offline_pi(self):
         with self.assertRaisesRegex(Refused, "offline"):
             self.connect(self.echo.port)
+
+    def test_strangers_dont_use_up_the_opens_of_known_clients(self):
+        from audiolink.services import relay as agent_relay
+        from tests.helpers import FakeClock, patch_time
+        clock = FakeClock()
+        with patch_time(agent_relay, clock):
+            self.agent._proved("203.0.113.5")                       # proved itself earlier
+            for _ in range(agent_relay.OPENS_PER_MIN):
+                self.assertTrue(self.agent._rate_ok("198.51.100.%d" % _))
+            self.assertFalse(self.agent._rate_ok("198.51.100.200"))   # strangers share a budget
+            self.assertFalse(self.agent._rate_ok(None))               # an older relay: the same
+            self.assertTrue(self.agent._rate_ok("203.0.113.5"))       # ...that a known client isn't in
+            for _ in range(agent_relay.PER_CLIENT_PER_MIN - 1):
+                self.assertTrue(self.agent._rate_ok("203.0.113.5"))
+            self.assertFalse(self.agent._rate_ok("203.0.113.5"))      # but each has its own limit
+            clock.advance(61)
+            self.assertTrue(self.agent._rate_ok("198.51.100.200"))
+            clock.advance(agent_relay.KNOWN_FOR)
+            self.agent.opens = [clock.monotonic()] * agent_relay.OPENS_PER_MIN
+            self.assertFalse(self.agent._rate_ok("203.0.113.5"))      # known only for a while
+
+    def test_the_relay_names_the_client_and_a_proof_makes_it_known(self):
+        opened = []
+        real = self.agent._open
+        self.agent._open = lambda addr, pin, wid, client=None: (opened.append(client), real(addr, pin, wid, client))
+        self.agent.run()
+        wait(lambda: self.agent.status()["relay"] == "up")
+        self.connect(self.echo.port)
+        self.assertEqual(opened, ["127.0.0.1"])
+        self.assertTrue(wait(lambda: "127.0.0.1" in self.agent.known))
 
 
 class Addresses(unittest.TestCase):
