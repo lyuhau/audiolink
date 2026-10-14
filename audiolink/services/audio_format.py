@@ -2,7 +2,9 @@
 
 Every link starts in the BASELINE format. Over the link that's up, the host asks:
   audio.switch {format, confirm_within}  reply first, then re-present the USB gadget
-                                         in that format; unless confirmed in time,
+                                         in that format (only the known ones: wire/fmt.py
+                                         SUPPORTED; anything else is refused before
+                                         the gadget is touched); unless confirmed in time,
                                          go back to the baseline by ourselves (early,
                                          if nothing arrives from the host meanwhile)
   audio.confirm                          keep the current format
@@ -30,7 +32,7 @@ import threading
 import time
 
 from . import Service
-from ..wire.fmt import BASELINE, CANDIDATES, AudioFormat
+from ..wire.fmt import BASELINE, CANDIDATES, SUPPORTED, AudioFormat
 
 log = logging.getLogger("audiolink")
 
@@ -120,7 +122,13 @@ class AudioFormatService(Service):
         if op == "switch":
             if not self.gadget.available():
                 raise ValueError("this Pi can't change its audio format (no gadget configfs)")
-            fmt = AudioFormat.from_json(args["format"])
+            try:
+                fmt = AudioFormat.from_json(args["format"])
+            except (KeyError, TypeError, ValueError):
+                fmt = None
+            if fmt not in SUPPORTED:        # the gadget may take it and then fail to come back
+                raise ValueError("the Pi doesn't run audio format %s; nothing changed" % (
+                    "%dx%d" % (fmt.rate, fmt.channels) if fmt else args.get("format")))
             within = min(float(args.get("confirm_within", 20)), MAX_CONFIRM)
             threading.Thread(target=self._switch_pending, args=(fmt, within), daemon=True).start()
             return {"switching": fmt.to_json(), "confirm_within": within}

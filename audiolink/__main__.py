@@ -129,9 +129,17 @@ def main(argv=None):
     con = sub.add_parser("connect", help="pipe stdin/stdout to a Pi port (ssh ProxyCommand)")
     con.add_argument("pi", help="name (see `audiolink pis`) or connect code")
     con.add_argument("port", type=int)
-    aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)")
+    aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)",
+                         formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+                             "The link's audio format: faster formats carry more data. The host picks the\n"
+                             "fastest that works when the Pi connects.\n\n"
+                             "  status      which format the link runs (default)\n"
+                             "  sweep       measure every format and keep the fastest\n"
+                             "  set F       switch to F: baseline, 192000x8, 96000x8, 192000x4, 96000x4,\n"
+                             "              192000x2, 96000x2 or 48000x8 (rate x channels)\n"
+                             "  forget      forget this Pi's measurements (measured again on next connect)"))
     aud.add_argument("action", nargs="?", default="status", choices=["status", "sweep", "set", "forget"],
-                     help="sweep: measure every candidate format and keep the fastest")
+                     help="see above")
     aud.add_argument("format", nargs="?", help="set: RATExCHANNELS (e.g. 96000x8) or baseline")
     upd = sub.add_parser("update", help="new code for the plugged-in Pi, over the link")
     upd.add_argument("pyz", nargs="?", help="the .pyz to send (default: this one)")
