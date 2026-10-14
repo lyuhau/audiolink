@@ -3,21 +3,55 @@
 Sends the .pyz over the link (USB networking not needed), or with --pi over the network
 (debug access, services/access.py); the Pi keeps it on its SD card and restarts into it
 (services/update.py). Default: the .pyz this command runs from.
+
+Over USB the link goes to the baseline audio format first: a daemon restarting in a
+faster format re-presents the gadget, which it does at most once per RESET_GAP
+(services/audio_format.py), so the link could stay down for minutes. The host's
+negotiator moves it back up once the new code is running.
 """
 import base64
 import hashlib
+import io
 import os
 import sys
 import time
+import zipfile
 
 from ..paths import PI_STATE_DIR
+from ..services.audio_format import RESET_GAP
+from ..services.update import MAX_SIZE
 from ..ui import detail, done, line_buffered, step
 
 CHUNK = 48 * 1024
+COME_BACK = 60                  # seconds a restart at the baseline format takes, at most
 
 
 def _short(h):
     return h[:12] if h else "none"
+
+
+def _this_pyz():
+    return sys.argv[0] if sys.argv and sys.argv[0].endswith(".pyz") else None
+
+
+def read_pyz(path):
+    """The .pyz's bytes, or SystemExit saying what's wrong with it (before any Pi is asked)."""
+    if not os.path.isfile(path):
+        raise SystemExit("No file %s" % path)
+    with open(path, "rb") as f:
+        data = f.read()
+    if not data:
+        raise SystemExit("%s is empty" % path)
+    if len(data) > MAX_SIZE:
+        raise SystemExit("%s is too big for the Pi (%d MB; at most %d)" % (path, len(data) >> 20, MAX_SIZE >> 20))
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            ok = "__main__.py" in z.namelist()
+    except zipfile.BadZipFile:
+        ok = False
+    if not ok:
+        raise SystemExit("%s isn't an audiolink .pyz" % path)
+    return data
 
 
 class NetCaller:
@@ -42,15 +76,52 @@ class NetCaller:
                     raise SystemExit("Lost the connection to %s" % self.remote.name)
 
 
+def to_baseline(call, port):
+    """Over USB: the link to the baseline audio format. Returns whether it's there."""
+    from .audio_format import BASELINE, AudioFormat
+
+    def status():
+        st = call("audio.status", port=port)
+        return st, AudioFormat.from_json(st["link"]) == BASELINE and not (st.get("pi") or {}).get("pending")
+    try:
+        st, ok = status()
+        if ok:
+            return True
+        step("Slowing the link to its starting speed for the restart")
+        end = time.monotonic() + 120
+        while st["running"] and time.monotonic() < end:     # a negotiation under way: let it end
+            time.sleep(1)
+            st, ok = status()
+        if not ok:
+            call("audio.run", {"format": "baseline"}, port=port)
+            while time.monotonic() < end:
+                time.sleep(1)
+                st, ok = status()
+                if not st["running"]:
+                    break
+    except (SystemExit, KeyError, ValueError) as e:
+        detail("audio: %s", e)
+        ok = False
+    done("done" if ok else "couldn't")
+    return ok
+
+
 def update_command(a):
     line_buffered()
     port = a.control_port
+    if (a.pyz is not None) + a.revert + a.status > 1:
+        raise SystemExit("Pick one: a .pyz to send, --revert or --status")
+    if (a.key or a.at) and not a.pi:
+        raise SystemExit("--key and --at go with --pi PI (over the network)")
+    data = path = None
+    if not (a.status or a.revert):
+        path = a.pyz or _this_pyz()
+        if not path:
+            raise SystemExit("Which .pyz? (audiolink update PATH)")
+        data = read_pyz(path)
     if a.pi:
         from ..client.remote import open_remote
         call = NetCaller(open_remote(a.pi, a.at or [], a.key))
-        if not (a.status or a.revert):
-            print("Over the network: an update that breaks networking without crashing leaves "
-                  "the Pi reachable only over USB or by the reset pins")
     else:
         from .control import call
         peer = call("peer", port=port)
@@ -59,27 +130,21 @@ def update_command(a):
         if "update" not in (peer.get("peer") or {}).get("caps", []):
             raise SystemExit("The Pi's audiolink can't take updates over the link; put a new image on its card")
     if a.status:
-        st = call("update.status", port=port)
-        on_card = (st["running"] or "").startswith(PI_STATE_DIR + "/")
-        where = "an update" if on_card else "the built-in code"
-        print("Running %s (%s)" % (where, _short(st["running_hash"])))
-        if st["set_aside"]:
-            print("The update on the card kept failing and is set aside")
-        detail("%s", st)
-        return
+        return show_status(call("update.status", port=port))
     if a.revert:
-        call("update.revert", port=port)
-        print("Back to the built-in code (restarting)")
+        r = call("update.revert", port=port)
+        print("The Pi already runs its built-in code" if r.get("already") else "Back to the built-in code (restarting)")
         return
-    path = a.pyz or (sys.argv[0] if sys.argv[0].endswith(".pyz") else None)
-    if not path or not os.path.isfile(path):
-        raise SystemExit("Which .pyz? (audiolink update PATH)")
-    with open(path, "rb") as f:
-        data = f.read()
     digest = hashlib.sha256(data).hexdigest()
     if call("update.status", port=port).get("running_hash") == digest:
         print("The Pi already runs this (%s)" % _short(digest))
         return
+    wait = COME_BACK
+    if a.pi:
+        print("Over the network: an update that breaks networking without crashing leaves "
+              "the Pi reachable only over USB or by the reset pins")
+    elif not to_baseline(call, port):
+        wait = RESET_GAP + 30           # the restart may wait for its gadget reset
     step("Sending %s (%d KB)" % (os.path.basename(path), len(data) // 1024))
     call("update.begin", {"size": len(data), "sha256": digest}, port=port)
     for off in range(0, len(data), CHUNK):
@@ -87,7 +152,8 @@ def update_command(a):
     call("update.finish", port=port)
     done("sent")
     step("Restarting the Pi's audiolink")
-    end = time.monotonic() + 60
+    end = time.monotonic() + wait
+    st = None
     while time.monotonic() < end:
         time.sleep(2)
         try:
@@ -99,5 +165,39 @@ def update_command(a):
             return
         if st.get("set_aside"):
             break
+    if st is None:
+        done("not back yet")
+        raise SystemExit("The Pi hasn't come back yet (it can take a couple of minutes after a fast audio "
+                         "format); check: audiolink update --status")
     done("didn't come up")
-    raise SystemExit("The update didn't start; the Pi runs its built-in code (audiolink update --status)")
+    detail("%s", st)
+    raise SystemExit("The update didn't start%s; the Pi runs %s (audiolink update --status)" % (
+        " (it kept failing and is set aside)" if st.get("set_aside") else "",
+        "an earlier update" if _on_card(st) else "its built-in code"))
+
+
+def _on_card(st):
+    return (st.get("running") or "").startswith(PI_STATE_DIR + "/")
+
+
+def show_status(st):
+    mine = _this_pyz()
+    mine = mine and _file_hash(mine)
+    same = ""
+    if mine and st.get("running_hash"):
+        same = ", the same as this computer's" if st["running_hash"] == mine else ", not this computer's"
+    print("Running %s (%s%s)" % ("an update" if _on_card(st) else "the built-in code",
+                                _short(st.get("running_hash")), same))
+    if st.get("set_aside"):
+        print("The update on the card kept failing and is set aside")
+    elif st.get("update") and not _on_card(st):
+        print("An update is on the card but isn't running (the reset pins may be shorted)")
+    detail("%s", st)
+
+
+def _file_hash(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None

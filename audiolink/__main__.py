@@ -348,7 +348,7 @@ def run_pi(a, allow, port, gate):
 
     def revert():
         debug.off("reset pins")
-        update.handle("revert", {})
+        update.handle("revert", {"restart": True})     # the pins always restart
 
     def start_over():
         identity.start_over()
