@@ -12,3 +12,8 @@ out/
 __pycache__/
 *.pyc
 .DS_Store
+*.iml
+# Old build leftovers (before the usb platform built the card)
+firmware/
+firmware-nonfree/
+usbboot/
