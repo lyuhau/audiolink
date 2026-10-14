@@ -110,6 +110,7 @@ class PairingService(Service):
             self.failures = 0
             if c:
                 self.code = None        # single use
+        conn.prove()                    # someone legitimate is here (services/presence.py)
         first = not claimed
         if first:
             self.identity.claim()

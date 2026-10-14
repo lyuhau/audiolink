@@ -16,6 +16,13 @@ A connection that starts without TLS (an older audiolink) gets its hello answere
 every request refused with UPGRADE, so it can say what to do.
 A handler can keep the connection for itself (a shell): it raises Takeover, and the
 endpoint frees the request slot and drops its timeout first.
+
+Strangers can reach the endpoint (the LAN, the open setup network), so a connection
+has PROVE_WITHIN s to make a request that proves something (paired, or a debug
+request the switch allows) before it's dropped, one address can hold PER_ADDR
+connections that haven't, and only proven ones count as someone connected
+(services/presence.py). One turned away gets BUSY in the clear (the client says the
+Pi is busy) and the refusal is logged.
 """
 import hashlib
 import hmac
@@ -28,11 +35,18 @@ import time
 
 from .. import tls
 from ..crypto import ed25519_verify, open_sealed, seal
-from .access import DEBUG, KEY_LABEL, PUBLIC, decide, route_of
+from .access import DEBUG, KEY_LABEL, PUBLIC, RELAY_SOURCE, decide, route_of
 
 log = logging.getLogger("audiolink")
 
 PORT = 47900
+MAX_CONNS = 16              # connections served at once
+PER_ADDR = 2                # of them not yet proven, from one address
+PROVE_WITHIN = 15           # s a connection has to prove itself before it's dropped
+IDLE = 30                   # s between requests on a proven connection
+EXEMPT = (RELAY_SOURCE, "127.0.0.1")    # the relay (proven there; services/relay.py caps it), the Pi
+BUSY = {"error": "busy", "code": "busy"}
+LOG_EVERY = 60              # s between logged refusals of one address
 UPGRADE = {"error": "This Pi's audiolink is newer than this computer's: update audiolink here",
            "code": "upgrade"}
 
@@ -67,6 +81,15 @@ class Conn:
         self.f = sock.makefile("rwb")
         self.verified = set()               # (key, sig) already checked on this connection
         self.logged = set()                 # debug ops logged on this connection
+        self.proven = False                 # made a request that proved something
+        self.on_proven = lambda: None
+
+    def prove(self):
+        """This connection is someone legitimate (a passed check, or a handler's say: a
+        machine that just paired)."""
+        if not self.proven:
+            self.proven = True
+            self.on_proven()
 
     def send(self, obj):
         self.f.write((json.dumps(obj) + "\n").encode())
@@ -89,13 +112,18 @@ class Conn:
 
 
 class Endpoint:
-    def __init__(self, identity, port=PORT, presence=None, debug=None, wifi_ip=None, bind="0.0.0.0"):
+    def __init__(self, identity, port=PORT, presence=None, debug=None, wifi_ip=None, bind="0.0.0.0",
+                 exempt=EXEMPT):
         self.identity = identity
         self.presence = presence                # services/presence.py: requests count as clients
         self.debug = debug                      # services/access.py DebugService (None: debug off)
         self.wifi_ip = wifi_ip or (presence.wifi_ip if presence else (lambda: None))
         self.handlers = {}                      # op -> (fn(conn, req) -> reply or None, level)
-        self.slots = threading.Semaphore(4)
+        self.exempt = exempt                    # addresses PER_ADDR doesn't apply to
+        self.lock = threading.Lock()
+        self.active = 0                         # connections being served
+        self.unproven = {}                      # address -> its connections not yet proven
+        self.turned_away = {}                   # address -> when that was last logged
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((bind, port))
@@ -149,22 +177,73 @@ class Endpoint:
                 log.warning("endpoint: %s", e)
                 time.sleep(1)
                 continue
-            if not self.slots.acquire(blocking=False):
-                sock.close()                    # too many at once
+            why = self._admit(addr[0])
+            if why:
+                self._turn_away(sock, addr[0], why)
                 continue
             try:
                 threading.Thread(target=self._serve, args=(sock, addr), daemon=True).start()
             except RuntimeError as e:           # out of threads
                 log.warning("endpoint: %s", e)
                 sock.close()
-                self.slots.release()
+                self._leave(addr[0], held=True, proven=False)
+
+    def _admit(self, ip):
+        """None (and the connection counts), or why it's turned away."""
+        with self.lock:
+            if self.active >= MAX_CONNS:
+                return "%d connections already" % self.active
+            if ip not in self.exempt and self.unproven.get(ip, 0) >= PER_ADDR:
+                return "%d connections from it that haven't proven anything" % self.unproven[ip]
+            self.active += 1
+            self.unproven[ip] = self.unproven.get(ip, 0) + 1
+        return None
+
+    def _leave(self, ip, held, proven):
+        """A connection stops counting: as served (held), and as unproven (not proven)."""
+        with self.lock:
+            if held:
+                self.active -= 1
+            if not proven:
+                n = self.unproven.get(ip, 0) - 1
+                if n > 0:
+                    self.unproven[ip] = n
+                else:
+                    self.unproven.pop(ip, None)
+
+    def _turn_away(self, sock, ip, why):
+        try:
+            sock.setblocking(False)
+            sock.send((json.dumps(BUSY) + "\n").encode())
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        sock.close()
+        now = time.monotonic()
+        with self.lock:
+            if now - self.turned_away.get(ip, -LOG_EVERY) < LOG_EVERY:
+                return
+            self.turned_away = {k: t for k, t in self.turned_away.items() if now - t < LOG_EVERY}
+            self.turned_away[ip] = now
+        log.warning("endpoint: turned away %s (%s)", ip, why)
 
     def _serve(self, sock, addr):
-        if self.presence:
-            self.presence.touch(sock)
-        held = True
+        held, conn = True, None
         try:
-            sock.settimeout(30)
+            ends = (sock.getsockname(), addr) if self.presence else None
+        except OSError:
+            ends = None
+        if ends:
+            self.presence.hold(ends)            # not someone connected until it proves it
+
+        def proven():
+            self._leave(addr[0], held=False, proven=False)
+            if ends:
+                self.presence.release(ends)
+                self.presence.touch(sock)
+        try:
+            deadline = time.monotonic() + PROVE_WITHIN
+            sock.settimeout(PROVE_WITHIN)
             try:
                 local = sock.getsockname()[0]
             except OSError:
@@ -175,10 +254,19 @@ class Endpoint:
             if secure:
                 sock = tls.server_context(self.identity.keys()[0]).wrap_socket(sock, server_side=True)
             conn = Conn(sock, addr, self.identity, route, secure)
+            conn.on_proven = proven
+            greeted = False
             while True:
+                left = IDLE if conn.proven else min(IDLE, deadline - time.monotonic())
+                if left <= 0:
+                    return
+                sock.settimeout(left)
                 req = conn.recv()
                 op = req.get("op")
                 if op == "hello":
+                    if greeted:
+                        return                  # one per connection
+                    greeted = True
                     info = self.identity.info()
                     conn.send({"name": info["name"], "tag": info["tag"], "pub": info["pub"],
                                "claimed": info["claimed"], "nonce": conn.nonce.hex(), "tls": True})
@@ -194,13 +282,15 @@ class Endpoint:
                 if refused:
                     conn.send(refused)
                     continue
+                if level != PUBLIC:
+                    conn.prove()
                 try:
                     reply = fn(conn, req)
                 except StopIteration:
                     return
                 except Takeover as t:
                     held = False
-                    self.slots.release()
+                    self._leave(addr[0], held=True, proven=True)
                     sock.settimeout(None)
                     t.run()
                     return
@@ -214,8 +304,11 @@ class Endpoint:
         except (OSError, ValueError, ConnectionError):
             pass
         finally:
-            if self.presence:
-                self.presence.touch(sock)
+            was_proven = bool(conn and conn.proven)
+            if ends:
+                if was_proven:
+                    self.presence.touch(sock)
+                else:
+                    self.presence.release(ends)
             sock.close()
-            if held:
-                self.slots.release()
+            self._leave(addr[0], held=held, proven=was_proven)

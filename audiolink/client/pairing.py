@@ -59,6 +59,17 @@ def browse(timeout=2.0):
     return sorted(found)
 
 
+class Busy(ConnectionError):
+    """The Pi turned the connection away: it's serving as many as it will."""
+
+    def __init__(self):
+        super().__init__("busy")
+
+
+def busy(name):
+    return SystemExit("%s didn't answer (busy?); retry, or plug it in" % name)
+
+
 class OldPi(ConnectionError):
     """A Pi whose audiolink predates TLS on its endpoint (hello: what it said)."""
 
@@ -68,7 +79,8 @@ class OldPi(ConnectionError):
 
 
 def _plain_hello(ip, port):
-    """The hello of an endpoint that didn't take TLS, or None."""
+    """The hello of an endpoint that didn't take TLS, or None. Raises Busy if it turned
+    the connection away."""
     try:
         with socket.create_connection((ip, port), timeout=3) as s:
             s.settimeout(3)
@@ -78,6 +90,8 @@ def _plain_hello(ip, port):
             hello = json.loads(f.readline())
     except (OSError, ValueError):
         return None
+    if isinstance(hello, dict) and hello.get("code") == "busy":
+        raise Busy()
     return hello if isinstance(hello, dict) and hello.get("pub") else None
 
 
@@ -157,10 +171,10 @@ def too_old(name):
                       "(audiolink update)" % name)
 
 
-def reach(entry, at=(), with_dht=False):
+def reach(entry, at=(), with_dht=False, busy=None):
     """(PiConn, hello) for this known Pi over the network, or (None, None). Tries
     --at addresses, its last known LAN address, mDNS, the setup network address, and
-    (with_dht) a fresh DHT lookup."""
+    (with_dht) a fresh DHT lookup. Addresses that turned it away go in `busy` (a list)."""
     pub = keyring.pub_of(entry["code"])
     ips = list(at) + (entry.get("last_record") or {}).get("lan", []) + browse(1.0) + [SETUP_ADDR]
     if with_dht:
@@ -176,6 +190,10 @@ def reach(entry, at=(), with_dht=False):
         except OldPi as e:
             if e.hello.get("pub") == pub:
                 raise too_old(e.hello.get("name") or "The Pi")
+            continue
+        except Busy:
+            if busy is not None:
+                busy.append(ip)
             continue
         except (OSError, ValueError):
             continue
@@ -207,6 +225,9 @@ def candidates(at=()):
         except OldPi as e:
             print("%s (at %s) runs an audiolink too old to pair over the network; update it over USB"
                   % (e.hello.get("name", "A Pi"), ip))
+            continue
+        except Busy:
+            print("A Pi at %s didn't answer (busy?); retry, or plug it in" % ip)
             continue
         except (OSError, ValueError):
             continue
@@ -309,13 +330,16 @@ def code_command(a):
             issued = call("pairing.new_code", port=port)
     except SystemExit:
         pass
+    turned_away = []
     if issued is None:                              # otherwise over the network
-        conn, hello = reach(entry, a.at or [])
+        conn, hello = reach(entry, a.at or [], busy=turned_away)
         if conn:
             try:
                 issued = request_code(conn, hello, entry["code"])
             finally:
                 conn.close()
+    if issued is None and turned_away:
+        raise busy(entry["alias"])
     if issued is None:
         raise SystemExit("%s not found (not plugged in here or on this network)" % entry["alias"])
     print("Pairing code for %s: %s %s  (one use, %d min)" % (entry["alias"], issued["code"][:3], issued["code"][3:],

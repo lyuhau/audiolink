@@ -139,11 +139,7 @@ class OverTheNetwork(unittest.TestCase):
         busy, r = self.shell()
         self.assertEqual(r["code"], "busy")
         busy.close()
-        self.assertTrue(wait(lambda: self.ep.slots._value == 4))
-        others = [self.client() for _ in range(4)]           # the endpoint's 4 slots are all free
-        self.assertTrue(all(o.hello.get("nonce") for o in others))
-        for o in others:
-            o.close()
+        self.assertTrue(wait(lambda: self.ep.active == 0))     # the shells hold no request slots
         for c, _ in open_:
             c.sock.sendall(b"exit\n")
         self.assertTrue(wait(lambda: self.shells.count() == 0))

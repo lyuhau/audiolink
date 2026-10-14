@@ -1,19 +1,25 @@
 """services/access.py (levels x routes x debug modes) and the endpoint's refusals."""
 import os
 import shutil
+import socket
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
-from audiolink.client.pairing import PiConn
+from audiolink import tls
+from audiolink.client import pairing
+from audiolink.client.pairing import Busy, PiConn
 from audiolink.crypto import ed25519_public, ed25519_sign
 from audiolink.paths import save_state
 from audiolink.services import access
 from audiolink.services.access import (DEBUG, PAIRED, PUBLIC, DebugService, decide, parse_duration,
                                        parse_key, route_of)
+from audiolink.services import endpoint
 from audiolink.services.endpoint import Endpoint, key_message, proof_for
 from audiolink.services.identity import IdentityService
 
-from .helpers import FakeClock, patch_time
+from .helpers import FakeClock, patch_time, wait
 
 NOW = 1000.0
 LIVE, EXPIRED = NOW + 60, NOW - 1
@@ -240,6 +246,97 @@ class EndpointAccess(unittest.TestCase):
         c = self.client()
         self.assertEqual(c.ask({"op": "look", "proof": proof_for(self.identity.keys()[1], "look", c.nonce, c.pub)})
                          ["code"], "not_paired")
+
+
+class FakePresence:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.held, self.touched = set(), 0
+
+    def hold(self, ends):
+        with self.lock:
+            self.held.add(ends)
+
+    def release(self, ends):
+        with self.lock:
+            self.held.discard(ends)
+
+    def touch(self, sock):
+        with self.lock:
+            self.touched += 1
+
+
+@unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
+class Strangers(unittest.TestCase):
+    """Connections that prove nothing can't lock others out or keep the Pi 'in use'."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.identity = IdentityService(self.dir)
+        self.identity.claim()
+        self.secret = self.identity.keys()[1]
+        self.presence = FakePresence()
+        self.ep = Endpoint(self.identity, port=0, presence=self.presence, debug=DebugService(),
+                           wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1", exempt=())
+        self.ep.register("look", lambda conn, req: {"ok": True}, PAIRED)
+
+    def client(self):
+        c = Client(self.ep.port)
+        self.addCleanup(c.close)
+        return c
+
+    def look(self, c):
+        return c.ask({"op": "look", "proof": proof_for(self.secret, "look", c.nonce, c.pub)})
+
+    def test_one_address_holds_two_unproven(self):
+        a, b = self.client(), self.client()
+        with self.assertRaises(Busy):
+            self.client()
+        with self.assertRaises(SystemExit) as e:
+            busy_entry = {"alias": "pi", "code": self.identity.code()}
+            with mock.patch.object(pairing, "browse", lambda t: []), \
+                    mock.patch.object(pairing, "SETUP_ADDR", "127.0.0.1"), \
+                    mock.patch.object(pairing, "PiConn",
+                                      lambda ip, timeout: PiConn(ip, port=self.ep.port, timeout=timeout)):
+                turned_away = []
+                self.assertEqual(pairing.reach(busy_entry, busy=turned_away), (None, None))
+                raise pairing.busy("pi")
+        self.assertEqual(turned_away, ["127.0.0.1"])
+        self.assertIn("didn't answer (busy?)", str(e.exception))
+        self.assertTrue(self.look(a)["ok"])                 # proven: no longer counts
+        self.assertTrue(self.look(self.client())["ok"])
+        b.close()
+        self.assertTrue(wait(lambda: self.ep.unproven == {}))
+        self.assertEqual(self.ep.active, 2)
+
+    def test_unproven_connections_are_dropped(self):
+        with mock.patch.object(endpoint, "PROVE_WITHIN", 0.5):
+            idle, proven = self.client(), self.client()
+            self.assertTrue(self.look(proven)["ok"])
+            self.assertEqual(idle.f.readline(), b"")         # dropped
+            raw = socket.create_connection(("127.0.0.1", self.ep.port))   # not even TLS
+            self.addCleanup(raw.close)
+            raw.settimeout(5)
+            self.assertEqual(raw.recv(10), b"")
+            self.assertTrue(self.look(proven)["ok"])          # proven: only the idle limit applies
+
+    def test_one_hello_per_connection(self):
+        c = self.client()
+        with self.assertRaises(ConnectionError):
+            PiConn.hello(c)
+
+    def test_only_proven_connections_count_as_present(self):
+        c = self.client()
+        self.assertTrue(wait(lambda: len(self.presence.held) == 1))
+        self.assertEqual(self.presence.touched, 0)
+        self.look(c)
+        self.assertEqual(self.presence.held, set())
+        self.assertEqual(self.presence.touched, 1)
+        stranger = self.client()
+        stranger.close()
+        self.assertTrue(wait(lambda: self.ep.active == 1))
+        self.assertEqual((self.presence.held, self.presence.touched), (set(), 1))
 
 
 class DebugCommand(unittest.TestCase):
