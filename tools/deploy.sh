@@ -26,6 +26,8 @@ if ! gzip -dc "$CARD/boot/initrd.img" | cpio -it 2>/dev/null | grep -qx root/.ss
 fi
 PI=${PI:-root@10.55.0.2}
 SSH="ssh -i keys/id_ed25519 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ConnectTimeout=5"
+. tools/pi_code.sh
+pi_reachable
 
 # The card's files as NAME.new, plus the manifest (.deploy.manifest), in one tar.
 python3 - "$CARD" "$MANIFEST" <<'EOF' | $SSH $PI '
@@ -47,11 +49,15 @@ sync
 '
 import os, sys, tarfile
 card, manifest = sys.argv[1], sys.argv[2]
-with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.USTAR_FORMAT) as t:
-    for line in open(manifest):
-        path = line.rstrip("\n")[66:]
-        t.add(os.path.join(card, path), path + ".new", recursive=False)
-    t.add(manifest, ".deploy.manifest")
+try:
+    with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.USTAR_FORMAT) as t:
+        for line in open(manifest):
+            path = line.rstrip("\n")[66:]
+            t.add(os.path.join(card, path), path + ".new", recursive=False)
+        t.add(manifest, ".deploy.manifest")
+except BrokenPipeError:     # ssh went away and says why
+    os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    sys.exit(1)
 EOF
 echo "$(grep -c . "$MANIFEST") files installed, checked against $MANIFEST"
 [ -n "$REBOOT" ] || exit 0
@@ -63,13 +69,6 @@ $SSH $PI '(sleep 1; reboot; sleep 10; echo b > /proc/sysrq-trigger) >/dev/null 2
 echo "rebooting"
 [ -n "$RELEASE" ] && exit 0
 start=$(date +%s)
-for i in $(seq 1 60); do
-    sleep 2
-    if $SSH -o ConnectTimeout=2 $PI "[ \"\$(cat /proc/sys/kernel/random/boot_id)\" != $BOOT ] &&
-            grep -q ' pi up ' /var/log/audiolink.log" 2>/dev/null; then
-        echo "pi up ($(( $(date +%s) - start ))s after the reboot)"
-        exit 0
-    fi
-done
-echo "the Pi didn't come back up" >&2
-exit 1
+pi_wait_up 120 "$BOOT" || { echo "the Pi didn't come back up" >&2; exit 1; }
+echo "pi up ($(( $(date +%s) - start ))s after the reboot)"
+pi_code_check
