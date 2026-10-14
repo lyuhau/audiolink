@@ -161,7 +161,13 @@ def main(argv=None):
     lg.add_argument("-n", "--lines", type=argtypes.positive_int, default=200,
                     help="how many of the last lines (default 200, max 5000)")
     lg.add_argument("--list", action="store_true", help="list the Pi's logs")
-    sh = sub.add_parser("shell", help="a root shell on the Pi (plugged in here, or PI over the network)")
+    sh = sub.add_parser("shell", help="a root shell on the Pi (plugged in here, or PI over the network)",
+                        usage="audiolink shell [-h] [PI] [--key FILE] [--at ADDRESS] [-v] [-- CMD ...]",
+                        formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+                            "A root shell on the Pi plugged in here, or on PI over the network (that needs the\n"
+                            "Pi's debug switch on: audiolink debug on). Exits with the shell's exit status.\n\n"
+                            "  -- CMD ...   run CMD on the Pi with sh -c instead (no terminal; stdin, stdout and\n"
+                            "               stderr pass through), e.g. audiolink shell -- 'df -h; uptime'"))
     sh.add_argument("pi", nargs="?", help="over the network: a name, connect code or address")
     for p in (upd, lg, sh):
         if p is not sh:
@@ -245,7 +251,15 @@ def main(argv=None):
     for p in sub.choices.values():       # every command: -v shows the technical details
         if not any("--verbose" in act.option_strings for act in p._actions):
             p.add_argument("-v", "--verbose", action="store_true", help="show technical details too")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    command = None
+    first = next((x for x in argv if not x.startswith("-")), None)
+    if first == "shell" and "--" in argv:                         # audiolink shell [PI] -- CMD ...
+        cut = argv.index("--")
+        argv, command = argv[:cut], argv[cut + 1:]
     a = ap.parse_args(argv)
+    if a.cmd == "shell":
+        a.command = command
     from . import ui
     ui.VERBOSE = bool(getattr(a, "verbose", False))
 
