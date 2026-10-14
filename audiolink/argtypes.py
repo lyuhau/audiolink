@@ -31,6 +31,13 @@ def positive_int(text):
 
 
 def port(text):
+    """A TCP port, 1-65535."""
+    if _port(text) is None:
+        raise argparse.ArgumentTypeError("wants a port number (1-65535), e.g. 2222")
+    return int(text)
+
+
+def port_or_off(text):
     """A local port to listen on; 0 = off."""
     if _port(text, zero_ok=True) is None:
         raise argparse.ArgumentTypeError("wants a port number (1-65535), or 0 for off")

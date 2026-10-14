@@ -83,13 +83,6 @@ def list_devices():
     return 0 if found else 1
 
 
-def port_number(text):
-    """argparse type: a TCP port."""
-    if not text.isdigit() or not 0 < int(text) < 65536:
-        raise argparse.ArgumentTypeError("not a port (1-65535): %s" % text)
-    return int(text)
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="audiolink", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -141,12 +134,12 @@ def main(argv=None):
     ren.add_argument("--on-pi", action="store_true", help="rename the Pi itself (it must be plugged in here)")
     sshc = sub.add_parser("ssh-config", help="print ~/.ssh/config entries for known Pis")
     sshc.add_argument("--user", help="login user on the computer the Pi is plugged into (default: yours here)")
-    sshc.add_argument("--port", type=port_number, default=2222, help="Pi port to use when unknown")
+    sshc.add_argument("--port", type=argtypes.port, default=2222, help="Pi port to use when unknown")
     fnd = sub.add_parser("find", help="is a Pi online (its relay), and where (the DHT)")
     fnd.add_argument("pi", help="name (see: audiolink pis) or connect code")
     con = sub.add_parser("connect", help="pipe stdin/stdout to a Pi port (ssh ProxyCommand)")
     con.add_argument("pi", help="name (see: audiolink pis) or connect code")
-    con.add_argument("port", type=port_number, help="the Pi's port (one its host exposes, e.g. 2222)")
+    con.add_argument("port", type=argtypes.port, help="the Pi's port (one its host exposes, e.g. 2222)")
     aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "The link's audio format: faster formats carry more data. The host picks the\n"
@@ -220,9 +213,9 @@ def main(argv=None):
                                type=argtypes.expose,
                                help="the Pi listens on PIPORT; connections reach HOST:PORT from here "
                                     "(HOST default: this computer). E.g. 2222:22")
-    roles["host"].add_argument("--proxy-port", type=argtypes.port, default=47801,
+    roles["host"].add_argument("--proxy-port", type=argtypes.port_or_off, default=47801,
                                help="local HTTP proxy that browses as the Pi (0 = off)")
-    roles["host"].add_argument("--shell-port", type=argtypes.port, default=47802,
+    roles["host"].add_argument("--shell-port", type=argtypes.port_or_off, default=47802,
                                help="local port for `audiolink shell` (0 = off)")
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
@@ -231,7 +224,7 @@ def main(argv=None):
                                help="negotiate a faster audio format with the Pi (default: auto)")
     roles["host"].add_argument("--out-device", help="output device name (substring)")
     for p in (roles["host"], w, dsc, add, ren, prg, aud, upd, lg, sh, dbg, sub.choices["rotate-secret"]):
-        p.add_argument("--control-port", type=int, default=None, help="local control port (default 47800)")
+        p.add_argument("--control-port", type=argtypes.port, default=None, help="local control port (default 47800)")
     roles["host"].add_argument("--in-device", help="input device name (substring)")
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
     roles["pi"].add_argument("--state-dir", default=PI_STATE_DIR, help="where the Pi keeps its identity")

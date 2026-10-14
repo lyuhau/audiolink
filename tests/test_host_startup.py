@@ -72,7 +72,7 @@ class Args(unittest.TestCase):
         self.assertEqual(argtypes.forward("8080:10.0.0.5:80"), "8080:10.0.0.5:80")
         self.assertEqual(argtypes.allow("22,10.0.0.5:80"), "22,10.0.0.5:80")
         for fn, bad in ((argtypes.expose, "2222"), (argtypes.forward, "99999:22"), (argtypes.allow, "x"),
-                        (argtypes.expose, "2222:host:"), (argtypes.port, "-1"), (argtypes.positive_int, "0"),
+                        (argtypes.expose, "2222:host:"), (argtypes.port_or_off, "-1"), (argtypes.port, "0"), (argtypes.port, "x"), (argtypes.positive_int, "0"),
                         (argtypes.audio_format, "0x0")):
             with self.assertRaises(argparse.ArgumentTypeError, msg=bad):
                 fn(bad)
