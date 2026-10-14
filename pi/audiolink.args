@@ -1,4 +1,5 @@
 # Arguments for `audiolink pi` at boot (see `python3 audiolink.pyz pi --help`).
 # Ports are normally declared by the host (`audiolink host --expose PIPORT:PORT`);
-# add `--forward LPORT:PORT` here for static forwards.
+# add `--forward LPORT:PORT` here for static forwards. The relay and --expose-setup
+# come from the card's settings.txt (pi/card-settings.sh), which win over these.
 --stats 30

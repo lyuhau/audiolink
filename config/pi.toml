@@ -46,10 +46,25 @@ state = true                       # /var/lib/audiolink is the card's audiolink/
 keep_logs = true                   # /var/log on the card: logs/last, logs/prev
 config_txt = ["gpio=21=ip,pu"]     # the reset pins: GPIO21 an input with its pull-up
 
+# On the card's settings.txt as audiolink.KEY, for users to change without a
+# rebuild (the platform's README: Card settings); pi/card-settings.sh checks
+# them and passes them to `audiolink pi`.
+[app.settings.relay]
+default = "relay.lyuhau.com:443"   # audiolink/relay/__init__.py DEFAULT
+help = """The relay the Pi stays reachable through from anywhere: HOST:PORT, or
+HOST:PORT#PIN for a relay with another certificate (PIN: the sha256 of its
+certificate), or off."""
+
+[app.settings.expose_setup]
+default = "off"
+help = """on: ports the host exposes take connections from the Pi's open setup network
+too, not only from its Wi-Fi network."""
+
 [app.files]
 "opt/audiolink/audiolink.pyz" = "../dist/audiolink.pyz"
 "opt/audiolink/start-audiolink.sh" = "../pi/start-audiolink.sh"
 "opt/audiolink/app-start.sh" = "../pi/app-start.sh"
+"opt/audiolink/card-settings.sh" = "../pi/card-settings.sh"
 "etc/audiolink.args" = "../pi/audiolink.args"
 "etc/wpa_supplicant/wpa_supplicant.conf" = "../pi/wpa_supplicant.conf"
 "etc/avahi/avahi-daemon.conf" = "../pi/avahi/avahi-daemon.conf"

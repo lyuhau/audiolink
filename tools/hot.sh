@@ -16,6 +16,7 @@ python3 dist/audiolink.pyz audio set baseline >/dev/null 2>&1 || true
 D=/opt/audiolink         # the built-in code (config/pi.toml's [app.files])
 $SSH $PI "cat > $D/audiolink.pyz.new && mv $D/audiolink.pyz.new $D/audiolink.pyz" < dist/audiolink.pyz
 $SSH $PI "cat > $D/start-audiolink.sh && chmod +x $D/start-audiolink.sh" < pi/start-audiolink.sh
+$SSH $PI "cat > $D/card-settings.sh" < pi/card-settings.sh
 # Detached: a restart can re-present the USB gadget (audio format back to the baseline),
 # which drops USB ethernet, and this ssh session, for a few seconds.
 $SSH $PI "($D/start-audiolink.sh \$(grep -v '^#' /etc/audiolink.args)) >/dev/null 2>&1 &"

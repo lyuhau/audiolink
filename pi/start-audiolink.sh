@@ -10,9 +10,17 @@
 # except while the reset pins are shorted (services/button.py), and once it has died
 # within a minute 3 times in a row: then it's set aside (.bad) for the built-in one.
 # Exit status 75 is a restart the daemon asked for (an update): no back-off.
+# The card's settings (card-settings.sh: the relay...) come after the args, so they win.
 PIDF=/run/audiolink.pid
 LOG=/var/log/audiolink.log
-BUILT_IN=$(cd "$(dirname "$0")" && pwd)/audiolink.pyz
+HERE=$(cd "$(dirname "$0")" && pwd)
+BUILT_IN=$HERE/audiolink.pyz
+set -f   # one argument per line, no globbing ([::1]:443)
+IFS='
+'
+[ -f "$HERE/card-settings.sh" ] && set -- "$@" $(sh "$HERE/card-settings.sh")
+unset IFS
+set +f
 # The loop and the daemon share a process group: stop both.
 [ -f $PIDF ] && kill -TERM -"$(cat $PIDF)" 2>/dev/null && sleep 1
 killall -q aplay arecord
