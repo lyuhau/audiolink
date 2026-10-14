@@ -21,6 +21,11 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: {python-version: "3.12"}
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          V=$(python3 -c "import audiolink; print(audiolink.__version__)")
+          [ "$GITHUB_REF_NAME" = "v$V" ] || { echo "::error::tag $GITHUB_REF_NAME, but audiolink.__version__ is $V"; exit 1; }
       - run: python3 build_pyz.py
       - name: Package
         run: |
