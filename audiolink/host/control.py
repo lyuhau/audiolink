@@ -17,17 +17,29 @@ log = logging.getLogger("audiolink")
 DEFAULT_PORT = int(os.environ.get("AUDIOLINK_CONTROL_PORT", "47800"))
 
 
-def serve(session, port=DEFAULT_PORT, local_ops=None):
-    """local_ops: {op: fn(args) -> result} handled in the daemon."""
-    local_ops = local_ops or {}
+def listen(port=DEFAULT_PORT):
+    """Take the control port: the first thing `audiolink host` does, since holding it is
+    also what keeps a second host off the Pi's audio device (two would corrupt the link)."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         srv.bind(("127.0.0.1", port))
     except OSError as e:
-        log.warning("control port 127.0.0.1:%d unavailable (%s); `audiolink wifi` won't work", port, e)
-        return
+        srv.close()
+        log.debug("control port 127.0.0.1:%d: %s", port, e)
+        try:
+            call("peer", port=port, timeout=3)
+        except SystemExit:
+            raise SystemExit("Port %d is taken by another program; give audiolink another: "
+                             "--control-port PORT (the same for its other commands)" % port)
+        raise SystemExit("audiolink host is already running")
     srv.listen(4)
+    return srv
+
+
+def serve(session, srv, local_ops=None):
+    """srv: from listen(). local_ops: {op: fn(args) -> result} handled in the daemon."""
+    local_ops = local_ops or {}
 
     def handle(conn):
         with conn:
@@ -57,9 +69,9 @@ def serve(session, port=DEFAULT_PORT, local_ops=None):
     threading.Thread(target=loop, daemon=True).start()
 
 
-def call(op, args=None, port=DEFAULT_PORT):
+def call(op, args=None, port=DEFAULT_PORT, timeout=120):
     try:
-        conn = socket.create_connection(("127.0.0.1", port), timeout=120)
+        conn = socket.create_connection(("127.0.0.1", port), timeout=timeout)
     except OSError:
         raise SystemExit("audiolink host isn't running (start it: audiolink host)")
     try:

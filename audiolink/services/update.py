@@ -87,9 +87,11 @@ class UpdateService(Service):
             if op == "finish":
                 return self._finish()
             if op == "revert":
-                for p in (self.path, self.path + ".bad", self.new):
-                    if os.path.exists(p):
-                        os.remove(p)
+                found = [p for p in (self.path, self.path + ".bad", self.new) if os.path.exists(p)]
+                if not found and not args.get("restart"):
+                    return {"ok": True, "already": True}    # nothing to undo: no restart
+                for p in found:
+                    os.remove(p)
                 log.info("update: removed; the built-in copy runs from the next start")
                 self._restart_soon()
                 return {"ok": True}

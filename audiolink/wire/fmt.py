@@ -61,3 +61,6 @@ BASELINE = AudioFormat(48000, 2)
 # Tried best-first by the host (see host/audio_format.py).
 CANDIDATES = [AudioFormat(r, c) for r, c in
               ((192000, 8), (96000, 8), (192000, 4), (96000, 4), (192000, 2), (96000, 2), (48000, 8))]
+
+# The only formats either side will switch to.
+SUPPORTED = [BASELINE] + CANDIDATES

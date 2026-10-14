@@ -97,8 +97,8 @@ class Session:
             self.peer_info = info = json.loads(payload.decode())
             if self.role == "pi" and info.get("role") == "host" and info.get("time"):
                 self.clock_offset = info["time"] - time.time()
-            log.info("peer: %s %s, caps=%s", info.get("role"), info.get("version"),
-                     ",".join(info.get("caps", [])))
+            (log.info if self.role == "pi" else log.debug)(       # the host says it in words (host/console.py)
+                "peer: %s %s, caps=%s", info.get("role"), info.get("version"), ",".join(info.get("caps", [])))
             if info.get("version") != __version__ and info.get("version") != self._warned_version:
                 self._warned_version = info.get("version")
                 log.warning("the %s runs audiolink %s, this is %s: features may be missing until both match",
@@ -187,7 +187,8 @@ class Session:
         while True:
             time.sleep(1)
             if self.peer_alive and time.monotonic() - self.link.last_rx > PEER_TIMEOUT:
-                log.warning("peer silent for %.0fs; resetting the link", PEER_TIMEOUT)
+                (log.warning if self.role == "pi" else log.debug)(   # host: host/console.py
+                    "peer silent for %.0fs; resetting the link", PEER_TIMEOUT)
                 self.peer_alive = False
                 self._fail_requests("Pi disconnected")
                 for svc in self.services:

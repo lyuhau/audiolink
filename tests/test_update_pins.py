@@ -65,6 +65,107 @@ class Update(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.u.handle("chunk", {"offset": 0, "data": ""})
 
+    def test_revert_with_nothing_installed_doesnt_restart(self):
+        self.assertTrue(self.u.handle("revert", {})["already"])
+        self.assertEqual(self.restarts, [])
+        self.u.handle("revert", {"restart": True})      # the reset pins: always
+        wait(lambda: self.restarts)
+
+
+class UpdateCommand(unittest.TestCase):
+    """`audiolink update` over USB, against an UpdateService behind a fake host daemon."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.u = UpdateService(self.dir, restart=lambda: None)
+        self.link = {"rate": 96000, "channels": 8}
+        self.calls = []
+        self.answers = True                     # does the Pi answer after the restart?
+
+    def call(self, op, args=None, port=None):
+        self.calls.append(op)
+        if op == "peer":
+            return {"connected": True, "peer": {"caps": ["update"]}}
+        if op == "audio.status":
+            return {"link": self.link, "running": False, "pi": {}}
+        if op == "audio.run":
+            self.link = {"rate": 48000, "channels": 2}
+            return {}
+        if op == "update.status" and "update.finish" in self.calls:     # restarted
+            if not self.answers:
+                raise SystemExit("No Pi plugged in")
+            return dict(self.u.status(), running_hash=self.u.status()["update_hash"])
+        return self.u.handle(op.split(".", 1)[1], args or {})
+
+    def run_cmd(self, *argv):
+        import contextlib
+        import io
+        from unittest import mock
+        from audiolink.__main__ import main
+        from audiolink.host import update_cli
+        from .helpers import FakeClock, patch_time
+        out = io.StringIO()
+        with mock.patch("audiolink.host.control.call", self.call), patch_time(update_cli, FakeClock()), \
+                contextlib.redirect_stdout(out):
+            main(["update"] + list(argv))
+        return out.getvalue()
+
+    def file(self, data):
+        path = os.path.join(self.dir, "x.pyz")
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def refused(self, argv, msg):
+        with self.assertRaises(SystemExit) as e:
+            self.run_cmd(*argv)
+        self.assertIn(msg, str(e.exception.code))
+
+    def test_file_checked_before_the_pi(self):
+        self.refused([os.path.join(self.dir, "nope.pyz")], "No file")
+        self.refused([self.file(b"")], "is empty")
+        self.refused([self.file(b"just bytes")], "isn't an audiolink .pyz")
+        self.refused([self.file(pyz_without_main())], "isn't an audiolink .pyz")
+        self.assertEqual(self.calls, [])
+
+    def test_options_dont_combine(self):
+        self.refused(["--status", "--revert"], "Pick one")
+        self.refused([self.file(pyz()), "--status"], "Pick one")
+        self.refused(["--status", "--at", "10.0.0.2"], "go with --pi")
+        self.assertEqual(self.calls, [])
+
+    def test_revert_with_nothing_installed(self):
+        self.assertIn("already runs its built-in code", self.run_cmd("--revert"))
+
+    def test_status_compares_with_this_computer(self):
+        from unittest import mock
+        path = self.file(pyz())
+        h = hashlib.sha256(pyz()).hexdigest()
+        st = {"running": "/opt/audiolink/audiolink.pyz", "running_hash": h, "update": True, "set_aside": False}
+        self.u.status = lambda: st
+        with mock.patch("audiolink.host.update_cli._this_pyz", lambda: path):
+            out = self.run_cmd("--status")
+        self.assertIn("Running the built-in code (%s, the same as this computer's)" % h[:12], out)
+        self.assertIn("An update is on the card but isn't running", out)
+
+    def test_slows_the_link_before_sending(self):
+        out = self.run_cmd(self.file(pyz()))
+        self.assertLess(self.calls.index("audio.run"), self.calls.index("update.begin"))
+        self.assertIn("sent", out)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "audiolink.pyz")))
+
+    def test_says_when_the_pi_hasnt_come_back(self):
+        self.answers = False
+        self.refused([self.file(pyz())], "hasn't come back yet")
+
+
+def pyz_without_main():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("other.py", "")
+    return buf.getvalue()
+
 
 class Pins(unittest.TestCase):
     def setUp(self):

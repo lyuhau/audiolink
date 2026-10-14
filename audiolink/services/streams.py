@@ -6,7 +6,9 @@ Either side can:
   allow    accept the peer's OPEN requests, but only for listed targets.
 The host can also:
   expose   ask the Pi to listen on a port and bring connections back to a host
-           target; sent in the HELLO, so the Pi re-applies it on every link-up.
+           target; sent in the HELLO, so the Pi re-applies it on every link-up, and
+           answers with an "exposed" event: {"ok": [[pi_port, host, port]],
+           "refused": [[pi_port, why]]} (cap "expose_report").
 
 Messages (all reliable, in order):
   OPEN    "host:port" for a new stream id
@@ -22,6 +24,7 @@ DATA for a stream the receiver has already finished is credited and dropped.
 Relayed sockets use TCP keepalive, so a client that vanished without closing (a laptop
 lid shut mid-ssh) is dropped, and stops counting as connected (services/presence.py).
 """
+import errno
 import logging
 import queue
 import socket
@@ -94,11 +97,13 @@ class Stream:
 
 class Streams(Service):
     name = "streams"
-    caps = ("streams", "expose", "stream_credit")
+    caps = ("streams", "expose", "stream_credit", "expose_report")
     msg_types = (T_OPEN, T_DATA, T_CLOSE, T_CREDIT)
 
     def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535"):
         self.role = role
+        # Every stream opening and closing: the Pi's log keeps them; on the host they're -v detail.
+        self.chatty = log.info if role == "pi" else log.debug
         self.expose = list(expose)                      # host: [(pi_port, (host, port))]
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
@@ -119,7 +124,8 @@ class Streams(Service):
 
     def on_peer_hello(self, info):
         if self.role == "pi":
-            self._apply_expose(info.get("expose", []))
+            report = self._apply_expose(info.get("expose", []))
+            self.session.send_event("exposed", report)
 
     def on_up(self):
         self._close_all()
@@ -174,28 +180,33 @@ class Streams(Service):
 
     # ---- pi: mirror the host's expose list as local listeners
     def _apply_expose(self, wanted):
+        """Returns {"ok": [[port, host, tport]], "refused": [[port, why]]} for the host."""
         with self.llock:
-            self._apply_expose_locked(wanted)
+            return self._apply_expose_locked(wanted)
 
     def _apply_expose_locked(self, wanted):
-        want = {}
+        want, refused = {}, []
         lo, hi = self.expose_range
         for port, host, tport in wanted:
             if not lo <= port <= hi:
-                log.warning("host asked to expose port %d; allowed range is %d-%d", port, lo, hi)
+                refused.append([port, "outside the ports it allows (%d-%d)" % (lo, hi)])
             elif port in self.listeners and not self.listeners[port][2]:
-                log.warning("host asked to expose port %d; already a static --forward", port)
+                refused.append([port, "it's already a static --forward there"])
             else:
                 want[port] = (host, tport)
         for port, (srv, target, exposed) in list(self.listeners.items()):
             if exposed and want.get(port) != target:
                 self._unlisten(port)
-        for port, target in want.items():
+        for port, target in list(want.items()):
             if port not in self.listeners:
                 try:
                     self.forward(port, target, exposed=True)
                 except OSError as e:
-                    log.warning("can't expose port %d: %s", port, e)
+                    del want[port]
+                    refused.append([port, "in use on the Pi" if e.errno == errno.EADDRINUSE else str(e)])
+        for port, why in refused:
+            log.warning("host asked to expose port %d: refused, %s", port, why)
+        return {"ok": [[p, h, tp] for p, (h, tp) in sorted(want.items())], "refused": refused}
 
     def _unlisten(self, port):
         srv, target, exposed = self.listeners.pop(port)
@@ -220,7 +231,7 @@ class Streams(Service):
             self._forget(st)
             link.send(T_CLOSE, st.sid)
             return
-        log.info("stream %d: connected to %s:%d", st.sid, host, port)
+        self.chatty("stream %d: connected to %s:%d", st.sid, host, port)
         threading.Thread(target=self._reader, args=(st,), daemon=True).start()
         self._writer(st)
 
@@ -272,7 +283,7 @@ class Streams(Service):
         if st.closed_tx and st.closed_rx:
             self._forget(st)
             shut(st.sock)
-            log.info("stream %d: closed", st.sid)
+            self.chatty("stream %d: closed", st.sid)
 
     def _forget(self, st):
         with self.lock:
@@ -291,11 +302,15 @@ class Streams(Service):
     def forward(self, lport, target, bind="0.0.0.0", exposed=False):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind((bind, lport))
-        srv.listen(16)
+        try:
+            srv.bind((bind, lport))
+            srv.listen(16)
+        except OSError:
+            srv.close()
+            raise
         with self.llock:
             self.listeners[lport] = (srv, target, exposed)
-        log.info("%s %s:%d -> peer %s:%d", "exposing" if exposed else "forwarding", bind, lport, *target)
+        self.chatty("%s %s:%d -> peer %s:%d", "exposing" if exposed else "forwarding", bind, lport, *target)
 
         def accept_loop():
             while True:
@@ -315,7 +330,7 @@ class Streams(Service):
                     sid = self._new_sid()
                     st = Stream(sid, sock)
                     self.streams[sid] = st
-                log.info("stream %d: %s:%d -> peer %s:%d", sid, addr[0], addr[1], *target)
+                self.chatty("stream %d: %s:%d -> peer %s:%d", sid, addr[0], addr[1], *target)
                 self.session.link.send(T_OPEN, sid, ("%s:%d" % target).encode())
                 threading.Thread(target=self._reader, args=(st,), daemon=True).start()
                 threading.Thread(target=self._writer, args=(st,), daemon=True).start()

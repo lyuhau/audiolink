@@ -81,6 +81,30 @@ class Logs(unittest.TestCase):
             self.s.handle("tail", {"file": "prev/../../etc/shadow"})
         self.assertEqual(self.s.handle("list", {})["files"], ["audiolink.log"])
 
+    def test_unknown_name_says_where_to_look(self):
+        with self.assertRaisesRegex(ValueError, r"No log called nope \(see: audiolink logs --list\)"):
+            self.s.handle("tail", {"file": "nope"})
+        self.assertEqual(self.s._remote(None, {"action": "tail", "file": "nope"}),
+                         {"error": "No log called nope (see: audiolink logs --list)"})
+
+    def test_command_line(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from audiolink.__main__ import main
+        for n in ("0", "-5", "x"):
+            with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()):
+                main(["logs", "-n", n])
+            self.assertEqual(e.exception.code, 2)
+
+        def call(op, args=None, port=None):
+            if op == "peer":
+                return {"connected": False}
+            raise AssertionError(op)
+        with mock.patch("audiolink.host.control.call", call), self.assertRaises(SystemExit) as e:
+            main(["logs"])
+        self.assertEqual(str(e.exception.code), "No Pi plugged in (or over the network: --pi PI)")
+
     def test_prev_dir(self):
         self.assertEqual(prev_dir({"APP_LOGS": "/media/mmcblk0p1/logs"}), "/media/mmcblk0p1/logs/prev")
         self.assertEqual(prev_dir({}), "/boot/logs/prev")          # the older image
