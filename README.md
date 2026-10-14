@@ -188,10 +188,12 @@ python3 build_bin.py                  # dist/ single-file binary for this OS (ne
 python3 -m unittest discover -s tests -t .
 ```
 
+`build_pyz.py` is reproducible: the same sources give the same bytes. Under macOS's
+`/usr/bin/python3` the tests that need TLS 1.3 with Ed25519 are skipped.
+
 The Pi runs audiolink as an app on the usb platform (Alpine in one initramfs; a
 separate, private project: `~/Code/usb`, its README: Apps). Building the card needs
-a checkout of it at `USB_PLATFORM` (default: `DEFAULT_PLATFORM` in
-`tools/build_card.sh`) and its prerequisites (Docker, a venv). `config/` describes the card:
+a checkout of it at `USB_PLATFORM` (default: `~/Code/usb`) and its venv. `config/` describes the card:
 `pi.toml` (dev: USB ethernet with the Pi at `10.55.0.2`, SSH with
 `keys/id_ed25519.pub`, the debug console) and `pi-release.toml` (no USB
 ethernet, no SSH). `pi/app-start.sh` is the app's start: USB ethernet, the
@@ -211,6 +213,45 @@ card through the Pi with `rpiboot`'s mass-storage mode (the platform's README:
 *Build and install the card*) and install onto it the same way.
 State (identity, saved networks, updates) is in the card's `audiolink/`; logs
 in `logs/last` and `logs/prev`.
+
+**Keys** (`keys/`, never committed):
+- `id_ed25519`: SSH into dev cards. `ssh-keygen -t ed25519 -f keys/id_ed25519 -N ''`
+  before the first dev build.
+- `relay.crt`, `relay.key`: the relay's certificate, made once:
+  `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout keys/relay.key -out keys/relay.crt -days 36500 -subj "/CN=relay.lyuhau.com"`.
+  Clients and Pis pin it: `PIN` in `audiolink/relay/__init__.py` is the sha256 of
+  its DER form (`openssl x509 -in keys/relay.crt -outform der | shasum -a 256`).
+- `relay_ed25519`: root SSH on the relay server, for `tools/relay_deploy.sh`.
+
+**The relay** (`relay.lyuhau.com`, an Ubuntu box): `tools/relay_deploy.sh` puts the
+current code and certificate there and restarts the service only if something
+changed (a restart drops every relayed session). On the box:
+`systemctl status audiolink-relay`, `journalctl -u audiolink-relay`,
+`python3 /opt/audiolink/audiolink.pyz relay --status`. A new certificate (or pin)
+cuts off everything that has the old pin: ship code that accepts the new one to all
+clients and Pis first, then swap it.
+
+**Gotchas:**
+- Run the host daemon from a copy (`cp dist/audiolink.pyz build/host.pyz`): every
+  build rewrites `dist/audiolink.pyz` under it.
+- `hot.sh`, `deploy.sh` and `smoke.sh` reach the Pi over USB ethernet; over Wi-Fi:
+  `PI=root@ADDRESS tools/hot.sh`. An update on the card (`audiolink update`) runs
+  instead of the code they install; `hot.sh` and `deploy.sh` say so and offer to remove it.
+- Many daemon restarts or USB rebinds in a row can wedge the Pi's USB until it's
+  replugged.
+- macOS asks to "Allow accessory" whenever the Pi shows up with a new USB
+  configuration (e.g. a release card after a dev one).
+
+**Release:**
+1. Bump `__version__` in `audiolink/__init__.py` (the release workflow refuses a
+   tag that doesn't match it).
+2. Run the tests (also under `/usr/bin/python3`); build both cards
+   (`tools/build_card.sh`, `tools/build_card.sh config/pi-release.toml`) and try
+   them on a Pi.
+3. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+4. Check the release's files: the macOS and Windows binaries, the `.pyz` (also
+   what `audiolink update` sends to a Pi) and `SHA256SUMS`. No card image while
+   the platform is private.
 
 ## License
 
