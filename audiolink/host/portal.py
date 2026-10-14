@@ -89,7 +89,7 @@ def portal_flow(port, wait=True):
     if "proxy" not in (peer["peer"] or {}).get("caps", []):
         raise SystemExit("%s: audiolink too old for sign-in pages (update it)" % pi)
     if not peer.get("proxy_port"):
-        raise SystemExit("Off: audiolink host was started with --proxy-port 0")
+        raise SystemExit("Sign-in pages are off: audiolink host was started with --proxy-port 0")
     st = call("wifi.status", port=port)
     if not st["ssid"]:
         raise SystemExit("%s: not on Wi-Fi (pick a network: audiolink wifi)" % pi)

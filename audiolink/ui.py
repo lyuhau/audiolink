@@ -27,6 +27,11 @@ def done(result):
     _open_step = False
 
 
+def step_open():
+    """Is a step() line waiting for its done()?"""
+    return _open_step
+
+
 def detail(msg, *args):
     """Technical detail: printed only with -v."""
     if VERBOSE:

@@ -10,9 +10,10 @@
   audiolink wifi join NAME                   join (detects the security type, asks only if needed)
   audiolink wifi scan|status|list|forget     manage the Pi's Wi-Fi through a running host
   audiolink wifi portal                      log the Pi in to a captive portal from a browser here
-  audiolink wifi check                       exit 0 = Pi online, 2 = captive portal, 3 = offline
+  audiolink wifi check                       exit 0 = Pi online, 3 = sign-in page, 4 = no internet
   audiolink wifi ap [on|off|auto]            the Pi's own setup network (normally automatic)
   audiolink wifi join NAME --pi PI           over the network (checks the network first when it can)
+  audiolink wifi status|check --pi PI        over the network, the relay included
   audiolink add [CODE]                       add a Pi: plugged in here, on the network, or by code
   audiolink pairing code PI                  a one-time code for adding PI on another machine
   audiolink pis                              list the Pis this machine knows
@@ -97,9 +98,9 @@ def main(argv=None):
     w.add_argument("--portal", action="store_true", help="join: open a captive portal login without asking")
     w.add_argument("--no-portal", action="store_true", help="join: never offer a captive portal login")
     w.add_argument("--password-stdin", action="store_true", help="join: read the password from stdin")
-    w.add_argument("--pi", help="join over the network: which Pi (default: the only one you know)")
-    w.add_argument("--via-network", action="store_true", help="join over the network even if plugged in here")
-    w.add_argument("--tries", type=int, default=1, help="over the network: connection attempts before giving up (max 3)")
+    w.add_argument("--pi", help="join, status, check over the network: which Pi (default: the only one you know)")
+    w.add_argument("--via-network", action="store_true", help="over the network even if plugged in here")
+    w.add_argument("--tries", type=int, help="join over the network: connection attempts before giving up (max 3)")
     w.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     dsc = sub.add_parser("discovery", help="whether the plugged-in Pi publishes on the DHT")
     dsc.add_argument("action", nargs="?", default="status",
@@ -227,7 +228,10 @@ def main(argv=None):
         from .client import wifi_remote
         from .host.wifi_cli import wifi_command, pi_on_usb
         a.control_port = port
-        if a.action == "join" and (a.via_network or a.pi or not pi_on_usb(port)):
+        remote = wifi_remote.over_network(a)
+        if a.action in ("status", "check") and remote:
+            return wifi_remote.status_command(a)
+        if a.action == "join" and (remote or not pi_on_usb(port)):
             return wifi_remote.change_command(a)
         return wifi_command(a)
     if a.cmd == "audio":

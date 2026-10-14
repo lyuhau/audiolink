@@ -147,5 +147,153 @@ class Lock(KeyringCase):
         self.assertEqual(len(keyring.load()), 1)
 
 
+def wifi_args(**kw):
+    base = dict(action=None, name=None, security=None, open=False, hidden=False, reenter=False, portal=False,
+                no_portal=True, password_stdin=False, pi=None, via_network=False, tries=None, at=None,
+                control_port=1)
+    return SimpleNamespace(**dict(base, **kw))
+
+
+class WifiHost(unittest.TestCase):
+    """`audiolink wifi` through the host daemon (control.call faked)."""
+
+    def run_wifi(self, fn, answers, *args):
+        from audiolink.host import wifi_cli
+        calls = []
+
+        def call(op, args=None, port=None):
+            calls.append((op, args))
+            a = answers[op]
+            return a(args) if callable(a) else a
+        out = io.StringIO()
+        code = None
+        with mock.patch.object(wifi_cli, "call", call), contextlib.redirect_stdout(out):
+            try:
+                fn(*args)
+            except SystemExit as e:
+                code = e.code
+        return out.getvalue(), code, calls
+
+    def test_three_wrong_passwords_say_so_three_times(self):
+        from audiolink.host import wifi_cli
+        answers = {"wifi.list": [], "wifi.scan": [{"ssid": "Net", "security": "wpa2", "signal": -50, "freq": 2412,
+                                                   "saved": False}],
+                   "wifi.join": {"joined": False, "code": "auth_failed", "reason": "wrong"}}
+        with mock.patch.object(wifi_cli, "wifi_password", return_value=("password", True)):
+            out, code, _ = self.run_wifi(wifi_cli.join_flow, answers, "Net", wifi_args(), 1)
+        self.assertEqual(out.count("wrong password"), 3)
+        self.assertIn("staying on its known networks", code)
+
+    def test_picking_a_known_network_uses_its_saved_password(self):
+        from audiolink.host import wifi_cli
+        nets = [{"ssid": "Home", "security": "wpa2", "signal": -50, "freq": 2412, "saved": True},
+                {"ssid": "Cafe", "security": "open", "signal": -60, "freq": 2412, "saved": False}]
+        answers = {"wifi.scan": nets, "wifi.status": {"ssid": None}}
+        for pick, known in ((nets[0], None), (nets[1], "open")):
+            with mock.patch.object(wifi_cli, "join_flow") as join, \
+                    mock.patch("audiolink.ui.Prompter.choose", return_value=pick), \
+                    mock.patch("sys.stdin.isatty", return_value=True):
+                self.run_wifi(wifi_cli.pick_flow, answers, wifi_args(), 1)
+            self.assertEqual(join.call_args[1]["known_security"], known)
+
+    def test_five_ghz_looks_like(self):
+        from audiolink.host import wifi_cli
+        for name in ("Home5G", "Home-5GHz", "Home 5G", "Home_5"):
+            msg, twin = wifi_cli._suggest(name, [{"ssid": "Home"}])
+            self.assertIn("looks like a 5 GHz network", msg)
+            self.assertEqual(twin, "Home")
+        self.assertNotIn("5 GHz", wifi_cli._suggest("Room 5", [])[0])
+
+    def test_forget(self):
+        from audiolink.host import wifi_cli
+        peer = {"connected": True, "peer": {"caps": ["wifi"]}}
+        answers = {"peer": peer, "wifi.list": [{"ssid": "Home"}], "wifi.status": {"ssid": "Home"},
+                   "wifi.forget": {}}
+        out, code, calls = self.run_wifi(wifi_cli.wifi_command, answers, wifi_args(action="forget", name="Foo"))
+        self.assertEqual(code, "Foo isn't a known network (see: audiolink wifi list)")
+        self.assertNotIn("wifi.forget", [c[0] for c in calls])
+        out, code, _ = self.run_wifi(wifi_cli.wifi_command, answers, wifi_args(action="forget", name="Home"))
+        self.assertIn("was on it", out)
+
+    def test_check_exit_codes(self):
+        from audiolink.host import wifi_cli
+        peer = {"connected": True, "peer": {"caps": ["wifi"]}}
+        for r, want, text in (({"internet": "online", "ssid": "N"}, 0, "online"),
+                              ({"internet": "portal", "ssid": "N"}, 3, "sign-in page"),
+                              ({"internet": "offline", "ssid": "N"}, 4, "no internet"),
+                              ({"internet": "offline", "ssid": None}, 4, "not on Wi-Fi")):
+            out, code, _ = self.run_wifi(wifi_cli.wifi_command, {"peer": peer, "wifi.check": r},
+                                         wifi_args(action="check"))
+            self.assertEqual((code, text in out), (want, True))
+
+    def test_extra_name_is_an_error(self):
+        from audiolink.host import wifi_cli
+        _, code, calls = self.run_wifi(wifi_cli.wifi_command, {}, wifi_args(action="status", name="extra"))
+        self.assertEqual(code, "audiolink wifi status takes no network name")
+
+
+class WifiNetwork(unittest.TestCase):
+    def test_flags_only_where_they_work(self):
+        from audiolink.client import wifi_remote
+        for action in (None, "scan", "list", "forget", "portal", "ap"):
+            for kw in ({"pi": "x"}, {"via_network": True}, {"at": ["1.2.3.4"]}, {"tries": 2}):
+                with self.assertRaisesRegex(SystemExit, "work only with join and status/check"):
+                    wifi_remote.over_network(wifi_args(action=action, **kw))
+        self.assertTrue(wifi_remote.over_network(wifi_args(action="status", pi="x")))
+        self.assertFalse(wifi_remote.over_network(wifi_args(action="status")))
+
+    def test_join_needs_a_name_before_searching(self):
+        from audiolink.client import wifi_remote
+        with mock.patch.object(wifi_remote, "reach") as reach:
+            with self.assertRaisesRegex(SystemExit, "Usage"):
+                wifi_remote.change_command(wifi_args(action="join"))
+        reach.assert_not_called()
+
+    def test_pi_uses_the_scanned_security(self):
+        from audiolink.services import wifi_remote
+
+        class Wifi:
+            def last_scan(self):
+                return 5, [{"ssid": "Cafe", "security": "open", "freq": 2412}]
+
+            def saved_entry(self, ssid):
+                return None
+
+            def saved_names(self):
+                return []
+
+            def current_ssid(self):
+                return "Home"
+
+        class Endpoint:
+            def __init__(self):
+                self.ops = {}
+
+            def register(self, op, fn, level=None):
+                self.ops[op] = fn
+
+        class Radio:
+            def run(self, fn, *args):
+                self.args = args
+                return {"accepted": True}
+
+            def submit(self, *args):
+                pass
+
+        class Conn:
+            route = "lan"
+
+            def open(self, blob):
+                return {"ssid": "Cafe"}             # no security given
+
+        ep, radio = Endpoint(), Radio()
+        with mock.patch.object(wifi_remote, "cleanup_trial"):
+            wifi_remote.WifiRemoteService(Wifi(), None, ep, None, radio)
+        self.assertEqual(ep.ops["change_status"](Conn(), {"ssid": "Cafe"})["security"], "open")
+        self.assertEqual(ep.ops["change_wifi"](Conn(), {"sealed": ""}), {"accepted": True})
+        args, ent = radio.args[0], radio.args[1]
+        self.assertEqual((args["security"], ent["security"]), ("open", "open"))
+
+
 if __name__ == "__main__":
     unittest.main()
