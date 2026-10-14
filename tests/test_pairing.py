@@ -16,7 +16,11 @@ from audiolink.services import endpoint
 from audiolink.services.access import PAIRED
 from audiolink.services.endpoint import Endpoint
 from audiolink.services.identity import IdentityService
-from audiolink.services.pairing import PairingService
+from audiolink.crypto import Spake2
+from audiolink.services import pairing as services_pairing
+from audiolink.services.pairing import ID_CLIENT, ID_PI, PairingService
+
+from .helpers import FakeClock, patch_time
 
 
 class SlowAsk:
@@ -102,6 +106,84 @@ class AddOverNetwork(unittest.TestCase):
         entry, out = self.add(SlowAsk(code, wait=0))
         self.assertIn("code has changed; this computer needs a pairing code", out)
         self.assertEqual(entry["code"], self.identity.code())
+
+
+class FakeConn:
+    """The Pi's view of one pairing attempt; plays the client's part with `code`."""
+
+    def __init__(self, ip, code):
+        self.addr = (ip, 5000)
+        self.spake = Spake2("A", code or "", ID_CLIENT, ID_PI)
+        self.sent, self.proven = [], False
+
+    def send(self, obj):
+        self.sent.append(obj)
+
+    def recv(self):
+        _, ours, _ = self.spake.finish(bytes.fromhex(self.sent[-1]["msg"]))
+        return {"confirm": ours.hex()}
+
+    def prove(self):
+        self.proven = True
+
+
+class FakeEndpoint:
+    def register(self, *args):
+        pass
+
+
+class Guessing(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.identity = IdentityService(self.dir)
+        self.identity.claim()
+        self.svc = PairingService(self.identity, FakeEndpoint())
+        self.clock = FakeClock()
+        patch = patch_time(services_pairing, self.clock)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def attempt(self, ip, code):
+        conn = FakeConn(ip, code)
+        with self.assertRaises(StopIteration):
+            self.svc._pair(conn, {"op": "pair", "msg": conn.spake.msg.hex()})
+        return conn
+
+    def test_wrong_codes_hold_back_that_address_only(self):
+        code = self.svc.new_code()["code"]
+        self.assertEqual(self.attempt("10.0.0.9", "000000").sent[-1]["error"], "Wrong code (2 tries left)")
+        self.assertIn("Too many wrong codes", self.attempt("10.0.0.9", code).sent[-1]["error"])
+        ok = self.attempt("10.0.0.2", code)
+        self.assertIn("payload", ok.sent[-1])
+        self.assertTrue(ok.proven)
+
+    def test_backoff_grows_then_is_forgotten(self):
+        self.svc.new_code()
+        for _ in range(3):
+            self.attempt("10.0.0.9", "000000")
+            self.clock.advance(services_pairing.MAX_BACKOFF)
+        self.assertEqual(self.svc.failures["10.0.0.9"]["count"], 3)
+        self.clock.advance(services_pairing.DECAY)
+        self.attempt("10.0.0.9", "000000")
+        self.assertEqual(self.svc.failures["10.0.0.9"]["count"], 1)
+
+    def test_asking_doesnt_tell_whether_a_code_is_active(self):
+        none = self.attempt("10.0.0.9", "123456")
+        self.clock.advance(services_pairing.MAX_BACKOFF)
+        self.svc.new_code()
+        some = self.attempt("10.0.0.9", "123456")
+        self.assertEqual(set(none.sent[0]), {"msg"})
+        self.assertEqual(set(some.sent[0]), {"msg"})
+        self.assertIn("expired or been used up; get a new one: audiolink pairing code", none.sent[-1]["error"])
+
+    def test_last_try(self):
+        self.svc.new_code()
+        for left in (2, 1):
+            self.attempt("10.0.0.%d" % left, "000000")
+        self.assertEqual(self.svc.code["tries"], 1)
+        self.assertIn("last try", self.attempt("10.0.0.3", "000000").sent[-1]["error"])
+        self.assertIn("expired or been used up", self.attempt("10.0.0.4", "000000").sent[-1]["error"])
 
 
 class Replies(unittest.TestCase):

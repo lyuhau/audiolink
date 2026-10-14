@@ -6,7 +6,10 @@
                 (over the network: the authenticated "new_code" request)
 Codes expire after CODE_TTL, work once, and allow MAX_TRIES guesses. Pairing runs
 SPAKE2 with the code, so the code never crosses the network and a recording of the
-exchange can't be used to guess it offline; failed attempts back off exponentially.
+exchange can't be used to guess it offline. Wrong codes back off exponentially per
+address (one stranger can't lock everyone out), forgotten after DECAY s without one.
+A claimed Pi runs the exchange whether or not a code is active (with none, against a
+random one), so asking doesn't tell a stranger when there's a code to guess.
 
 Endpoint requests:
   {"op":"pair","msg":X,"client":id} -> {"msg":Y}; {"confirm":cA} -> {"confirm":cB,"payload":sealed}
@@ -28,6 +31,7 @@ log = logging.getLogger("audiolink")
 CODE_TTL = 300
 MAX_TRIES = 3
 MAX_BACKOFF = 300
+DECAY = 600                     # s without a wrong code before an address starts over
 ID_CLIENT, ID_PI = b"audiolink client", b"audiolink pi"
 
 
@@ -39,8 +43,7 @@ class PairingService(Service):
         self.identity = identity
         self.lock = threading.Lock()
         self.code = None                # {"code", "expires", "tries"}
-        self.failures = 0
-        self.blocked_until = 0.0
+        self.failures = {}              # address -> {"count", "until", "last"}
         endpoint.register("pair", self._pair)
         endpoint.register("new_code", self._new_code_remote, PAIRED)
 
@@ -78,43 +81,54 @@ class PairingService(Service):
         return {"sealed": conn.seal(issued)}
 
     def _pair(self, conn, req):
+        ip = conn.addr[0]
         with self.lock:
-            wait = self.blocked_until - time.monotonic()
-            if wait > 0:
-                conn.send({"error": "Too many wrong codes; retry in %ds" % wait})
+            now = time.monotonic()
+            self.failures = {k: f for k, f in self.failures.items() if now - f["last"] < DECAY}
+            failed = self.failures.get(ip)
+            if failed and failed["until"] > now:
+                conn.send({"error": "Too many wrong codes; retry in %ds" % -(-(failed["until"] - now) // 1)})
                 raise StopIteration
             claimed = self.identity.claimed()
             c = self._active_code() if claimed else None
-            if claimed and not c:
-                conn.send({"error": "Pairing code needed (on a computer that knows %s: audiolink pairing code %s)"
-                                    % ((self.identity.pi_name(),) * 2)})
-                raise StopIteration
-            password = c["code"] if c else ""
+            password = c["code"] if c else (secrets.token_hex(16) if claimed else "")
         b = Spake2("B", password, ID_CLIENT, ID_PI)
         try:
             key, ours, theirs = b.finish(bytes.fromhex(req["msg"]))
-        except ValueError:
+        except (KeyError, TypeError, ValueError):
             conn.send({"error": "Bad request"})
             raise StopIteration
         conn.send({"msg": b.msg.hex()})
-        confirm = bytes.fromhex(conn.recv().get("confirm", ""))
+        try:
+            confirm = bytes.fromhex(str(conn.recv().get("confirm", "")))
+        except AttributeError:
+            confirm = b""
+        name = self.identity.pi_name()
         with self.lock:
             if not hmac.compare_digest(confirm, theirs):
-                self.failures += 1
-                self.blocked_until = time.monotonic() + min(MAX_BACKOFF, 2 ** self.failures)
+                now = time.monotonic()
+                count = (self.failures.get(ip) or {}).get("count", 0) + 1
+                self.failures[ip] = {"count": count, "until": now + min(MAX_BACKOFF, 2 ** count), "last": now}
                 if c:
                     c["tries"] -= 1
-                log.warning("pairing: wrong code from %s (%d tries left)", conn.addr[0], c["tries"] if c else 0)
-                conn.send({"error": "Wrong code"})
+                log.warning("pairing: wrong code from %s (%s)", conn.addr[0],
+                            "%d tries left" % c["tries"] if c else "no code active")
+                if c and c["tries"] > 0:
+                    error = "Wrong code (%d %s left)" % (c["tries"], "try" if c["tries"] == 1 else "tries")
+                elif c:
+                    error = "Wrong code, and that was its last try; get a new one: audiolink pairing code %s" % name
+                else:
+                    error = "That code has expired or been used up; get a new one: audiolink pairing code %s" % name
+                conn.send({"error": error})
                 raise StopIteration
-            self.failures = 0
+            self.failures.pop(ip, None)
             if c:
                 self.code = None        # single use
         conn.prove()                    # someone legitimate is here (services/presence.py)
         first = not claimed
         if first:
             self.identity.claim()
-        payload = {"code": self.identity.code(), "name": self.identity.pi_name()}
+        payload = {"code": self.identity.code(), "name": name}
         conn.send({"confirm": ours.hex(), "payload": seal(key, json.dumps(payload).encode()).hex()})
         log.info("pairing: %s paired from %s%s", req.get("client", "a machine"), conn.addr[0],
                  " (first: claimed)" if first else "")
