@@ -169,8 +169,14 @@ def main(argv=None):
         p.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     for p in (upd, lg, sh):
         p.add_argument("--key", metavar="FILE", help="debug key (OpenSSH ed25519 private key, or .pub with ssh-agent)")
-    dbg = sub.add_parser("debug", help="the plugged-in Pi's debug switch: root access over the network")
-    dbg.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
+    dbg = sub.add_parser("debug", help="the plugged-in Pi's debug switch: root access over the network",
+                         formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+                             "The plugged-in Pi's debug switch: root access over the network (`audiolink shell PI`,\n"
+                             "`audiolink update --pi PI`). Only the computer the Pi is plugged into changes it.\n\n"
+                             "  status    is it on, for whom, until when (default)\n"
+                             "  on        turn it on (24 h; --auth none: 1 h)\n"
+                             "  off       turn it off and close open network shells"))
+    dbg.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"], help="see above")
     dbg.add_argument("--auth", choices=["paired", "key", "none"],
                      help="on: who gets in (default paired: computers that added the Pi)")
     dbg.add_argument("--key", action="append", metavar="FILE", help="on: an ed25519 public key file (repeatable)")
