@@ -196,6 +196,22 @@ class Reaching(KeyringCase):
                          r'"C:\Program Files\audiolink.exe"')
 
 
+class Discovery(unittest.TestCase):
+    def test_status_lines(self):
+        from audiolink.host.discovery import status_line
+        now = 1_800_000_000
+        base = {"now": now, "clock_known": True, "online": True, "published": None, "error": None}
+        for st, on, want in (
+                ({}, False, "not published (turn on: audiolink discovery enable); the relay works either way"),
+                ({"clock_known": False}, True, "waiting for the time"),
+                ({"online": False, "published": now - 600}, True, "waiting for internet; last published 10 min ago"),
+                ({"error": "boom", "published": now - 60}, True, "publishing failed (retrying; last published 1 min"),
+                ({}, True, "publishing shortly"),
+                ({"published": now - 5 * 3600}, True, "last published 5 h ago: record probably expired (offline?)"),
+                ({"published": now - 20}, True, "published just now")):
+            self.assertIn(want, status_line("pi", dict(base, **st), on))
+
+
 def wifi_args(**kw):
     base = dict(action=None, name=None, security=None, open=False, hidden=False, reenter=False, portal=False,
                 no_portal=True, password_stdin=False, pi=None, via_network=False, tries=None, at=None,

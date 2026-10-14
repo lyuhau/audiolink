@@ -76,7 +76,7 @@ The binaries aren't code-signed yet:
 | `audiolink find PI` / `connect PI PORT` | is it online (its relay) and where (the DHT) / pipe to it (ssh `ProxyCommand`) |
 | `audiolink ssh-config [--user NAME]` | `~/.ssh/config` entries for known Pis (logging in to the computer each is plugged into) |
 | `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap]` | the Pi's Wi-Fi; `join`, `status`, `check` also over the network (`--pi PI`) |
-| `audiolink discovery [enable\|disable\|status]` | whether the Pi publishes on the DHT |
+| `audiolink discovery [status\|enable\|disable\|publish\|code]` | whether the plugged-in Pi publishes where it is on the DHT (the relay works either way) |
 | `audiolink audio [status\|sweep\|set RATExCH\|forget]` | the link's audio format (see *How it works*) |
 | `audiolink update [PYZ] [--revert\|--status] [--pi PI]` | new code for the plugged-in Pi, over the link (kept on its card); `--pi`: over the network |
 | `audiolink logs [FILE] [-n N] [--list] [--pi PI]` | the plugged-in Pi's logs, over the link; `--pi`: over the network |

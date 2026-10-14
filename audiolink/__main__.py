@@ -109,7 +109,13 @@ def main(argv=None):
     w.add_argument("--via-network", action="store_true", help="over the network even if plugged in here")
     w.add_argument("--tries", type=int, help="join over the network: connection attempts before giving up (max 3)")
     w.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
-    dsc = sub.add_parser("discovery", help="whether the plugged-in Pi publishes on the DHT")
+    dsc = sub.add_parser("discovery", help="whether the plugged-in Pi publishes on the DHT",
+                         formatter_class=argparse.RawDescriptionHelpFormatter, epilog="""\
+  status    is it published, and when (default)
+  enable    publish its network and address on the DHT, for `audiolink find`/`connect`
+  disable   stop publishing (the relay works either way)
+  publish   publish again now
+  code      print its connect code (as: audiolink share)""")
     dsc.add_argument("action", nargs="?", default="status",
                      choices=["enable", "disable", "code", "status", "publish"])
     add = sub.add_parser("add", help="add a Pi: the one plugged in here, or by connect code")
