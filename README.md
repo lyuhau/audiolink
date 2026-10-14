@@ -119,8 +119,8 @@ on its setup network, or pair with a 6-digit code from a computer that has it
 \* The relay only carries computers that have the Pi's code. `--for 30m|2h|1d` sets
 the time, `--persist` keeps the switch across the Pi's restarts (otherwise it's in
 RAM). Turning it off, the time running out and holding the reset pins for 5 s end it
-and close open network shells (a new code closes them too). Over USB, `audiolink shell` always
-works. The Pi logs every debug request and every refusal.
+and close open network shells; so do a new code and narrowing the switch (another mode,
+a key taken off, no more `--setup`). Over USB, `audiolink shell` always works. The Pi logs every debug request and every refusal.
 
 **Encryption:** every network connection to the Pi (LAN, setup network, relay) is
 TLS 1.3 end to end; the relay only passes it on. The Pi's certificate is for its own

@@ -136,7 +136,7 @@ class Switch(unittest.TestCase):
         self.clock.advance(1)
         d.check()
         self.assertEqual(d.status()["mode"], "off")
-        self.assertEqual(ended, ["expired"])
+        self.assertEqual(ended, ["debug access changed", "expired"])     # paired -> none, then time
 
     def test_key_mode_needs_a_key(self):
         with self.assertRaises(ValueError):
@@ -227,6 +227,8 @@ class EndpointAccess(unittest.TestCase):
         self.assertTrue(c.ask(good)["ok"])                  # again on the same connection
         replayed = self.client()
         self.assertEqual(replayed.ask(good)["code"], "debug_key")     # another connection, another nonce
+        self.debug.set({"mode": "key", "keys": [ed25519_public(other).hex()]})
+        self.assertEqual(c.ask(good)["code"], "debug_key")  # a key taken off the list, even if checked before
 
     def test_none_on_the_lan_but_not_unplaceable(self):
         self.debug.set({"mode": "none", "setup": True})

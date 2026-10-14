@@ -149,8 +149,8 @@ class Endpoint:
                 key, sig = bytes.fromhex(got[0]), bytes.fromhex(got[1])
             except ValueError:
                 return proven
-            if got in conn.verified or (key in self.debug.keys() and
-                                        ed25519_verify(key, key_message(op, conn.nonce, conn.pub), sig)):
+            if key in self.debug.keys() and (got in conn.verified or       # still one of the keys
+                                             ed25519_verify(key, key_message(op, conn.nonce, conn.pub), sig)):
                 conn.verified.add(got)
                 proven.add("key")
         return proven

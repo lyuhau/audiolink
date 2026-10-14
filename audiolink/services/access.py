@@ -85,6 +85,17 @@ def decide(need, route, proven, switch, now):
     return ("debug_off", "Debug access is off")
 
 
+def narrows(old, new):
+    """Might someone the old switch let in be shut out by the new one? (Then what they
+    opened, network shells, is closed.) A longer time or another key doesn't."""
+    if old.get("mode", "off") == "off":
+        return False
+    if new.get("mode", "off") != old["mode"]:
+        return True
+    return bool(set(old.get("keys", [])) - set(new.get("keys", []))) or \
+        (bool(old.get("setup")) and not new.get("setup"))
+
+
 def routes_for(switch):
     """The network routes debug access is open on (for status)."""
     mode = switch.get("mode", "off")
@@ -136,7 +147,7 @@ class DebugService(Service):
     def __init__(self, state_dir=None):
         self.path = Path(state_dir) / "debug.json" if state_dir else None
         self.lock = threading.Lock()
-        self.listeners = []             # fn(reason) when debug access ends (off, expiry)
+        self.listeners = []             # fn(reason) when debug access ends or narrows
         self.state = {"mode": "off"}
         self.shells = lambda: 0         # () -> open network shells (services/shell.py)
         self.saved = time.monotonic()
@@ -184,10 +195,13 @@ class DebugService(Service):
         state = {"mode": mode, "keys": keys if mode == "key" else [], "setup": bool(args.get("setup")),
                  "for": secs, "deadline": time.monotonic() + secs, "persist": bool(args.get("persist"))}
         with self.lock:
-            self.state = state
+            was, self.state = self.state, state
         self._save(state)
         log.info("debug: on (%s%s) for %ds%s", mode, ", setup network too" if state["setup"] else "",
                  secs, ", kept across restarts" if state["persist"] else "")
+        if narrows(was, state):
+            for fn in self.listeners:
+                fn("debug access changed")
         return self.status()
 
     def off(self, why):
