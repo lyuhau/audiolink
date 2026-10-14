@@ -1,14 +1,16 @@
 #!/bin/sh
 # Put the current code on the relay server (an Ubuntu box reachable as root) and
-# (re)start it. Safe to run again: restarts only when the code or certificate changed,
-# which drops every relayed session.
+# (re)start it. Safe to run again: restarts (dropping every relayed session) only
+# when the code, certificate or systemd unit changed; build_pyz.py is reproducible.
 #   RELAY=root@relay.lyuhau.com tools/relay_deploy.sh
 set -e
 cd "$(dirname "$0")/.."
 RELAY=${RELAY:-root@relay.lyuhau.com}
 SSH="ssh -i keys/relay_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR"
 python3 build_pyz.py >/dev/null
-before=$($SSH $RELAY 'cat /opt/audiolink/*.pyz /etc/audiolink/relay.* 2>/dev/null | sha256sum')
+# Everything the service runs from: a change to any of it restarts it.
+STATE='cat /opt/audiolink/*.pyz /etc/audiolink/relay.* /etc/systemd/system/audiolink-relay.service 2>/dev/null | sha256sum'
+before=$($SSH $RELAY "$STATE")
 $SSH $RELAY 'mkdir -p /opt/audiolink /etc/audiolink && chmod 700 /etc/audiolink'
 $SSH $RELAY 'cat > /opt/audiolink/audiolink.pyz' < dist/audiolink.pyz
 $SSH $RELAY 'cat > /etc/audiolink/relay.crt' < keys/relay.crt
@@ -39,7 +41,7 @@ MemoryMax=300M
 [Install]
 WantedBy=multi-user.target
 UNIT
-after=$($SSH $RELAY 'cat /opt/audiolink/*.pyz /etc/audiolink/relay.* | sha256sum')
+after=$($SSH $RELAY "$STATE")
 $SSH $RELAY 'command -v ufw >/dev/null && { ufw allow 22/tcp >/dev/null; ufw allow 443/tcp >/dev/null; ufw --force enable >/dev/null; }
              systemctl daemon-reload; systemctl enable -q audiolink-relay'
 if [ "$before" != "$after" ] || ! $SSH $RELAY 'systemctl -q is-active audiolink-relay'; then
