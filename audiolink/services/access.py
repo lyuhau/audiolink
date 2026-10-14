@@ -161,7 +161,7 @@ class DebugService(Service):
 
     def __init__(self, state_dir=None, run_dir=None):
         self.path = Path(state_dir) / "debug.json" if state_dir else None
-        self.run = Path(run_dir) / "debug.json" if run_dir else None
+        self.run_file = Path(run_dir) / "debug.json" if run_dir else None
         self.lock = threading.Lock()
         self.listeners = []             # fn(reason) when debug access ends or narrows
         self.state = {"mode": "off"}
@@ -275,19 +275,19 @@ class DebugService(Service):
 
     def _save_run(self, state):
         """A switch that isn't kept on the card is kept in RUN_DIR, until it ends."""
-        if not self.run:
+        if not self.run_file:
             return
         boot = boot_id()
         try:
             if state.get("mode", "off") != "off" and not state.get("persist") and boot:
                 data = {k: state[k] for k in ("mode", "keys", "setup", "for", "deadline")}
-                save_json(self.run, dict(data, boot=boot))
+                save_json(self.run_file, dict(data, boot=boot))
             else:
-                os.remove(str(self.run))
+                os.remove(str(self.run_file))
         except FileNotFoundError:
             pass
         except (OSError, ValueError) as e:
-            log.warning("debug: couldn't keep the switch in %s: %s", self.run.parent, e)
+            log.warning("debug: couldn't keep the switch in %s: %s", self.run_file.parent, e)
 
     def _stored(self):
         try:
@@ -301,10 +301,10 @@ class DebugService(Service):
             self._load_run()
 
     def _load_run(self):
-        if not self.run:
+        if not self.run_file:
             return
         try:
-            d = load_json(self.run) or {}
+            d = load_json(self.run_file) or {}
             mode = d.get("mode", "off")
             if mode == "off" or mode not in MODES or not d.get("boot") or d["boot"] != boot_id():
                 return
@@ -317,7 +317,7 @@ class DebugService(Service):
                           "for": secs, "deadline": deadline, "persist": False}
             log.info("debug: on (%s) from before audiolink restarted, %ds left", mode, left)
         except Exception as e:          # damaged: off
-            log.warning("debug: switch in %s unreadable (%s); off", self.run.parent, e)
+            log.warning("debug: switch in %s unreadable (%s); off", self.run_file.parent, e)
             self.state = {"mode": "off"}
 
     def _load_card(self):

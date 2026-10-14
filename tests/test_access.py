@@ -415,3 +415,13 @@ class DebugCommand(unittest.TestCase):
         for argv in (["on", "--auth", "key"], ["on", "--setup"], ["on", "--for", "forever"]):
             with self.assertRaises(SystemExit, msg=argv):
                 self.run_cmd(*argv)
+
+
+class RunsForReal(unittest.TestCase):
+    def test_run_is_still_a_method_with_a_run_dir(self):
+        """The /run copy of the switch once shadowed run() (the Pi crash-looped)."""
+        import tempfile
+        from audiolink.services.access import DebugService
+        d = tempfile.mkdtemp()
+        svc = DebugService(state_dir=d, run_dir=d) if "state_dir" in DebugService.__init__.__code__.co_varnames else DebugService(run_dir=d)
+        self.assertTrue(callable(svc.run))
