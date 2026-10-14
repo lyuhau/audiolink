@@ -28,7 +28,7 @@
   audiolink shell [PI]                       root shell: the plugged-in Pi, or PI over the network
   audiolink debug on|off|status              the plugged-in Pi's debug switch (network root access)
   audiolink rotate-secret                    new code for the plugged-in Pi: other computers lose access
-  audiolink relay [--listen HOST:PORT]       (a server) the relay Pis and clients meet at
+  audiolink relay --listen HOST:PORT         (a server) the relay Pis and clients meet at
   audiolink dht-size                         estimate how many DHT nodes are out there
   audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
 
@@ -160,10 +160,12 @@ def main(argv=None):
     dbg.add_argument("--persist", action="store_true", help="on: keep it across the Pi's restarts")
     sub.add_parser("rotate-secret", help="new code for the plugged-in Pi: other computers lose access")
     rly = sub.add_parser("relay", help="run a relay that Pis and clients meet at (on a server)")
-    rly.add_argument("--listen", default="0.0.0.0:443", metavar="HOST:PORT")
-    rly.add_argument("--cert", default="keys/relay.crt")
-    rly.add_argument("--key", default="keys/relay.key")
-    rly.add_argument("--status", action="store_true", help="ask the running relay for its counts")
+    rly.add_argument("--listen", metavar="HOST:PORT",
+                     help="where to listen, e.g. 0.0.0.0:443 (every interface) or [::]:443; required")
+    rly.add_argument("--cert", default="keys/relay.crt", help="its TLS certificate (default: %(default)s)")
+    rly.add_argument("--key", default="keys/relay.key", help="the certificate's key (default: %(default)s)")
+    rly.add_argument("--status", action="store_true",
+                     help="ask the relay running here for its counts (port from --listen, default 443)")
     size = sub.add_parser("dht-size", help="estimate the size of the BitTorrent DHT")
     size.add_argument("--samples", type=int, default=8)
     roles = {"host": sub.add_parser("host", help="run on the Mac/PC the Pi is plugged into"),

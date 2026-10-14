@@ -21,8 +21,12 @@ def parse_relay(spec):
 
 
 def parse_addr(spec, default_port=443):
-    """'host:443' or 'host' -> ('host', 443)."""
+    """'host:443' or 'host' -> ('host', 443); IPv6 as '[::1]:443', '[::1]' or '::1'."""
+    if spec.startswith("["):
+        host, _, rest = spec[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+        return host, int(port) if port.isdigit() else default_port
     host, sep, port = spec.rpartition(":")
-    if not sep or not port.isdigit():
+    if not sep or not port.isdigit() or ":" in host:
         return spec, default_port
     return host, int(port)

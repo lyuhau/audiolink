@@ -199,12 +199,12 @@ class Relay:
                     "waiting": len(self.waiting), "up": int(time.time() - self.started)}
 
 
-def ask_status(port):
+def ask_status(port, loopback="127.0.0.1"):
     """The relay's counts, asked over loopback (only loopback may ask)."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE         # our own relay, over loopback
-    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+    with socket.create_connection((loopback, port), timeout=5) as raw:
         with ctx.wrap_socket(raw) as sock:
             send_line(sock, {"v": VERSION, "role": "status"})
             return read_line(sock)
@@ -212,15 +212,34 @@ def ask_status(port):
 
 def relay_command(a):
     from ..ui import done
-    host, port = parse_addr(a.listen)
     if a.status:
-        st = ask_status(port)
+        host, port = parse_addr(a.listen or "127.0.0.1:443")
+        try:
+            st = ask_status(port, "::1" if ":" in host else "127.0.0.1")
+        except ConnectionRefusedError:
+            raise SystemExit("No relay running on port %d" % port)
+        except (OSError, ValueError) as e:
+            raise SystemExit("The relay on port %d didn't answer (%s)" % (port, e))
         print("%d Pis connected, %d sessions, %d waiting, up %ds"
               % (st["pis"], st["sessions"], st["waiting"], st["up"]))
         return
+    if not a.listen:        # no default: a relay listens on a public port, on purpose
+        raise SystemExit("Say where to listen: --listen 0.0.0.0:443 (every interface, as on the "
+                         "relay server) or e.g. --listen 127.0.0.1:8443")
+    host, port = parse_addr(a.listen)
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    relay = Relay(server_context(a.cert, a.key))
-    srv = relay.listen(host, port)
-    done("relay on %s:%d" % (host, port))
+    for path in (a.cert, a.key):
+        if not os.path.isfile(path):
+            raise SystemExit("No certificate at %s (--cert/--key; README: Development)" % path)
+    try:
+        ctx = server_context(a.cert, a.key)
+    except (OSError, ssl.SSLError) as e:
+        raise SystemExit("Can't use the certificate %s with the key %s: %s" % (a.cert, a.key, e))
+    relay = Relay(ctx)
+    try:
+        srv = relay.listen(host, port)
+    except OSError as e:
+        raise SystemExit("Can't listen on %s: %s" % (a.listen, e.strerror or e))
+    done("relay on %s" % a.listen)
     relay.serve(srv)

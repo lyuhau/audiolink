@@ -349,3 +349,12 @@ class ThroughTheRelay(unittest.TestCase):
     def test_offline_pi(self):
         with self.assertRaisesRegex(Refused, "offline"):
             self.connect(self.echo.port)
+
+
+class Addresses(unittest.TestCase):
+    def test_parse_addr(self):
+        from audiolink.relay import parse_addr
+        for spec, want in (("relay.example:8443", ("relay.example", 8443)), ("relay.example", ("relay.example", 443)),
+                           ("0.0.0.0:443", ("0.0.0.0", 443)), ("[::1]:8443", ("::1", 8443)),
+                           ("[::]", ("::", 443)), ("::1", ("::1", 443))):
+            self.assertEqual(parse_addr(spec), want, spec)
