@@ -4,14 +4,16 @@ Joining works out the network's security from the Pi's scan and asks only for wh
 missing; it suggests near-misses (5 GHz twins, other-case names) and re-prompts on a
 wrong password. Requests go through the running host daemon (control.call).
 """
+import re
 import time
 
 from .control import call
 from .portal import offer_portal, portal_flow
+from .. import ui
 from ..ui import Prompter, detail, done, line_buffered, step
 from ..wifi_ui import FAILURE, SEC_LABEL, bars, wifi_password
 
-FIVE_GHZ_SUFFIXES = ("_5g", "-5g", "_5ghz", "-5ghz", " 5g", "_5", "-5", " 5ghz", ".5g")
+FIVE_GHZ = re.compile(r"(?i)(?:[ _.-]?5 ?g(?:hz)?|[_-]5)$")     # Home5G, Home-5GHz, Home 5G, Home_5
 
 
 PI = "the Pi"                           # the plugged-in Pi's name, once known (_set_pi)
@@ -26,13 +28,15 @@ def _suggest(name, nets):
     """Near-misses for a name the Pi can't see: (message, suggested ssid or None)."""
     visible = {n["ssid"] for n in nets}
     low = name.lower()
-    for suf in FIVE_GHZ_SUFFIXES:
-        if low.endswith(suf):
-            base = name[:-len(suf)]
-            twin = next((v for v in visible if v.lower() == base.lower()), None)
-            if twin:
-                return ("%s is 5 GHz; %s only sees 2.4 GHz. Same network on 2.4 GHz: %s" % (name, PI, twin), twin)
-            return ("%s is 5 GHz; %s only sees 2.4 GHz (use the router's 2.4 GHz network)" % (name, PI), None)
+    five = FIVE_GHZ.search(name)
+    if five and five.start():
+        base = name[:five.start()]
+        twin = next((v for v in visible if v.lower() == base.lower()), None)
+        if twin:
+            return ("%s looks like a 5 GHz network; %s only sees 2.4 GHz. Same network on 2.4 GHz: %s"
+                    % (name, PI, twin), twin)
+        return ("%s looks like a 5 GHz network; %s only sees 2.4 GHz (use the router's 2.4 GHz network)"
+                % (name, PI), None)
     case = [v for v in visible if v.lower() == low]
     if len(case) == 1:
         return ("No network named %s; found %s" % (name, case[0]), case[0])
@@ -82,7 +86,7 @@ def join_flow(name, a, port, known_security=None):
                 security = ask.choose("Security:", [("password (most networks)", "wpa2"),
                                                     ("password, WPA3 only", "wpa3"), ("none (open)", "open")])
             else:
-                raise SystemExit(1)
+                raise SystemExit("Not joined")
         if matches:
             kinds = sorted({m["security"] for m in matches})
             if len(kinds) > 1:
@@ -120,8 +124,10 @@ def join_flow(name, a, port, known_security=None):
 
 
 def _failed(name, r):
-    """Finish the "Connecting..." line with why it failed; returns where the Pi is."""
-    done(FAILURE.get(r.get("code"), "failed"))
+    """Finish the "Connecting..." line with why it failed (unless it's finished already:
+    the last wrong password); returns where the Pi is."""
+    if ui.step_open():
+        done(FAILURE.get(r.get("code"), "failed"))
     detail("the Pi said: %s (%s)", r.get("reason"), r.get("code"))
     return "%s staying on its known networks" % PI
 
@@ -180,15 +186,19 @@ def pick_flow(a, port):
             tags.append("known")
         opts.append(("%-32s %s  %s" % (n["ssid"][:32], bars(n["signal"]), ", ".join(tags)), n))
     opts.append(("(a hidden network: type its name)", None))
-    choice = Prompter(a, "--security, --hidden, --password-stdin").choose("Join which network?", opts)
+    ask = Prompter(a, "--security, --hidden, --password-stdin")
+    choice = ask.choose("Join which network?", opts)
     if choice is None:
-        name = Prompter._input("Network name: ").strip()
+        name = ""
+        while not name:
+            name = ask.text("Network name: ").strip()
         a.hidden = True
         return join_flow(name, a, port)
     if choice["ssid"] == st["ssid"]:
         print("%s: already on %s" % (PI, choice["ssid"]))
         return
-    return join_flow(choice["ssid"], a, port, known_security=choice["security"])
+    # A known network goes through its saved password; a new one needn't be scanned again.
+    return join_flow(choice["ssid"], a, port, known_security=None if choice["saved"] else choice["security"])
 
 
 def pi_on_usb(port):
@@ -200,12 +210,42 @@ def pi_on_usb(port):
     return bool(peer.get("connected")) and "wifi" in (peer.get("peer") or {}).get("caps", [])
 
 
+CHECK_EXIT = {"online": 0, "portal": 3}  # else 4: no internet (1: couldn't ask, 2: usage)
+PORTAL_HERE = "run: audiolink wifi portal"
+
+
+def show_status(pi, st, portal_hint=PORTAL_HERE):
+    """`wifi status`, plugged in or over the network."""
+    if st["ssid"]:
+        print("%s: %s, %s" % (pi, st["ssid"], {
+            "online": "online", "offline": "no internet",
+            "portal": "sign-in page (%s)" % portal_hint}.get(st.get("internet"), "connected")))
+    else:
+        print("%s: not on Wi-Fi" % pi)
+    detail("state %s, IP %s, %s MHz", st.get("state"), st.get("ip") or "none", st.get("freq"))
+    print("Known networks: %s" % (", ".join(st.get("saved") or []) or "none"))
+
+
+def show_check(pi, r, portal_hint=PORTAL_HERE):
+    """`wifi check`: says how it is; returns the exit status (CHECK_EXIT)."""
+    if not r.get("ssid"):
+        print("%s: not on Wi-Fi" % pi)
+    else:
+        print({"online": "%s: online (%s)" % (pi, r["ssid"]),
+               "portal": "%s: %s, sign-in page (%s)" % (pi, r["ssid"], portal_hint),
+               }.get(r["internet"], "%s: %s, no internet" % (pi, r["ssid"])))
+    detail("%s", r)
+    return CHECK_EXIT.get(r["internet"] if r.get("ssid") else None, 4)
+
+
 def wifi_command(a):
     line_buffered()
     port = a.control_port
+    if a.name and a.action in ("scan", "status", "list", "portal", "check"):
+        raise SystemExit("audiolink wifi %s takes no network name" % a.action)
     peer = call("peer", port=port)
     if not peer["connected"]:
-        raise SystemExit("No Pi plugged in")
+        raise SystemExit("No Pi plugged in (over the network: --pi NAME, with join and status/check)")
     _set_pi(peer["peer"])
     if "wifi" not in (peer["peer"] or {}).get("caps", []):
         raise SystemExit("%s: audiolink too old for Wi-Fi management (update it)" % PI)
@@ -221,16 +261,7 @@ def wifi_command(a):
                                             "known" if n["saved"] else ""))
             detail("%d dBm, %d MHz", n["signal"], n["freq"])
     elif a.action == "status":
-        st = call("wifi.status", port=port)
-        internet = st.get("internet")
-        if st["ssid"]:
-            print("%s: %s, %s" % (PI, st["ssid"], {
-                "online": "online", "offline": "no internet",
-                "portal": "sign-in page (run: audiolink wifi portal)"}.get(internet, "connected")))
-        else:
-            print("%s: not on Wi-Fi" % PI)
-        detail("state %s, IP %s, %s MHz", st["state"], st["ip"] or "none", st.get("freq"))
-        print("Known networks: %s" % (", ".join(st["saved"]) or "none"))
+        show_status(PI, call("wifi.status", port=port))
     elif a.action == "list":
         nets = call("wifi.list", port=port)
         if not nets:
@@ -264,14 +295,15 @@ def wifi_command(a):
     elif a.action == "portal":
         portal_flow(port)
     elif a.action == "check":
-        r = call("wifi.check", port=port)
-        print({"online": "%s: online (%s)" % (PI, r.get("ssid")),
-               "portal": "%s: %s, sign-in page (run: audiolink wifi portal)" % (PI, r.get("ssid")),
-               }.get(r["internet"], "%s: no internet" % PI))
-        detail("%s", r)
-        raise SystemExit({"online": 0, "portal": 2}.get(r["internet"], 3))
+        raise SystemExit(show_check(PI, call("wifi.check", port=port)))
     elif a.action == "forget":
         if not a.name:
             raise SystemExit("Usage: audiolink wifi forget NAME")
+        if a.name not in {n["ssid"] for n in call("wifi.list", port=port)}:
+            raise SystemExit("%s isn't a known network (see: audiolink wifi list)" % a.name)
+        current = call("wifi.status", port=port).get("ssid") == a.name
         call("wifi.forget", {"ssid": a.name}, port=port)
         print("Forgot %s" % a.name)
+        if current:
+            print("%s was on it: it moves to another known network in range, or opens its setup network"
+                  % PI)

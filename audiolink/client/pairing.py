@@ -292,7 +292,7 @@ def add_over_network(a, ask):
             result = pair(conn, None, client_name=socket.gethostname())
     finally:
         conn.close()
-    entry, created = keyring.upsert(result["code"], name=result["name"], alias=a.name)
+    entry, created = keyring.upsert(result["code"], name=result["name"], alias=a.name, seen=True)
     print("%s %s" % ("Added" if created else "Updated", entry["alias"]))
     return entry
 
@@ -300,7 +300,7 @@ def add_over_network(a, ask):
 def code_command(a):
     """`audiolink pairing code PI`: a fresh 6-digit code for pairing a new machine."""
     from ..host.control import DEFAULT_PORT, call
-    entry = keyring.lookup(a.pi)
+    entry = keyring.lookup(a.pi, known=True)
     pub = keyring.pub_of(entry["code"])
     port = getattr(a, "control_port", None) or DEFAULT_PORT
     issued = None

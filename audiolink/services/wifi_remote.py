@@ -48,12 +48,32 @@ class WifiRemoteService(Service):
         self.switching = None               # target network while a change is in progress
         cleanup_trial()                     # a restarted daemon: a trial left half done
         endpoint.register("change_wifi", self._change_wifi, PAIRED)
-        endpoint.register("change_status", lambda conn, req: {"saved": self.wifi.saved_names()}, PAIRED)
+        endpoint.register("change_status", self._change_status, PAIRED)
+        endpoint.register("wifi_status", self._status, PAIRED)
+
+    def _seen(self, ssid):
+        """The network in the last scan (if recent), or None."""
+        age, nets = self.wifi.last_scan()
+        return next((n for n in nets if n["ssid"] == ssid), None) if age < 600 else None
+
+    def _change_status(self, conn, req):
+        """Before a change: the saved networks, and (with "ssid") that network's security
+        as the Pi last saw it (None: not seen lately)."""
+        reply = {"saved": self.wifi.saved_names(), "current": self.wifi.current_ssid()}
+        if req.get("ssid"):
+            seen = self._seen(str(req["ssid"]))
+            reply["security"] = seen and seen["security"]
+        return reply
+
+    def _status(self, conn, req):
+        """`audiolink wifi status|check --pi PI`: read-only, so the relay is fine too.
+        check: test the internet now; otherwise the status, with the saved networks."""
+        return {"result": self.wifi.handle("check" if req.get("check") else "status", {})}
 
     def _change_wifi(self, conn, req):
         if conn.route == "relay":           # it would cut the connection the request came on
-            return {"error": "Can't change Wi-Fi through the relay; use USB or the setup network",
-                    "code": "via_relay"}
+            return {"error": "Can't change Wi-Fi through the relay; use USB, the same network as the Pi, "
+                             "or its setup network", "code": "via_relay"}
         p = conn.open(req["sealed"])
         ssid = (p.get("ssid") or "").strip()
         if not ssid:
@@ -62,16 +82,17 @@ class WifiRemoteService(Service):
         use_saved = bool(p.get("use_saved")) or (saved is not None and not p.get("password"))
         if use_saved and saved is None:
             return {"error": "No saved password for %s" % ssid}
+        age, nets = self.wifi.last_scan()
+        seen = self._seen(ssid)
+        security = p.get("security") or (seen and seen["security"]) or "wpa2"    # not given: as seen
         try:
             ent = saved if use_saved else dict(
-                credentials(ssid, p.get("security") or "wpa2", p.get("password")), hidden=bool(p.get("hidden")))
+                credentials(ssid, security, p.get("password")), hidden=bool(p.get("hidden")))
         except ValueError as e:
             return {"error": str(e)}
         current = self.wifi.current_ssid()
         if current == ssid and use_saved:
             return {"accepted": True, "already": True}
-        age, nets = self.wifi.last_scan()
-        seen = next((n for n in nets if n["ssid"] == ssid), None) if age < 600 else None
         if not p.get("hidden") and nets and age < 600 and not seen:
             return {"error": "%r wasn't in the Pi's last scan (%d min ago; the Pi only sees 2.4 GHz)"
                              % (ssid, age // 60), "code": "not_found", "stayed_on": current}
@@ -79,7 +100,7 @@ class WifiRemoteService(Service):
             if self.switching:
                 return {"error": "Already switching to %s; retry in a minute" % self.switching}
             self.switching = ssid
-        args = {"ssid": ssid, "password": p.get("password"), "security": p.get("security") or "wpa2",
+        args = {"ssid": ssid, "password": p.get("password"), "security": security,
                 "hidden": bool(p.get("hidden")), "use_saved": use_saved}
         via_setup = conn.route == "setup"
         try:

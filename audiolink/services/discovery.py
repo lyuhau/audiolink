@@ -45,7 +45,8 @@ class DiscoveryService(Service):
         if op == "status":
             public = {k: v for k, v in self.last.items() if k != "content"}     # content is internal
             return dict(public, enabled=self.identity.discoverable(), now=self.session.now(),
-                        clock_known=self.session.now() > CLOCK_SANE)
+                        clock_known=self.session.now() > CLOCK_SANE,
+                        online=self.wifi.connection()["internet"] == "online")
         if op == "publish":
             self.republish()
             return {"ok": True}

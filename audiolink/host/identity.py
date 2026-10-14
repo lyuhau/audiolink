@@ -49,7 +49,7 @@ class HostIdentity(Service):
             ident = req("identity.restore", data)
             code = code_for(data)
             keyring.upsert(code, name=ident["name"], serial=ident["serial"],
-                           custody=None if ident["persistent"] else data)
+                           custody=None if ident["persistent"] else data, seen=True)
             LEGACY.rename(LEGACY.with_suffix(".json.migrated"))
             log.info("identity: moved this host's old discovery identity to %s; existing codes keep working",
                      ident["name"])

@@ -8,6 +8,7 @@ through detail(), shown only with -v/--verbose.
 import logging
 import sys
 import threading
+import time
 
 VERBOSE = False                         # set from -v/--verbose (__main__)
 _open_step = False                      # a step() line is waiting for its done()
@@ -25,6 +26,22 @@ def done(result):
     global _open_step
     print(result, flush=True)
     _open_step = False
+
+
+def ago(ts):
+    """How long ago a time (epoch seconds) was, roughly: "5 min ago", "3 h ago", "never"."""
+    if not ts:
+        return "never"
+    s = time.time() - ts
+    for unit, n in (("d", 86400), ("h", 3600), ("min", 60)):
+        if s >= n:
+            return "%d %s ago" % (s // n, unit)
+    return "just now"
+
+
+def step_open():
+    """Is a step() line waiting for its done()?"""
+    return _open_step
 
 
 def detail(msg, *args):
