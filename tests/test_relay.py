@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 
+from audiolink import tls
 from audiolink.crypto import ed25519_public, ed25519_sign
 from audiolink.relay import wire
 from audiolink.relay.server import Relay, ask_status
@@ -216,6 +217,72 @@ class SpliceTest(unittest.TestCase):
         b2.sendall(b"reply")
         b2.close()
         self.assertEqual(a1.recv(100), b"reply")
+        t.join(5)
+        self.assertFalse(t.is_alive())
+
+    def tls_pair(self):
+        """(TLS client end, TLS server end) over a socket pair, as the endpoint makes them."""
+        c, s = socket.socketpair()
+        server = {}
+
+        def accept():
+            server["sock"] = tls.server_context(os.urandom(32)).wrap_socket(s, server_side=True)
+        t = threading.Thread(target=accept, daemon=True)
+        t.start()
+        client = tls.client_context().wrap_socket(c)
+        t.join(5)
+        for sock in (client, server["sock"]):
+            sock.settimeout(5)
+            self.addCleanup(sock.close)
+        return client, server["sock"]
+
+    @staticmethod
+    def read_all(sock):
+        got = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return got
+            got += chunk
+
+    @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
+    def test_half_close_onto_tls_keeps_it_readable(self):
+        # The plain side ends: splice half-closes the TLS side, whose reply must still
+        # arrive as plaintext (SSLSocket.shutdown would have dropped TLS: raw records).
+        a1, a2 = socket.socketpair()
+        self.addCleanup(a1.close)
+        client, server = self.tls_pair()
+        t = threading.Thread(target=wire.splice, args=(a2, client), daemon=True)
+        t.start()
+        a1.sendall(b"request")
+        a1.shutdown(socket.SHUT_WR)
+        self.assertEqual(self.read_all(server), b"request")
+        reply = os.urandom(200000)
+
+        def answer():
+            server.sendall(reply)
+            socket.socket.shutdown(server, socket.SHUT_WR)
+        threading.Thread(target=answer, daemon=True).start()
+        a1.settimeout(5)
+        self.assertEqual(self.read_all(a1), reply)
+        t.join(5)
+        self.assertFalse(t.is_alive())
+
+    @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
+    def test_tls_half_close_keeps_it_writable(self):
+        # The TLS side ends first: splice can still send it what the plain side says.
+        a1, a2 = socket.socketpair()
+        self.addCleanup(a1.close)
+        client, server = self.tls_pair()
+        t = threading.Thread(target=wire.splice, args=(a2, client), daemon=True)
+        t.start()
+        server.sendall(b"banner")
+        socket.socket.shutdown(server, socket.SHUT_WR)
+        a1.settimeout(5)
+        self.assertEqual(self.read_all(a1), b"banner")
+        a1.sendall(b"after")
+        a1.shutdown(socket.SHUT_WR)
+        self.assertEqual(self.read_all(server), b"after")
         t.join(5)
         self.assertFalse(t.is_alive())
 
