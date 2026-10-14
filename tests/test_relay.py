@@ -416,3 +416,33 @@ class ThroughTheRelay(unittest.TestCase):
     def test_offline_pi(self):
         with self.assertRaisesRegex(Refused, "offline"):
             self.connect(self.echo.port)
+
+    def test_strangers_dont_use_up_the_opens_of_known_clients(self):
+        from audiolink.services import relay as agent_relay
+        from tests.helpers import FakeClock, patch_time
+        clock = FakeClock()
+        with patch_time(agent_relay, clock):
+            self.agent._proved("203.0.113.5")                       # proved itself earlier
+            for _ in range(agent_relay.OPENS_PER_MIN):
+                self.assertTrue(self.agent._rate_ok("198.51.100.%d" % _))
+            self.assertFalse(self.agent._rate_ok("198.51.100.200"))   # strangers share a budget
+            self.assertFalse(self.agent._rate_ok(None))               # an older relay: the same
+            self.assertTrue(self.agent._rate_ok("203.0.113.5"))       # ...that a known client isn't in
+            for _ in range(agent_relay.PER_CLIENT_PER_MIN - 1):
+                self.assertTrue(self.agent._rate_ok("203.0.113.5"))
+            self.assertFalse(self.agent._rate_ok("203.0.113.5"))      # but each has its own limit
+            clock.advance(61)
+            self.assertTrue(self.agent._rate_ok("198.51.100.200"))
+            clock.advance(agent_relay.KNOWN_FOR)
+            self.agent.opens = [clock.monotonic()] * agent_relay.OPENS_PER_MIN
+            self.assertFalse(self.agent._rate_ok("203.0.113.5"))      # known only for a while
+
+    def test_the_relay_names_the_client_and_a_proof_makes_it_known(self):
+        opened = []
+        real = self.agent._open
+        self.agent._open = lambda addr, pin, wid, client=None: (opened.append(client), real(addr, pin, wid, client))
+        self.agent.run()
+        wait(lambda: self.agent.status()["relay"] == "up")
+        self.connect(self.echo.port)
+        self.assertEqual(opened, ["127.0.0.1"])
+        self.assertTrue(wait(lambda: "127.0.0.1" in self.agent.known))

@@ -1,7 +1,8 @@
 """`audiolink relay`: the relay itself. Runs anywhere with Python 3 and a public port.
 
   pi      {"v","role":"pi","pub"} -> {"v","challenge"}; {"sig"} -> {"v","ok","addr"}
-          then control lines: relay->pi {"op":"open","id"}; pi->relay {"op":"ping"}
+          then control lines: relay->pi {"op":"open","id","from"} (from: the client's
+          address, so the Pi can limit each client on its own); pi->relay {"op":"ping"}
           -> {"op":"pong"}. A newer registration for the same key replaces the older.
   client  {"v","role":"client","pub"} -> (relay asks the Pi to dial in) -> {"v","ok"}
   data    {"v","role":"data","id"} -> {"v","ok"}
@@ -82,7 +83,7 @@ class Relay:
             if role == "pi":
                 self._pi(sock, addr, hello)
             elif role == "client":
-                self._client(sock, hello)
+                self._client(sock, addr, hello)
             elif role == "data":
                 keep = self._data(sock, hello)
             elif role == "status" and addr[0] in ("127.0.0.1", "::1"):
@@ -137,7 +138,7 @@ class Relay:
                 del self.pis[pub]
         log.info("relay: pi %s down (%s)", tag, why)
 
-    def _client(self, sock, hello):
+    def _client(self, sock, addr, hello):
         try:
             pub = bytes.fromhex(hello.get("pub", ""))
         except ValueError:
@@ -156,7 +157,7 @@ class Relay:
             send_line(sock, {"v": VERSION, "error": "busy"})
             return
         try:
-            ctl.post({"op": "open", "id": wid})
+            ctl.post({"op": "open", "id": wid, "from": addr[0]})
             arrived = slot["ready"].wait(self.open_wait)
         finally:
             with self.lock:
