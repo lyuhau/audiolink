@@ -1,4 +1,5 @@
-# audiolink, release image: pi.toml without USB ethernet, SSH or the debug console.
+# audiolink, release image: pi.toml without USB ethernet, SSH or the debug console
+# (which the card's settings.txt can turn on: console = on).
 include = "pi.toml"
 
 [access]
@@ -7,4 +8,4 @@ debug_console = false
 
 [device]
 description = "device-release.toml"
-console = false
+console = true            # room for it in the device; off unless the card says console = on

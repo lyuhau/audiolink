@@ -175,11 +175,36 @@ WantedBy=default.target
 `schtasks /Create /SC ONLOGON /TN audiolink-host /TR "C:\Tools\audiolink.exe host --expose 2222:22"`
 (`schtasks /Delete /TN audiolink-host` removes it).
 
+### The card's settings
+
+A few things can change without a new card image: `settings.txt` at the top of the
+Pi's card. Put the card in any computer (Mac, Windows, Linux: it's a plain FAT32
+card), edit the file in a text editor, and put it back in the Pi. Each setting is
+there commented out (`#`), with its built-in value and what it does; remove the `#`
+to change it:
+
+| Setting | | Built-in |
+|---|---|---|
+| `audiolink.relay` | the relay the Pi stays reachable through: `HOST:PORT`, `HOST:PORT#PIN` (a relay with another certificate) or `off` | `relay.lyuhau.com:443` |
+| `audiolink.expose_setup` | `on`: exposed ports take connections from the setup network too | `off` |
+| `console` | `on`: a root shell over USB, as an extra serial port next to the audio (no password: for troubleshooting) | `off` (dev cards: `on`) |
+| `hostname` | the Pi's name on its network (`NAME.local`) | `audiopi` |
+| `usb.vendor_id`, `usb.product_id` | the USB IDs, hex | `0x1d6b`, `0x0104` |
+| `usb.manufacturer`, `usb.product`, `usb.serial` | what the computer shows for the device | `audiolink`, `AudioPi`, `audiopi0001` |
+
+A setting that's misspelt or not valid is ignored: the Pi starts with the built-in
+value and says why in `/var/log/settings.log` (`audiolink logs settings.log`). New
+USB IDs or strings make the computer see a new device (on a Mac: "Allow accessory"
+again). The release card has no SSH server, so it ignores an `ssh_authorized_keys`
+file; dev cards add its keys to root's. Installing a new image onto the card keeps
+`settings.txt` as it is and adds any new settings at its end.
+
 ### Where card images come from
 
 None are published yet: the Pi's system comes from a separate, private platform
 project, so for now cards are built from source with it (*Development*). A ready Pi
-keeps everything it needs on its card.
+keeps everything it needs on its card. One release image is meant for everyone:
+what differs between Pis is on the card (its state, and `settings.txt`).
 
 ## Commands
 
@@ -238,7 +263,9 @@ Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
 - **Looking inside.** Over USB, `audiolink shell` is a root shell on the Pi and
   `audiolink logs` shows its logs. Over the network, `audiolink logs --pi NAME` works
   from any computer that added it; a shell needs the debug switch: `audiolink debug
-  on` on the host, then `audiolink shell NAME` elsewhere.
+  on` on the host, then `audiolink shell NAME` elsewhere. When audiolink itself
+  doesn't start, `console = on` in the card's `settings.txt` adds a serial root shell
+  (`/dev/cu.usbmodem*` on a Mac, 115200 baud) next to the audio.
 
 ## Access
 
@@ -351,8 +378,11 @@ for someone else: `tools/build_card.sh config/pi-release.toml --install /Volumes
 (a FAT32-formatted microSD card, see the platform's README); the Pi boots from it. `config/` describes the card:
 `pi.toml` (dev: USB ethernet with the Pi at `10.55.0.2`, SSH with
 `keys/id_ed25519.pub`, the debug console) and `pi-release.toml` (no USB
-ethernet, no SSH). `pi/app-start.sh` is the app's start: USB ethernet, the
+ethernet, no SSH, the debug console off). `pi/app-start.sh` is the app's start: USB ethernet, the
 daemon's respawn loop (`pi/start-audiolink.sh`), mDNS, Wi-Fi, the clock.
+`pi.toml`'s `[app.settings]` are the card's `audiolink.*` settings (*The card's
+settings*); `pi/card-settings.sh` checks them and turns them into `audiolink pi`
+arguments, after `/etc/audiolink.args` (the build's).
 
 ```
 tools/build_card.sh [config/pi.toml]  # -> build/card-pi/

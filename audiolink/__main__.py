@@ -231,7 +231,7 @@ def build_parser():
                  "reaches this computer's ssh."), formatter_class=argparse.RawDescriptionHelpFormatter),
              "pi": sub.add_parser("pi", help="run on the Pi", description=(
                  "The Pi's side (started at boot by start-audiolink.sh; arguments in "
-                 "/etc/audiolink.args)."))}
+                 "/etc/audiolink.args, then from the card's settings.txt: --relay, --expose-setup)."))}
     for name, p in roles.items():
         peer = "the Pi" if name == "host" else "the host"
         p.add_argument("--forward", action="append", default=[], metavar="LPORT:[HOST:]PORT", type=argtypes.forward,
