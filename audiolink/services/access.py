@@ -19,16 +19,20 @@ access is proven:
   paired   the read secret, on any route
   key      a signature by one of the keys the host gave (KEY_LABEL + op + nonce)
   none     nothing; LAN only, the setup network only if the host said so, never the relay
-Every mode expires (DEFAULT_FOR, NONE_FOR). The state is in RAM unless the host asks
-for it to be kept (state dir / debug.json); a damaged file reads as off.
+Every mode expires (DEFAULT_FOR, NONE_FOR). The host can ask for the switch to be kept
+across the Pi's restarts (state dir / debug.json); otherwise it's kept in RUN_DIR
+(tmpfs: gone when the Pi restarts, but not when audiolink does, after a network
+update or a crash, so whoever was updating can still check, revert or open a shell).
+A damaged file reads as off.
 """
 import logging
+import os
 import re
 import threading
 import time
 from pathlib import Path
 
-from ..paths import load_state, save_state
+from ..paths import load_json, load_state, save_json, save_state
 from ..session import CLOCK_SANE
 from . import Service
 from .setup_ap import AP_ADDR
@@ -45,6 +49,17 @@ NONE_FOR = 3600
 MAX_FOR = 7 * 24 * 3600
 CHECK_EVERY = 5
 RESAVE = 600                        # s between saves of a kept switch's time left
+RUN_DIR = "/run/audiolink"          # tmpfs: survives audiolink restarting, not the Pi
+BOOT_ID = "/proc/sys/kernel/random/boot_id"
+
+
+def boot_id():
+    """This boot's id (Linux), or None: monotonic deadlines only mean anything within one."""
+    try:
+        with open(BOOT_ID) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
 
 NOT_PAIRED = ("not_paired", "Not added to this Pi (run: audiolink add)")
 
@@ -144,8 +159,9 @@ class DebugService(Service):
     name = "debug"
     caps = ("debug",)
 
-    def __init__(self, state_dir=None):
+    def __init__(self, state_dir=None, run_dir=None):
         self.path = Path(state_dir) / "debug.json" if state_dir else None
+        self.run = Path(run_dir) / "debug.json" if run_dir else None
         self.lock = threading.Lock()
         self.listeners = []             # fn(reason) when debug access ends or narrows
         self.state = {"mode": "off"}
@@ -239,6 +255,7 @@ class DebugService(Service):
         return session.now() if session else time.time()
 
     def _save(self, state):
+        self._save_run(state)
         if not self.path:
             return
         if not state.get("persist"):
@@ -256,6 +273,22 @@ class DebugService(Service):
         except (OSError, ValueError) as e:
             log.warning("debug: couldn't save the switch: %s", e)
 
+    def _save_run(self, state):
+        """A switch that isn't kept on the card is kept in RUN_DIR, until it ends."""
+        if not self.run:
+            return
+        boot = boot_id()
+        try:
+            if state.get("mode", "off") != "off" and not state.get("persist") and boot:
+                data = {k: state[k] for k in ("mode", "keys", "setup", "for", "deadline")}
+                save_json(self.run, dict(data, boot=boot))
+            else:
+                os.remove(str(self.run))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as e:
+            log.warning("debug: couldn't keep the switch in %s: %s", self.run.parent, e)
+
     def _stored(self):
         try:
             return (load_state(self.path) or {}).get("mode", "off") != "off"
@@ -263,6 +296,31 @@ class DebugService(Service):
             return True
 
     def _load(self):
+        self._load_card()
+        if self.state.get("mode", "off") == "off":
+            self._load_run()
+
+    def _load_run(self):
+        if not self.run:
+            return
+        try:
+            d = load_json(self.run) or {}
+            mode = d.get("mode", "off")
+            if mode == "off" or mode not in MODES or not d.get("boot") or d["boot"] != boot_id():
+                return
+            secs, deadline = int(d["for"]), float(d["deadline"])
+            left = deadline - time.monotonic()
+            keys = [parse_key(k).hex() for k in d.get("keys") or []]
+            if not 0 < left <= secs <= MAX_FOR or (mode == "key" and not keys):
+                return
+            self.state = {"mode": mode, "keys": keys if mode == "key" else [], "setup": bool(d.get("setup")),
+                          "for": secs, "deadline": deadline, "persist": False}
+            log.info("debug: on (%s) from before audiolink restarted, %ds left", mode, left)
+        except Exception as e:          # damaged: off
+            log.warning("debug: switch in %s unreadable (%s); off", self.run.parent, e)
+            self.state = {"mode": "off"}
+
+    def _load_card(self):
         if not self.path:
             return
         try:

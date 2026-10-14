@@ -117,8 +117,8 @@ on its setup network, or pair with a 6-digit code from a computer that has it
 | `none` | anyone | LAN; setup network only with `--setup`; never the relay | 1 h |
 
 \* The relay only carries computers that have the Pi's code. `--for 30m|2h|1d` sets
-the time, `--persist` keeps the switch across the Pi's restarts (otherwise it's in
-RAM). Turning it off, the time running out and holding the reset pins for 5 s end it
+the time, `--persist` keeps the switch across the Pi's restarts (otherwise it lasts
+until the Pi restarts; audiolink restarting, as after a network update, keeps it). Turning it off, the time running out and holding the reset pins for 5 s end it
 and close open network shells; so do a new code and narrowing the switch (another mode,
 a key taken off, no more `--setup`). Over USB, `audiolink shell` always works. The Pi logs every debug request and every refusal.
 

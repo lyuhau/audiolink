@@ -310,8 +310,8 @@ def run_pi(a, allow, port, gate):
     streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target, "127.0.0.1:%d" % SHELL_PORT],
                       expose_ports=a.expose_ports, setup=a.expose_setup)
     identity = IdentityService(a.state_dir)
-    from .services.access import DebugService
-    debug = DebugService(a.state_dir)
+    from .services.access import RUN_DIR, DebugService
+    debug = DebugService(a.state_dir, run_dir=RUN_DIR)
     endpoint = Endpoint(identity, presence=presence, debug=debug)
     setup_ap = SetupApService(wifi, identity, presence, radio)
     discovery = DiscoveryService(identity, wifi, streams)

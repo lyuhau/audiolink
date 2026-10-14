@@ -165,6 +165,33 @@ class Switch(unittest.TestCase):
                                                            "left": 60, "keys": []})
         self.assertEqual(DebugService(self.dir).status()["mode"], "off")
 
+    def kept(self, boot="boot-1"):
+        """A DebugService as audiolink starts it on the Pi, in this boot."""
+        run = os.path.join(self.dir, "run")
+        with mock.patch.object(access, "boot_id", lambda: boot):
+            return DebugService(self.dir, run_dir=run)
+
+    def test_kept_across_audiolink_restarting(self):
+        with mock.patch.object(access, "boot_id", lambda: "boot-1"):
+            self.kept().set({"mode": "key", "keys": ["11" * 32], "for": 3600})
+        self.clock.advance(600)
+        again = self.kept().status()
+        self.assertEqual((again["mode"], again["keys"], again["expires_in"]), ("key", 1, 3000))
+        self.assertEqual(self.kept(boot="boot-2").status()["mode"], "off")     # the Pi restarted
+        self.clock.advance(3000)
+        self.assertEqual(self.kept().status()["mode"], "off")                  # the time still runs out
+
+    def test_off_and_kept_on_the_card_leave_nothing_in_run(self):
+        with mock.patch.object(access, "boot_id", lambda: "boot-1"):
+            d = self.kept()
+            d.set({"mode": "none"})
+            d.off("test")
+            self.assertEqual(self.kept().status()["mode"], "off")
+            d.set({"mode": "none"})
+            d.set({"mode": "paired", "persist": True})
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "run", "debug.json")))
+        self.assertEqual(self.kept().status()["mode"], "paired")              # from the card
+
 
 class Client(PiConn):
     """A client of the endpoint over TLS (client/pairing.py)."""
