@@ -142,7 +142,7 @@ class Rotate(Harness):
                 mock.patch("audiolink.host.control.call", lambda op, args=None, port=None: calls[op](args or {})), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             keyring.upsert(old, name="pi")
-            pis.rotate_secret_command(argparse.Namespace(control_port=None))
+            pis.rotate_secret_command(argparse.Namespace(control_port=None, yes=True))
             entry = keyring.lookup("pi")
         new = self.identity.code()
         self.assertNotEqual(new, old)

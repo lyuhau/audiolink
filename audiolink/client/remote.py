@@ -122,6 +122,8 @@ def _looks_like_address(s):
 def _resolve(pi):
     try:
         return keyring.resolve(pi)
+    except keyring.Ambiguous:
+        return keyring.lookup(pi)               # ends the command: which name to use
     except KeyError:
         if _looks_like_address(pi):
             return {"alias": pi, "code": None, "addr": pi}
@@ -214,6 +216,8 @@ class Remote:
                 done("not found")
             raise SystemExit("%s isn't reachable from here (not on this network, its setup network or its relay)"
                              % self.name)
+        if self.entry.get("code"):
+            keyring.seen(keyring.pub_of(self.entry["code"]))
         if not quiet:
             done("found")
             if not self.entry.get("code"):

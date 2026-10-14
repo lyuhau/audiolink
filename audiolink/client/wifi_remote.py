@@ -14,7 +14,7 @@ from .pairing import reach
 
 def _pick_pi(a):
     if a.pi:
-        return keyring.lookup(a.pi)
+        return keyring.lookup(a.pi, known=True)
     pis = list(keyring.load().values())
     if len(pis) == 1:
         return pis[0]
