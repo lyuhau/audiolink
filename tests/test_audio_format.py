@@ -14,7 +14,7 @@ from audiolink.host import audio_format as af
 from audiolink.services.audio_format import AudioFormatService
 from audiolink.wire.fmt import BASELINE, AudioFormat
 
-from .helpers import FakeClock, patch_time
+from .helpers import FakeClock, patch_time, wait
 
 F192x8, F96x8, F96x2 = AudioFormat(192000, 8), AudioFormat(96000, 8), AudioFormat(96000, 2)
 
@@ -153,6 +153,18 @@ class Negotiation(unittest.TestCase):
         self.run_neg()
         self.assertEqual(self.mem(), {})
         self.assertEqual(self.neg.cooling, {})
+
+    def test_resume_goes_back_to_the_fastest(self):
+        self.pi(works={F96x8})
+        self.assertTrue(self.run_neg())
+        self.assertEqual(self.p.format, F96x8)
+        self.run_neg(target=BASELINE, chosen=True)              # as `audiolink update` does
+        self.assertEqual(self.p.format, BASELINE)
+        self.assertTrue(self.neg.local_ops()["audio.resume"]({})["started"])
+        self.assertTrue(wait(lambda: not self.neg.running))
+        self.assertEqual(self.p.format, F96x8)
+        self.neg.mode = "baseline"
+        self.assertEqual(self.neg.local_ops()["audio.resume"]({}), {"started": False, "mode": "baseline"})
 
     def test_pi_lost_mid_change(self):
         self.pi(works={F96x8})

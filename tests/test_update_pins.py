@@ -79,7 +79,7 @@ class UpdateCommand(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
         self.u = UpdateService(self.dir, restart=lambda: None)
-        self.link = {"rate": 96000, "channels": 8}
+        self.link = self.fast = {"rate": 96000, "channels": 8}
         self.calls = []
         self.answers = True                     # does the Pi answer after the restart?
 
@@ -88,10 +88,13 @@ class UpdateCommand(unittest.TestCase):
         if op == "peer":
             return {"connected": True, "peer": {"caps": ["update"]}}
         if op == "audio.status":
-            return {"link": self.link, "running": False, "pi": {}}
+            return {"link": self.link, "running": False, "pi": {}, "remembered": {"best": self.fast}}
         if op == "audio.run":
             self.link = {"rate": 48000, "channels": 2}
             return {}
+        if op == "audio.resume":
+            self.link = self.fast
+            return {"started": True}
         if op == "update.status" and "update.finish" in self.calls:     # restarted
             if not self.answers:
                 raise SystemExit("No Pi plugged in")
@@ -154,6 +157,13 @@ class UpdateCommand(unittest.TestCase):
         self.assertLess(self.calls.index("audio.run"), self.calls.index("update.begin"))
         self.assertIn("sent", out)
         self.assertTrue(os.path.exists(os.path.join(self.dir, "audiolink.pyz")))
+        self.assertIn("Speeding the link back up... 96 kHz \u00d7 8 channels", out)    # and back up after
+        self.assertEqual(self.link, self.fast)
+
+    def test_a_link_at_baseline_stays_there(self):
+        self.link = {"rate": 48000, "channels": 2}
+        self.run_cmd(self.file(pyz()))
+        self.assertNotIn("audio.resume", self.calls)
 
     def test_says_when_the_pi_hasnt_come_back(self):
         self.answers = False

@@ -364,12 +364,22 @@ class AudioNegotiator(Service):
                 raise RuntimeError("Already testing speeds")
             return {"started": True}
 
+        def resume(args):
+            """Back to what this host runs when a Pi connects (`audiolink update` slowed the
+            link to the baseline for the Pi's restart): auto, the fastest known; a fixed
+            format, that one."""
+            if not self.session.peer_alive:
+                raise RuntimeError(LOST if self.lost else "No Pi plugged in")
+            if self.mode == "baseline":
+                return {"started": False, "mode": "baseline"}
+            return {"started": self.start(sweep=False, target=None if self.mode == "auto" else self.mode)}
+
         def forget(args):
             self.epoch += 1             # a negotiation under way won't save over this
             self.cooling.clear()
             self.store.save(self._serial(), {})
             return {}
-        return {"audio.status": status, "audio.run": run, "audio.forget": forget}
+        return {"audio.status": status, "audio.run": run, "audio.resume": resume, "audio.forget": forget}
 
 
 LOST = "The Pi's sound device dropped off USB; if it isn't back in a minute, unplug and replug it"

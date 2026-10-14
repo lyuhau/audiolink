@@ -6,8 +6,8 @@ Sends the .pyz over the link (USB networking not needed), or with --pi over the 
 
 Over USB the link goes to the baseline audio format first: a daemon restarting in a
 faster format re-presents the gadget, which it does at most once per RESET_GAP
-(services/audio_format.py), so the link could stay down for minutes. The host's
-negotiator moves it back up once the new code is running.
+(services/audio_format.py), so the link could stay down for minutes. Once the new
+code runs, the host goes back to its format (auto: the fastest it knows; restore()).
 """
 import base64
 import hashlib
@@ -82,7 +82,8 @@ class NetCaller:
 
 
 def to_baseline(call, port):
-    """Over USB: the link to the baseline audio format. Returns whether it's there."""
+    """Over USB: the link to the baseline audio format. -> (it's there, it was slowed
+    down for this)."""
     from .audio_format import BASELINE, AudioFormat
 
     def status():
@@ -91,7 +92,7 @@ def to_baseline(call, port):
     try:
         st, ok = status()
         if ok:
-            return True
+            return True, False
         step("Slowing the link to its starting speed for the restart")
         end = time.monotonic() + 120
         while st["running"] and time.monotonic() < end:     # a negotiation under way: let it end
@@ -108,7 +109,33 @@ def to_baseline(call, port):
         detail("audio: %s", e)
         ok = False
     done("done" if ok else "couldn't")
-    return ok
+    return ok, True
+
+
+def restore(call, port, tries=2, wait=180):
+    """After the restart: the host's own format again (a negotiation the reconnect
+    started may be under way, or may have given up while the Pi was coming up)."""
+    from .audio_format import BASELINE, AudioFormat, human
+    step("Speeding the link back up")
+    st = None
+    try:
+        for _ in range(tries):
+            r = call("audio.resume", port=port)
+            if r.get("mode") == "baseline":
+                break
+            end = time.monotonic() + wait
+            while time.monotonic() < end:
+                st = call("audio.status", port=port)
+                if not st["running"]:
+                    break
+                time.sleep(1)
+            st = call("audio.status", port=port)
+            if AudioFormat.from_json(st["link"]) != BASELINE or not (st.get("remembered") or {}).get("best"):
+                break
+    except (SystemExit, KeyError, ValueError) as e:
+        detail("audio: %s", e)
+    link = st and AudioFormat.from_json(st["link"])
+    done(human(link) if link and link != BASELINE else "stayed at the starting speed (audiolink audio sweep)")
 
 
 def update_command(a):
@@ -144,12 +171,14 @@ def update_command(a):
     if call("update.status", port=port).get("running_hash") == digest:
         print("The Pi already runs this (%s)" % _short(digest))
         return
-    wait = COME_BACK
+    wait, slowed = COME_BACK, False
     if a.pi:
         print("Over the network: an update that breaks networking without crashing leaves "
               "the Pi reachable only over USB or by the reset pins")
-    elif not to_baseline(call, port):
-        wait = RESET_GAP + 30           # the restart may wait for its gadget reset
+    else:
+        ok, slowed = to_baseline(call, port)
+        if not ok:
+            wait = RESET_GAP + 30       # the restart may wait for its gadget reset
     step("Sending %s (%d KB)" % (os.path.basename(path), len(data) // 1024))
     call("update.begin", {"size": len(data), "sha256": digest}, port=port)
     for off in range(0, len(data), CHUNK):
@@ -167,6 +196,8 @@ def update_command(a):
             continue
         if st.get("running_hash") == digest:
             done("running %s" % _short(digest))
+            if slowed:
+                restore(call, port)
             return
         if st.get("set_aside"):
             break
