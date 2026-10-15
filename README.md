@@ -27,7 +27,7 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
 - **Pure standard-library Python;** the only native code is the bundled PortAudio.
 
 > Status: early. Tested with macOS hosts and a Pi Zero 2 W booting from an SD card.
-> Windows builds exist but are untested on hardware. No card image is published yet
+> Windows builds exist but are untested on hardware. Each release has a card image
 > (see *Where card images come from*). The relay (`relay.lyuhau.com`), for reaching a
 > Pi from other networks, is running.
 
@@ -201,10 +201,35 @@ file; dev cards add its keys to root's. Installing a new image onto the card kee
 
 ### Where card images come from
 
-None are published yet; for now cards are built from source with the
-[pi-gadget-kit](https://github.com/lyuhau/pi-gadget-kit) (*Development*). A ready Pi
-keeps everything it needs on its card. One release image is meant for everyone:
+Each [release](../../releases) has the Pi's card as `audiolink-pi-VER.zip`: the
+files that go on a microSD card (any size; 8 GB is plenty), built in CI from
+`config/pi-release.toml` with the [pi-gadget-kit](https://github.com/lyuhau/pi-gadget-kit)
+(`audiolink-pi-VER.manifest` lists their sha256). One image is meant for everyone:
 what differs between Pis is on the card (its state, and `settings.txt`).
+
+1. **Format the card FAT32** (MBR). This erases it. Many cards up to 32 GB come
+   FAT32 already; then just empty it.
+   - macOS: find the card with `diskutil list external`, then
+     `diskutil eraseDisk FAT32 AUDIOPI MBRFormat /dev/diskN`.
+   - Windows (PowerShell, as admin; `E` is the card's drive letter):
+     `Format-Volume -DriveLetter E -FileSystem FAT32 -NewFileSystemLabel AUDIOPI`.
+     Windows won't format cards over 32 GB as FAT32: use Raspberry Pi Imager's
+     *Erase* instead.
+   - Linux: find the card with `lsblk`, then (it erases `/dev/sdX`)
+     `printf 'label: dos\n,,c\n' | sudo sfdisk /dev/sdX && sudo mkfs.vfat -F 32 -n AUDIOPI /dev/sdX1`,
+     and mount it (e.g. reinsert it).
+2. **Unzip onto it**, so `config.txt` is at the top of the card:
+   - macOS: `unzip audiolink-pi-VER.zip -d /Volumes/AUDIOPI`
+   - Windows: `Expand-Archive audiolink-pi-VER.zip -DestinationPath E:\`
+   - Linux: `unzip audiolink-pi-VER.zip -d /media/$USER/AUDIOPI`
+3. Optionally edit its `settings.txt` (*The card's settings*). Eject the card
+   (macOS: `diskutil eject /Volumes/AUDIOPI`) and put it in the Pi.
+
+**A newer image on a used card:** unzip over it without replacing `settings.txt`
+(`unzip -o audiolink-pi-VER.zip -x settings.txt -d /Volumes/AUDIOPI`; on Windows,
+keep a copy of `settings.txt` and put it back). The Pi's state (`audiolink/`) and
+logs (`logs/`) stay. New settings the old `settings.txt` doesn't mention keep their
+built-in values. Code alone updates without a new card: `audiolink update`.
 
 ## Commands
 
@@ -376,7 +401,8 @@ The Pi runs audiolink as an app on the [pi-gadget-kit](https://github.com/lyuhau
 the version audiolink was tested with: clone with `git clone --recursive`, or run
 `git submodule update --init`. Building the card needs Python 3.11+ (or 3.9+ with
 `tomli`) and, once, the platform's patched gadget modules:
-`platform/alpine-module/build.sh` (Docker). `PLATFORM` points the build at another
+`platform/alpine-module/fetch.sh` downloads the prebuilt ones (no Docker; the release
+workflow does this too), `platform/alpine-module/build.sh` builds them (Docker). `PLATFORM` points the build at another
 checkout of the platform, e.g. one you're changing. A card
 for someone else: `tools/build_card.sh config/pi-release.toml --install /Volumes/CARD`
 (a FAT32-formatted microSD card, see the platform's README); the Pi boots from it. `config/` describes the card:
@@ -436,11 +462,15 @@ clients and Pis first, then swap it.
    tag that doesn't match it).
 2. Run the tests (also under `/usr/bin/python3`); build both cards
    (`tools/build_card.sh`, `tools/build_card.sh config/pi-release.toml`) and try
-   them on a Pi.
+   them on a Pi. The release card has to build without `keys/` (CI has none).
+   A changed `config/pi-release.packages.lock` goes in a commit first: the release
+   workflow refuses a card whose packages differ from it (Alpine moved on; rebuild,
+   review the diff, try the card).
 3. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 4. Check the release's files: the macOS and Windows binaries, the `.pyz` (also
-   what `audiolink update` sends to a Pi) and `SHA256SUMS`. No card image yet:
-   that needs the platform's modules in CI (or a card attached by hand).
+   what `audiolink update` sends to a Pi), the card (`audiolink-pi-VER.zip`, with
+   its `.manifest`) and `SHA256SUMS`. Unzip the card onto a microSD card and boot a
+   Pi from it.
 
 ## License
 
