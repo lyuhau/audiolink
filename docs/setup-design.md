@@ -23,19 +23,21 @@ connection), autostart, the identity custody backup. A computer with the Pi on U
 needs a pairing code.
 
 ## `audiolink setup` = do whatever this computer can do right now
-With the Pi on USB (first plug-in, or its host): a host is started for the setup if none
-runs (no question). Three questions at most: its name, its Wi-Fi, and "Make this
-computer NAME's host?"
+With the Pi on USB (first plug-in, or its host): being plugged in is what makes this
+computer its host (the Pi keeps nothing about which computer that is), so setting the Pi
+up on a laptop and moving it later is the same flow: run setup again where it goes.
+A host is started for the setup if none runs (no question). Three questions at most:
+its name, its Wi-Fi, and "Also use this computer as a client (ssh NAME)?"
 1. The Pi: claim it over USB (no code, no "claim it?" question), optional name, Wi-Fi
    (picker). Skip what's already done.
-2. Host, yes: expose this computer's ssh (2222:22; Remote Login pane if it's off), saved
-   host config, autostart, start it; check that ssh NAME reaches this computer. No ssh
-   block here (ssh to itself is no use). End: "set up each computer that should reach
-   this one with: audiolink setup".
-3. Host, no: this computer is a client: the ssh block; "plug it into its host and run
-   audiolink setup there".
-Everything else is a flag, never a question (--expose, --no-autostart, --no-ssh, --user):
-questions only where the answer isn't obvious, and each one's effect is said after.
+2. This computer as its host, no question: expose this computer's ssh (2222:22; Remote
+   Login pane if it's off), saved host config, autostart, start it.
+3. Client too? yes: the ssh block, then ssh through the Pi is tried. No: still a check
+   that ssh through the Pi reaches this computer. End: "Next, on your other computers:
+   audiolink setup".
+Everything else is a flag, never a question (--client/--no-client, --expose,
+--no-autostart, --user): questions only where the answer isn't obvious, and each one's
+effect is said after.
 Without the Pi on USB: client only: find the Pi (LAN/mDNS) or ask for a code (from
 `audiolink invite`), pair, write the ssh block, test (ssh banner through the Pi), end
 with "Done: ssh NAME".

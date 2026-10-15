@@ -384,15 +384,16 @@ class Setup(TempConfig):
         self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])
         for line in ("Installed audiolink in", "Added green-rowan (claimed: this is its first computer)",
                      "  (audiolink add)", "Connecting green-rowan to Home... online", '  (audiolink wifi join "Home")',
-                     "Make this computer green-rowan's host? yes",
                      "This computer's ssh is reachable through green-rowan", "microphone",
                      "audiolink host: starts at login\n", "Starting it... connected to green-rowan",
-                     "Checking that ssh green-rowan reaches this computer... yes",
-                     "Done. Set up each computer that should reach this one with: audiolink setup"):
+                     "Also use this computer as a client (ssh green-rowan)? yes", "ssh green-rowan: set up",
+                     "Trying ssh green-rowan... works", "Done: ssh green-rowan",
+                     "Next, on your other computers: audiolink setup"):
             self.assertIn(line, out)
         self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
         self.assertTrue(self.plist().exists())
-        self.assertFalse((self.home / ".ssh" / "config").exists())     # its host: ssh to itself is no use
+        self.assertIn("Host green-rowan\n  HostName green-rowan\n  Port 2222\n  ProxyCommand /inst/audiolink "
+                      "connect green-rowan %p", self.ssh_config())
         self.assertNotIn("Start it for this setup", out)                 # the Pi is here: no question
         self.assertEqual(self.banners, [("green-rowan", 2222)])
 
@@ -400,23 +401,26 @@ class Setup(TempConfig):
         self.assertIsNone(code, out)
         for line in ("green-rowan: added here", "green-rowan: on Wi-Fi Home",
                      "This computer's ssh is reachable through green-rowan",
-                     "audiolink host: starts at login, running", "reaches this computer... yes"):
+                     "audiolink host: starts at login, running", "ssh green-rowan: set up", "Done: ssh green-rowan"):
             self.assertIn(line, out)
         self.assertNotIn("(audiolink", out)
-        self.assertNotIn("host? ", out)                                  # it is already
+        self.assertNotIn("?", out.replace("? yes", ""))                   # nothing asked again
+        self.assertNotIn("client", out)                                  # it is one already
+        self.assertEqual(self.ssh_config().count("# BEGIN audiolink"), 1)
         self.assertEqual(len(self.runner.ran("launchctl bootstrap")), 1)
 
-    def test_first_plug_in_without_the_host_part(self):
-        out, code = self.setup("--no-host", "--no-wifi", "--user", "bob", "--name", "kitchen")
+    def test_first_plug_in_not_a_client(self):
+        self.host.running = False
+        out, code = self.setup("--no-client", "--no-wifi", "--name", "kitchen")
         self.assertIsNone(code, out)
         self.assertIn("  (audiolink rename green-rowan kitchen --on-pi)", out)
         self.assertIn("kitchen: not on Wi-Fi", out)
-        self.assertIn("Next: plug kitchen into its host, and run audiolink setup there", out)
-        self.assertEqual(host_config.load(), {})
-        self.assertFalse((self.home / "Library").exists())
-        self.assertIn("Host kitchen\n  HostName kitchen\n  Port 2222\n  User bob\n  ProxyCommand /inst/audiolink "
-                      "connect kitchen %p", self.ssh_config())
-        self.assertEqual(self.banners, [])
+        self.assertIn("audiolink host: starts at login", out)            # plugged in here: its host
+        self.assertIn("Checking that ssh kitchen reaches this computer... yes", out)
+        self.assertIn("Done\nNext, on your other computers: audiolink setup", out)
+        self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
+        self.assertFalse((self.home / ".ssh" / "config").exists())
+        self.assertEqual(self.banners, [("kitchen", 2222)])
         self.assertEqual(keyring.lookup("kitchen")["name"], "kitchen")
 
     def test_a_running_host_is_left_alone_without_a_terminal(self):

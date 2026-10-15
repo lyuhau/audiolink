@@ -101,19 +101,20 @@ def build_parser():
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
     stp = sub.add_parser("setup", help="start here: set up this computer (and the Pi, if it's plugged in)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
-                             "Set up this computer, and the Pi if it's plugged in here: installs audiolink,\n"
-                             "adds the Pi, puts it on Wi-Fi, makes this computer its host (what it exposes,\n"
-                             "started at login) and sets up `ssh NAME`. Without the Pi plugged in: finds it\n"
-                             "on this network (or takes its connect code) and sets up `ssh NAME`.\n"
-                             "Run it again to see what's set and change it. Each question has a flag below."))
+                             "Set up this computer, and the Pi if it's plugged in here.\n"
+                             "The Pi plugged in here: adds it, puts it on Wi-Fi, and makes this computer its\n"
+                             "host (its ssh reachable through the Pi; audiolink host started at login); this\n"
+                             "computer can be a client too (ssh NAME). Not plugged in here: a client: finds\n"
+                             "the Pi on this network (or takes its connect code) and sets up ssh NAME.\n"
+                             "Run it again any time: it shows what's set. Each question has a flag below."))
     stp.add_argument("part", nargs="?", choices=["host"],
                      help="host: only this computer's host part (what it exposes, starting at login)")
     stp.add_argument("--yes", action="store_true", help="take the suggested answer to every question")
-    hst = stp.add_mutually_exclusive_group()
-    hst.add_argument("--host", action="store_true", default=None,
-                     help="make this computer the Pi's host (don't ask)")
-    hst.add_argument("--no-host", dest="host", action="store_false",
-                     help="this computer isn't the Pi's host: only ssh NAME from here")
+    cl = stp.add_mutually_exclusive_group()
+    cl.add_argument("--client", action="store_true", default=None,
+                    help="the Pi plugged in here: also set up ssh NAME on this computer (don't ask)")
+    cl.add_argument("--no-client", dest="client", action="store_false",
+                    help="don't set up ssh NAME on this computer (~/.ssh/config)")
     stp.add_argument("--name", help="the Pi's name (renames it when it's plugged in here)")
     wf = stp.add_mutually_exclusive_group()
     wf.add_argument("--wifi", metavar="NETWORK", help="put the Pi on this Wi-Fi network")
@@ -126,7 +127,6 @@ def build_parser():
     ex.add_argument("--no-expose", action="store_true", help="expose nothing")
     stp.add_argument("--no-autostart", action="store_true",
                      help="don't start audiolink host at login (removes it if set up)")
-    stp.add_argument("--no-ssh", action="store_true", help="don't set up ssh NAME (~/.ssh/config)")
     stp.add_argument("--user", help="ssh NAME: your login on the computer the Pi is plugged into")
     stp.add_argument("--code", metavar="CODE", help="the Pi's connect code (al1-...), if it isn't on this network")
     stp.add_argument("--pairing-code", metavar="CODE", help="the 6-digit code, for a Pi found on this network")
