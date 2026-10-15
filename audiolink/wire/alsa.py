@@ -9,9 +9,20 @@ from .fmt import BASELINE
 log = logging.getLogger("audiolink")
 
 
+RETRY = 0.5                     # s between restarts
+IDLE_RETRY = 2.0                # at most, for aplay while the host isn't streaming
+WAKE_CHECK = 0.1
+
+
 class AlsaAudio:
-    """aplay/arecord on the UAC2 gadget in one format. Both exit when the host stops
-    streaming, so each is restarted in a loop until stop()."""
+    """aplay/arecord on the UAC2 gadget in one format. Both exit when the host isn't
+    streaming (no sound card yet, or no USB transfers to move the data: ALSA gives up
+    on a write or read that waits too long), so each is restarted in a loop until stop().
+
+    Only a restart after the host was streaming counts in the link's stats
+    (aplay_restarts, arecord_restarts): that's a fault; waiting for the host isn't.
+    The host streams both ways at once, so arecord receiving is the sign that it is.
+    While it isn't, aplay retries less often, and right away once arecord hears it."""
 
     def __init__(self, link, device="hw:0,0"):
         self.link = link
@@ -20,6 +31,7 @@ class AlsaAudio:
         self.gen = 0                    # bumped by stop(): loops of older generations exit
         self.procs = set()
         self.lock = threading.Lock()
+        self.heard = 0.0                # monotonic time arecord last got data from the host
 
     def start(self, fmt=None):
         self.format = fmt or self.format
@@ -59,10 +71,12 @@ class AlsaAudio:
     def _player(self, gen):
         import fcntl
         chunk = self.format.chunk
+        idle = 0                        # restarts in a row without the host streaming
         while gen == self.gen:
             p = self._spawn(gen, ["aplay", "-q"] + self._args() + ["-"], stdin=subprocess.PIPE)
             if p is None:
                 return
+            began = time.monotonic()
             try:
                 fcntl.fcntl(p.stdin.fileno(), 1031, max(4096, chunk))  # F_SETPIPE_SZ: keep latency low
             except OSError:
@@ -73,9 +87,21 @@ class AlsaAudio:
             except (OSError, ValueError):
                 pass
             self._reap(p)
-            if gen == self.gen:
+            if gen != self.gen:
+                return
+            if self.heard >= began:
                 self.link.stats["aplay_restarts"] += 1
-                time.sleep(0.5)
+                idle = 0
+                time.sleep(RETRY)
+            else:
+                idle += 1
+                self._wait_for_host(gen, min(IDLE_RETRY, RETRY * 2 ** (idle - 1)))
+
+    def _wait_for_host(self, gen, timeout):
+        """Sleep up to timeout, less if arecord starts hearing the host (or stop())."""
+        since, end = time.monotonic(), time.monotonic() + timeout
+        while gen == self.gen and self.heard < since and time.monotonic() < end:
+            time.sleep(WAKE_CHECK)
 
     def _recorder(self, gen):
         chunk = self.format.chunk
@@ -83,15 +109,19 @@ class AlsaAudio:
             p = self._spawn(gen, ["arecord", "-q"] + self._args() + ["-"], stdout=subprocess.PIPE)
             if p is None:
                 return
+            got = False
             while gen == self.gen:
                 data = p.stdout.read(chunk)
                 if not data:
                     break
+                got = True
+                self.heard = time.monotonic()
                 try:
                     self.link.feed(data)
                 except Exception:       # never let one bad chunk stop the Pi from hearing the host
                     log.exception("audio: receiving failed")
             self._reap(p)
             if gen == self.gen:
-                self.link.stats["arecord_restarts"] += 1
-                time.sleep(0.5)
+                if got:
+                    self.link.stats["arecord_restarts"] += 1
+                time.sleep(RETRY)
