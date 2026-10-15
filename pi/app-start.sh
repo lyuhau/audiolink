@@ -1,5 +1,5 @@
 #!/bin/sh
-# audiolink on the usb platform: its [app] run (config/pi.toml). The platform
+# audiolink on pi-gadget-kit: its [app] run (config/pi.toml). The platform
 # starts this once, after the USB device is up and the card is mounted, with
 # /etc/usb-gadget/app.env in the environment and output in $APP_LOG.
 # audiolink owns Wi-Fi and the clock ([app] owns): both are started here.

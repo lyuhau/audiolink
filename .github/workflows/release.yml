@@ -3,7 +3,7 @@
 #                                     (`audiolink update`)
 #   audiolink-VER-macos-arm64|x86_64  single-file binaries, no Python needed
 #   audiolink-VER-windows-x64.exe     single-file binary
-# The Pi's card is built with the usb platform (tools/build_card.sh), not here.
+# The Pi's card is built with pi-gadget-kit (tools/build_card.sh), not here.
 name: release
 
 on:

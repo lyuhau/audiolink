@@ -202,7 +202,7 @@ file; dev cards add its keys to root's. Installing a new image onto the card kee
 ### Where card images come from
 
 None are published yet; for now cards are built from source with the
-[usb platform](https://github.com/lyuhau/usb) (*Development*). A ready Pi
+[pi-gadget-kit](https://github.com/lyuhau/pi-gadget-kit) (*Development*). A ready Pi
 keeps everything it needs on its card. One release image is meant for everyone:
 what differs between Pis is on the card (its state, and `settings.txt`).
 
@@ -346,7 +346,7 @@ Caveats:
   or a new card).
 
 Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
-`config/` and `pi/` make the Pi's image (an app on the usb platform, see
+`config/` and `pi/` make the Pi's image (an app on pi-gadget-kit, see
 *Development*).
 
 ## Security notes
@@ -371,12 +371,12 @@ python3 -m unittest discover -s tests -t .
 `build_pyz.py` is reproducible: the same sources give the same bytes. Under macOS's
 `/usr/bin/python3` the tests that need TLS 1.3 with Ed25519 are skipped.
 
-The Pi runs audiolink as an app on the [usb platform](https://github.com/lyuhau/usb)
+The Pi runs audiolink as an app on the [pi-gadget-kit](https://github.com/lyuhau/pi-gadget-kit)
 (Alpine in one initramfs; its README: Apps), a git submodule at `platform/`, pinned to
 the version audiolink was tested with: clone with `git clone --recursive`, or run
 `git submodule update --init`. Building the card needs Python 3.11+ (or 3.9+ with
 `tomli`) and, once, the platform's patched gadget modules:
-`platform/alpine-module/build.sh` (Docker). `USB_PLATFORM` points the build at another
+`platform/alpine-module/build.sh` (Docker). `PLATFORM` points the build at another
 checkout of the platform, e.g. one you're changing. A card
 for someone else: `tools/build_card.sh config/pi-release.toml --install /Volumes/CARD`
 (a FAT32-formatted microSD card, see the platform's README); the Pi boots from it. `config/` describes the card:

@@ -13,7 +13,7 @@ __pycache__/
 *.pyc
 .DS_Store
 *.iml
-# Old build leftovers (before the usb platform built the card)
+# Old build leftovers (before pi-gadget-kit built the card)
 firmware/
 firmware-nonfree/
 usbboot/

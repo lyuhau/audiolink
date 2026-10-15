@@ -3,7 +3,7 @@
 The format lives in the function's configfs attributes, which can only change while
 the function is in no configuration, so a switch is: unbind (the host sees the device
 unplugged), unlink, write the attributes, link back, bind again (the host enumerates
-the new format). On the usb platform its gadget.sh does that (`gadget.sh set audio
+the new format). On pi-gadget-kit its gadget.sh does that (`gadget.sh set audio
 c_srate=...`: it relinks every function in order and brings usb0 up after the bind);
 the device starts in the BASELINE format (config/device.toml). Without the platform
 (the older, pre-platform image's gadget) it's done here.
