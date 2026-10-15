@@ -228,34 +228,37 @@ def build_parser():
                  "Run on the computer the Pi is plugged into: it carries the Pi's connections to\n"
                  "this computer, and other audiolink commands (wifi, audio, update, ...) go\n"
                  "through it. E.g. `audiolink host --expose 2222:22`: ssh to the Pi's port 2222\n"
-                 "reaches this computer's ssh."), formatter_class=argparse.RawDescriptionHelpFormatter),
+                 "reaches this computer's ssh.\n\n"
+                 "Settings saved by `audiolink setup host` apply too; a flag given here wins over\n"
+                 "its saved value (--expose, --forward, --allow: replace the saved list)."), formatter_class=argparse.RawDescriptionHelpFormatter),
              "pi": sub.add_parser("pi", help="run on the Pi", description=(
                  "The Pi's side (started at boot by start-audiolink.sh; arguments in "
                  "/etc/audiolink.args, then from the card's settings.txt: --relay, --expose-setup)."))}
     for name, p in roles.items():
         peer = "the Pi" if name == "host" else "the host"
-        p.add_argument("--forward", action="append", default=[], metavar="LPORT:[HOST:]PORT", type=argtypes.forward,
+        dflt = None if name == "host" else []       # host: None = the saved setting (host/config.py)
+        p.add_argument("--forward", action="append", default=dflt, metavar="LPORT:[HOST:]PORT", type=argtypes.forward,
                        help="listen on LPORT here%s; each connection goes to HOST:PORT as seen from %s "
                             "(HOST default: %s itself)" % (" (this computer only)" if name == "host" else "",
                                                            peer, peer))
-        p.add_argument("--allow", action="append", default=[], metavar="[HOST:]PORT", type=argtypes.allow,
+        p.add_argument("--allow", action="append", default=dflt, metavar="[HOST:]PORT", type=argtypes.allow,
                        help="let %s open connections to HOST:PORT from here (HOST default: 127.0.0.1); "
                             "anything else is refused" % peer)
         p.add_argument("--stats", type=float, default=0, metavar="SECONDS", help="log link stats this often")
         p.add_argument("-v", "--verbose", action="store_true",
                        help="show technical details too (streams, link restarts, audio measurements)")
-    roles["host"].add_argument("--expose", action="append", default=[], metavar="PIPORT:[HOST:]PORT",
+    roles["host"].add_argument("--expose", action="append", metavar="PIPORT:[HOST:]PORT",
                                type=argtypes.expose,
                                help="the Pi listens on PIPORT; connections reach HOST:PORT from here "
                                     "(HOST default: this computer). E.g. 2222:22")
-    roles["host"].add_argument("--proxy-port", type=argtypes.port_or_off, default=47801, metavar="PORT",
+    roles["host"].add_argument("--proxy-port", type=argtypes.port_or_off, metavar="PORT",
                                help="an HTTP proxy at 127.0.0.1:PORT that browses as the Pi "
                                     "(default 47801; 0 = off)")
-    roles["host"].add_argument("--shell-port", type=argtypes.port_or_off, default=47802, metavar="PORT",
+    roles["host"].add_argument("--shell-port", type=argtypes.port_or_off, metavar="PORT",
                                help="local port for `audiolink shell` (default 47802; 0 = off)")
     roles["host"].add_argument("--wifi", metavar="NAME",
                                help="first put the Pi on this Wi-Fi network (prompts if needed)")
-    roles["host"].add_argument("--audio-format", default="auto", metavar="auto|baseline|RATExCH",
+    roles["host"].add_argument("--audio-format", metavar="auto|baseline|RATExCH",
                                type=argtypes.audio_format,
                                help="negotiate a faster audio format with the Pi (default: auto)")
     roles["host"].add_argument("--out-device", metavar="NAME",
@@ -299,6 +302,11 @@ def main(argv=None):
         a.command = command
     from . import ui
     ui.VERBOSE = bool(getattr(a, "verbose", False))
+    from .host import config as host_config
+    if a.cmd == "host":
+        host_config.apply(a)
+    elif getattr(a, "control_port", "-") is None:
+        a.control_port = host_config.control_port()
 
     if a.cmd == "list-devices":
         return list_devices()
