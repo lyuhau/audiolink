@@ -1,8 +1,8 @@
 # Builds every distribution; on a v* tag, publishes them as a GitHub release.
 #   audiolink-VER.pyz                 any OS with Python 3.9+ (incl. macOS's /usr/bin/python3), and the Pi
 #                                     (`audiolink update`)
-#   audiolink-VER-macos-arm64|x86_64  single-file binaries, no Python needed
-#   audiolink-VER-windows-x64.exe     single-file binary
+#   audiolink-VER-macos-arm64|x86_64.zip  no Python needed: the folder audiolink/ with the
+#   audiolink-VER-windows-x64.zip         executable (PyInstaller --onedir; build_bin.py says why)
 #   audiolink-pi-VER.zip              the release card (config/pi-release.toml), to unzip onto a
 #                                     FAT32 microSD card; audiolink-pi-VER.manifest: its files' sha256
 name: release
@@ -50,13 +50,20 @@ jobs:
         with: {python-version: "3.12"}
       - run: pip install pyinstaller
       - run: python build_bin.py
-      - name: Package and smoke-test
+      - name: Package and smoke-test (unzipped as a user would, run through a link on PATH)
         run: |
           V=$(python -c "import audiolink; print(audiolink.__version__)")
           mkdir -p out
-          cp "dist/audiolink-macos-$(uname -m)" "out/audiolink-$V-macos-${{ matrix.arch }}"
-          "out/audiolink-$V-macos-${{ matrix.arch }}" --version
-          "out/audiolink-$V-macos-${{ matrix.arch }}" list-devices
+          Z="out/audiolink-$V-macos-${{ matrix.arch }}.zip"
+          cp "dist/audiolink-macos-$(uname -m).zip" "$Z"
+          T=$(mktemp -d)
+          unzip -q "$Z" -d "$T/apps"
+          mkdir "$T/bin" && ln -s "$T/apps/audiolink/audiolink" "$T/bin/audiolink"
+          "$T/bin/audiolink" --version
+          "$T/bin/audiolink" list-devices
+          mkdir "$T/cfg" && echo '{"00": {"alias": "smoke", "name": "smoke"}}' > "$T/cfg/pis.json"
+          AUDIOLINK_CONFIG_DIR="$T/cfg" "$T/bin/audiolink" ssh-config --user me | tee "$T/ssh"
+          grep -qxF "  ProxyCommand $(cd "$T/apps/audiolink" && pwd -P)/audiolink connect smoke %p" "$T/ssh"
       - uses: actions/upload-artifact@v5
         with: {name: "macos-${{ matrix.arch }}", path: out/*}
 
@@ -70,13 +77,19 @@ jobs:
         with: {python-version: "3.12"}
       - run: pip install pyinstaller
       - run: python build_bin.py
-      - name: Package and smoke-test
+      - name: Package and smoke-test (unzipped as a user would)
         run: |
           V=$(python -c "import audiolink; print(audiolink.__version__)")
           mkdir -p out
-          cp dist/audiolink.exe "out/audiolink-$V-windows-x64.exe"
-          "out/audiolink-$V-windows-x64.exe" --version
-          "out/audiolink-$V-windows-x64.exe" list-devices
+          Z="out/audiolink-$V-windows-x64.zip"
+          cp dist/audiolink-windows-x64.zip "$Z"
+          T=$(mktemp -d)
+          python -m zipfile -e "$Z" "$T/apps"
+          "$T/apps/audiolink/audiolink.exe" --version
+          "$T/apps/audiolink/audiolink.exe" list-devices
+          mkdir "$T/cfg" && echo '{"00": {"alias": "smoke", "name": "smoke"}}' > "$T/cfg/pis.json"
+          AUDIOLINK_CONFIG_DIR="$(cygpath -w "$T/cfg")" "$T/apps/audiolink/audiolink.exe" ssh-config --user me | tee "$T/ssh"
+          grep -qE 'ProxyCommand "?[A-Za-z]:\\.*\\audiolink\\audiolink\.exe"? connect smoke %p' "$T/ssh"
       - uses: actions/upload-artifact@v5
         with: {name: windows-x64, path: out/*}
 

@@ -195,6 +195,17 @@ class Reaching(KeyringCase):
         self.assertEqual(pis._quote(r"C:\Program Files\audiolink.exe", windows=True),
                          r'"C:\Program Files\audiolink.exe"')
 
+    def test_launcher_frozen_is_the_real_executable(self):
+        d = Path(self.tmp.name)
+        (d / "audiolink folder").mkdir()
+        exe = d / "audiolink folder" / "audiolink"
+        exe.write_text("")
+        (d / "link").symlink_to(exe)
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(sys, "executable", str(d / "link")), \
+                mock.patch.object(sys, "argv", [str(d / "link")]):
+            self.assertEqual(pis._launcher(), pis._quote(os.path.realpath(str(exe))))
+
 
 class Discovery(unittest.TestCase):
     def test_status_lines(self):

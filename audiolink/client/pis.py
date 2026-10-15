@@ -35,7 +35,9 @@ def _quote(arg, windows=None):
 def _launcher():
     """How to run this same audiolink from an ssh ProxyCommand."""
     if getattr(sys, "frozen", False):
-        return _quote(sys.executable)
+        # PyInstaller: sys.executable is the executable in its folder (sys.argv[0] may be a
+        # link to it on PATH); resolved, so the entry works whatever the link does later
+        return _quote(os.path.realpath(sys.executable))
     arg0 = os.path.abspath(sys.argv[0])
     if arg0.endswith(".pyz"):
         return "%s %s" % (_quote(sys.executable), _quote(arg0))

@@ -12,7 +12,7 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
 ```
 
 - **No admin, no drivers, no install** on the host: it's a sound card, and
-  audiolink is one file (`.pyz` for any Python 3.9+, or a single binary).
+  audiolink is one file (`.pyz` for any Python 3.9+) or one folder (no Python needed).
 - **The host decides what's reachable** (`--expose 2222:22`); everything else is denied.
 - **Pairing like Bluetooth:** USB is trusted; over the network, the first machine
   claims an unclaimed Pi, and later ones use a one-time 6-digit code (SPAKE2, so
@@ -40,26 +40,34 @@ IN; it powers the Pi too), and audiolink on each computer you'll use.
 
 | Your computer | File | |
 |---|---|---|
-| Mac with Apple silicon | `audiolink-VER-macos-arm64` | single binary, no Python needed |
-| Intel Mac | `audiolink-VER-macos-x86_64` | |
-| Windows | `audiolink-VER-windows-x64.exe` | |
-| Linux, or anything with Python 3.9+ | `audiolink-VER.pyz` | run it as `python3 audiolink-VER.pyz ...`; a Linux host also needs PortAudio (e.g. `libportaudio2`) |
+| Mac with Apple silicon | `audiolink-VER-macos-arm64.zip` | no Python needed: a folder `audiolink` with the program in it |
+| Intel Mac | `audiolink-VER-macos-x86_64.zip` | |
+| Windows | `audiolink-VER-windows-x64.zip` | |
+| Linux, or anything with Python 3.9+ | `audiolink-VER.pyz` | one file; run it as `python3 audiolink-VER.pyz ...`; a Linux host also needs PortAudio (e.g. `libportaudio2`) |
 
-`SHA256SUMS` has the checksums. Put the file somewhere permanent and call it
-`audiolink`: the ssh entries from `audiolink ssh-config` run it from where it is.
+`SHA256SUMS` has the checksums. Unzip it and keep the `audiolink` folder somewhere
+permanent: the ssh entries from `audiolink ssh-config` run the program from where it is.
+On a Mac:
 
 ```
-chmod +x audiolink-*-macos-arm64
-mkdir -p ~/bin && mv audiolink-*-macos-arm64 ~/bin/audiolink     # ~/bin on your PATH, or use the full path
-xattr -d com.apple.quarantine ~/bin/audiolink                     # macOS: not code-signed yet
+cd ~/Downloads && unzip audiolink-*-macos-*.zip                     # or double-click it (Safari may have)
+mkdir -p ~/Applications && mv audiolink ~/Applications/
+xattr -dr com.apple.quarantine ~/Applications/audiolink             # not code-signed yet
+mkdir -p ~/bin && ln -s ~/Applications/audiolink/audiolink ~/bin/   # ~/bin on your PATH, or use the full path
 ```
 
 Without the `xattr`, macOS blocks the first run; allowing it in System Settings →
-Privacy & Security works too. On Windows, rename it to `audiolink.exe`, keep it in a
-folder such as `C:\Tools`, and choose "Run anyway" if SmartScreen warns about an
-unknown publisher. Apple's own `/usr/bin/python3` runs the `.pyz` over USB but can't
-do the network commands (its LibreSSL is too old): use the binary, or Python from
-python.org or Homebrew.
+Privacy & Security works too. The first run takes a few seconds (macOS checks the new
+files); later ones start at once. To update, replace the folder; the link stays.
+
+On Windows, extract it (Extract All) and move the `audiolink` folder to, say,
+`C:\Tools\audiolink`; add that folder to your PATH (Settings: search "environment
+variables" → Edit environment variables for your account → Path), or run
+`C:\Tools\audiolink\audiolink.exe`. If SmartScreen warns about an unknown publisher,
+choose "Run anyway".
+
+Apple's own `/usr/bin/python3` runs the `.pyz` over USB but can't do the network
+commands (its LibreSSL is too old): use the zip, or Python from python.org or Homebrew.
 
 **2. Plug the Pi in and start the host.** On the computer the Pi is plugged into:
 
@@ -329,7 +337,7 @@ encrypts itself. The Pi's certificate is for its own
 identity key, and a computer with its code checks that key, so nobody in between can
 read, change or take over a shell, an update or anything else, or pass off a proof
 made for them. Older audiolink versions on either side get "update audiolink"
-instead; macOS's built-in `/usr/bin/python3` can't do it (use the Mac binary, or
+instead; macOS's built-in `/usr/bin/python3` can't do it (use the Mac zip, or
 Python from python.org or Homebrew).
 
 **Revoking:** `audiolink rotate-secret` (Pi plugged in) gives the Pi a new code; the
@@ -389,7 +397,7 @@ Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
 
 ```
 python3 build_pyz.py                  # dist/audiolink.pyz
-python3 build_bin.py                  # dist/ single-file binary for this OS (needs pyinstaller)
+python3 build_bin.py                  # dist/audiolink-OS-ARCH.zip for this OS (needs pyinstaller)
 python3 -m unittest discover -s tests -t .
 ```
 
@@ -467,7 +475,7 @@ clients and Pis first, then swap it.
    workflow refuses a card whose packages differ from it (Alpine moved on; rebuild,
    review the diff, try the card).
 3. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
-4. Check the release's files: the macOS and Windows binaries, the `.pyz` (also
+4. Check the release's files: the macOS and Windows zips, the `.pyz` (also
    what `audiolink update` sends to a Pi), the card (`audiolink-pi-VER.zip`, with
    its `.manifest`) and `SHA256SUMS`. Unzip the card onto a microSD card and boot a
    Pi from it.
