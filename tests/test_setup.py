@@ -235,6 +235,14 @@ class SelfInstall(TempConfig):
         self.assertFalse(self.home.exists())
 
 
+class Launcher(unittest.TestCase):
+    def test_environment_goes_through_env(self):          # ssh execs ProxyCommand: VAR=x alone fails
+        from audiolink.client import pis
+        got = pis._launcher(["/py", "-m", "audiolink"], {"PYTHONPATH": "/src dir"})
+        self.assertEqual(got, "env PYTHONPATH='/src dir' /py -m audiolink")
+        self.assertEqual(pis._launcher(["/inst/audiolink"], {}), "/inst/audiolink")
+
+
 class SshBlock(TempConfig):
     def test_replaced_in_place_never_twice(self):
         path = self.dir / ".ssh" / "config"
@@ -275,6 +283,7 @@ class FakeHost:
         self.ident = new_identity()
         self.ident_name, self.claimed = "green-rowan", False
         self.ssid, self.calls = None, []
+        self.expose = None              # what the running host exposes (None: it doesn't say)
 
     def call(self, op, args=None, port=None, timeout=None):
         self.calls.append(op)
@@ -282,7 +291,8 @@ class FakeHost:
             raise SystemExit("audiolink host isn't running (start it: audiolink host)")
         if op == "peer":
             return {"connected": self.connected, "peer": {"caps": ["identity", "wifi", "proxy"],
-                                                          "identity": {"name": self.ident_name}}}
+                                                          "identity": {"name": self.ident_name}},
+                    "expose": self.expose}
         if op == "audio.status":
             return {"running": False}
         if not self.connected:
@@ -411,6 +421,16 @@ class Setup(TempConfig):
         self.assertIn("stop it (Ctrl-C in its window)", out)
         self.assertIn("without a terminal", code)
         self.assertEqual(self.runner.ran("launchctl"), [])
+
+    def test_restart_only_if_the_running_host_differs(self):
+        self.host.expose = ["2222:22"]                   # started by hand with --expose 2222:22
+        out, code = self.setup("--yes", "--no-wifi", "--no-autostart")
+        self.assertIsNone(code, out)
+        self.assertIn("Saved for audiolink host: --expose 2222:22", out)
+        self.assertNotIn("Restart audiolink host", out)
+        self.host.expose = []
+        out, code = self.setup("host", "--expose", "2222:22", "--expose", "8080:80", "--no-autostart")
+        self.assertIn("Restart audiolink host for the new settings", out)
 
     def test_second_computer(self):
         self.host.running = False

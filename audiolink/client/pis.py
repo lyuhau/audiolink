@@ -35,8 +35,8 @@ def _quote(arg, windows=None):
 def _launcher(argv=None, env=None):
     """How to run this same audiolink (or argv, with env) from an ssh ProxyCommand."""
     if argv:
-        prefix = "" if sys.platform == "win32" else "".join(
-            "%s=%s " % (k, shlex.quote(v)) for k, v in sorted((env or {}).items()))
+        prefix = "" if sys.platform == "win32" or not env else "env " + "".join(
+            "%s=%s " % (k, shlex.quote(v)) for k, v in sorted(env.items()))
         return prefix + " ".join(_quote(x) for x in argv)
     if getattr(sys, "frozen", False):
         # PyInstaller: sys.executable is the executable in its folder (sys.argv[0] may be a

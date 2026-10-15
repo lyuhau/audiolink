@@ -337,13 +337,15 @@ class Guide:
         saved = host_config.load()
         exposes = self.choose_exposes(saved.get("expose", []))
         changed = exposes != saved.get("expose", [])
+        uses = (self.peer() or {}).get("expose") if self.temp_host is None else None
+        restart = changed if uses is None else sorted(uses) != sorted(exposes)   # the running host's
         if changed:
             path = host_config.update(expose=exposes)
             print("Saved for audiolink host: %s" % (" ".join("--expose " + e for e in exposes) or "nothing exposed"))
             detail("in %s", path)
         else:
             print("audiolink host: %s" % (", ".join("exposes " + e for e in exposes) or "exposes nothing"))
-        self.autostart_part(changed)
+        self.autostart_part(restart)
 
     def choose_exposes(self, current):
         if self.a.expose:

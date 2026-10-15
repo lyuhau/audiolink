@@ -539,7 +539,8 @@ def run_host(a, allow, port, gate):
         quiet_stdout()
     run_portaudio(session.link, a.out_device, a.in_device, expected=lambda: negotiator.running)
     local_ops = {"peer": lambda args: {"connected": session.peer_alive, "peer": session.peer_info,
-                                       "proxy_port": a.proxy_port, "shell_port": a.shell_port}}
+                                       "proxy_port": a.proxy_port, "shell_port": a.shell_port,
+                                       "expose": list(a.expose)}}
     local_ops.update(watcher.local_ops())
     local_ops.update(negotiator.local_ops())
     control.serve(session, ctl, local_ops)
