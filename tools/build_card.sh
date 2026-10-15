@@ -24,7 +24,7 @@ fi
 [ -f "$PLATFORM/build_card.py" ] || {
     echo "no pi-gadget-kit at $PLATFORM: git submodule update --init (or set PLATFORM)" >&2; exit 1; }
 ls "$PLATFORM"/out/modules/*.ko >/dev/null 2>&1 || {
-    echo "the platform has no gadget modules yet: $PLATFORM/alpine-module/build.sh (needs Docker; see its README)" >&2; exit 1; }
+    echo "the platform has no gadget modules yet: $PLATFORM/alpine-module/fetch.sh (prebuilt), or build.sh (Docker; see its README)" >&2; exit 1; }
 [ -f "$CONFIG" ] || { echo "no config $CONFIG" >&2; exit 1; }
 CONFIG=$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")
 NAME=$(basename "$CONFIG" .toml)
