@@ -253,7 +253,10 @@ class Guide:
         if status:
             done("failed")
             raise SystemExit("rpiboot failed: %s" % ((out.strip().splitlines() or ["no output"])[-1]))
-        disk = self.new_disk(before, 20)
+        end = time.monotonic() + 15            # its firmware shows up as a card reader first
+        while self.usb_state() != "msd" and time.monotonic() < end:
+            self.sleep(0.5)
+        disk = self.new_disk(before, 5)         # then the card in it, if there is one
         if not disk:
             done("no card in it")
             print("Put its SD card in")
@@ -292,7 +295,7 @@ class Guide:
         """(device, bytes) of a disk that wasn't in `before`, waiting up to `seconds`."""
         end = time.monotonic() + seconds
         while True:
-            new = {d: n for d, n in card.external_disks(self.runner).items() if d not in before}
+            new = {d: n for d, n in card.external_disks(self.runner).items() if d not in before and n}
             if new:
                 return sorted(new.items())[0]
             if time.monotonic() >= end:

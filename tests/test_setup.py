@@ -489,7 +489,7 @@ class Setup(TempConfig):
         self.host.running = False
         calls = self.card_mocks({"/dev/disk7": 31914983424})
         out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client",
-                               usb_state=self.card_states("rom", "rom", "pi"))
+                               usb_state=self.card_states("rom", "rom", "msd", "pi"))
         self.assertIsNone(code, out)
         for line in ("A Pi is plugged in with no card set up", "Set up its card? (erases the card in it) yes",
                      "Downloading its card image", "Opening its card from this computer... 31.9 GB",
@@ -498,6 +498,22 @@ class Setup(TempConfig):
             self.assertIn(line, out)
         self.assertEqual(calls["written"], [("/dev/disk7", Path("/cache/audiolink-pi.zip"))])   # never disk2
         self.assertEqual(self.runner.ran("/rp"), [["/rp", "-d", "/msd"]])
+
+    def test_card_asked_for_only_when_none_shows_up(self):
+        self.host.running = False
+        calls = self.card_mocks({})
+        n = {"calls": 0}
+
+        def disks(runner):                      # the card goes in a while after rpiboot
+            n["calls"] += 1
+            return {"/dev/disk7": 31914983424} if n["calls"] > 12 else {}
+        with mock.patch("audiolink.card.external_disks", disks):
+            out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client",
+                                   usb_state=self.card_states("rom", "rom", "msd", "pi"))
+        self.assertIsNone(code, out)
+        self.assertIn("Opening its card from this computer... no card in it\nPut its SD card in\n"
+                      "Waiting for the card... 31.9 GB", out)
+        self.assertEqual(calls["written"][0][0], "/dev/disk7")
 
     def test_card_needs_rpiboot(self):
         self.host.running = False
