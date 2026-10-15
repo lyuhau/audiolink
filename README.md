@@ -201,8 +201,8 @@ file; dev cards add its keys to root's. Installing a new image onto the card kee
 
 ### Where card images come from
 
-None are published yet: the Pi's system comes from a separate, private platform
-project, so for now cards are built from source with it (*Development*). A ready Pi
+None are published yet; for now cards are built from source with the
+[usb platform](https://github.com/lyuhau/usb) (*Development*). A ready Pi
 keeps everything it needs on its card. One release image is meant for everyone:
 what differs between Pis is on the card (its state, and `settings.txt`).
 
@@ -371,9 +371,13 @@ python3 -m unittest discover -s tests -t .
 `build_pyz.py` is reproducible: the same sources give the same bytes. Under macOS's
 `/usr/bin/python3` the tests that need TLS 1.3 with Ed25519 are skipped.
 
-The Pi runs audiolink as an app on the usb platform (Alpine in one initramfs; a
-separate, private project: `~/Code/usb`, its README: Apps). Building the card needs
-a checkout of it at `USB_PLATFORM` (default: `~/Code/usb`), its venv, and Docker. A card
+The Pi runs audiolink as an app on the [usb platform](https://github.com/lyuhau/usb)
+(Alpine in one initramfs; its README: Apps), a git submodule at `platform/`, pinned to
+the version audiolink was tested with: clone with `git clone --recursive`, or run
+`git submodule update --init`. Building the card needs Python 3.11+ (or 3.9+ with
+`tomli`) and, once, the platform's patched gadget modules:
+`platform/alpine-module/build.sh` (Docker). `USB_PLATFORM` points the build at another
+checkout of the platform, e.g. one you're changing. A card
 for someone else: `tools/build_card.sh config/pi-release.toml --install /Volumes/CARD`
 (a FAT32-formatted microSD card, see the platform's README); the Pi boots from it. `config/` describes the card:
 `pi.toml` (dev: USB ethernet with the Pi at `10.55.0.2`, SSH with
@@ -435,8 +439,8 @@ clients and Pis first, then swap it.
    them on a Pi.
 3. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 4. Check the release's files: the macOS and Windows binaries, the `.pyz` (also
-   what `audiolink update` sends to a Pi) and `SHA256SUMS`. No card image while
-   the platform is private.
+   what `audiolink update` sends to a Pi) and `SHA256SUMS`. No card image yet:
+   that needs the platform's modules in CI (or a card attached by hand).
 
 ## License
 

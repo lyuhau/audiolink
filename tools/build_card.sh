@@ -5,21 +5,25 @@
 # -> build/card-NAME/ and build/card-NAME.manifest (NAME: the config's, e.g. pi).
 # Install it on a running dev Pi with tools/deploy.sh, or on a card in a reader
 # with --install /Volumes/CARD.
-#   USB_PLATFORM  the platform's checkout (default: ~/Code/usb)
+#   USB_PLATFORM  the platform's checkout (default: platform/, the usb submodule;
+#                 `git submodule update --init` fetches it)
 #   USB_PYTHON    Python for it, 3.11+ or 3.9+ with tomli (default: its .venv,
-#                 ~/Code/usb/.venv, python3)
+#                 then python3)
 set -e
 case "$1" in -h|--help) sed -n '2,10s/^# \{0,1\}//p' "$0"; exit 0 ;; esac
 cd "$(dirname "$0")/.."
 CONFIG=${1:-config/pi.toml}
 [ $# -gt 0 ] && shift
-USB_PLATFORM=${USB_PLATFORM:-$HOME/Code/usb}
+USB_PLATFORM=${USB_PLATFORM:-$PWD/platform}
 if [ -z "$USB_PYTHON" ]; then
-    for p in "$USB_PLATFORM/.venv/bin/python" "$HOME/Code/usb/.venv/bin/python" python3; do
+    for p in "$USB_PLATFORM/.venv/bin/python" python3; do
         command -v "$p" >/dev/null && USB_PYTHON=$p && break
     done
 fi
-[ -f "$USB_PLATFORM/build_card.py" ] || { echo "no usb platform at $USB_PLATFORM (set USB_PLATFORM)" >&2; exit 1; }
+[ -f "$USB_PLATFORM/build_card.py" ] || {
+    echo "no usb platform at $USB_PLATFORM: git submodule update --init (or set USB_PLATFORM)" >&2; exit 1; }
+ls "$USB_PLATFORM"/out/modules/*.ko >/dev/null 2>&1 || {
+    echo "the platform has no gadget modules yet: $USB_PLATFORM/alpine-module/build.sh (needs Docker; see its README)" >&2; exit 1; }
 [ -f "$CONFIG" ] || { echo "no config $CONFIG" >&2; exit 1; }
 CONFIG=$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")
 NAME=$(basename "$CONFIG" .toml)
