@@ -32,8 +32,12 @@ def _quote(arg, windows=None):
     return shlex.quote(arg)
 
 
-def _launcher():
-    """How to run this same audiolink from an ssh ProxyCommand."""
+def _launcher(argv=None, env=None):
+    """How to run this same audiolink (or argv, with env) from an ssh ProxyCommand."""
+    if argv:
+        prefix = "" if sys.platform == "win32" else "".join(
+            "%s=%s " % (k, shlex.quote(v)) for k, v in sorted((env or {}).items()))
+        return prefix + " ".join(_quote(x) for x in argv)
     if getattr(sys, "frozen", False):
         # PyInstaller: sys.executable is the executable in its folder (sys.argv[0] may be a
         # link to it on PATH); resolved, so the entry works whatever the link does later
@@ -69,10 +73,10 @@ def pis_command(a):
                ", identity backup kept here" if e.get("custody") else "")
 
 
-def _add_usb(a):
-    """Returns the entry, or None if no Pi is reachable over USB from here."""
-    from ..host.control import DEFAULT_PORT, call
-    port = getattr(a, "control_port", None) or DEFAULT_PORT
+def add_usb_entry(port, alias=None):
+    """Add (or refresh) the Pi plugged in here; USB is the trust, so no code and no question.
+    -> (entry, created, claimed just now, an identity backup kept: it has no SD card), or None if no Pi is reachable over USB from here."""
+    from ..host.control import call
     try:
         peer = call("peer", port=port)
     except SystemExit:
@@ -83,10 +87,20 @@ def _add_usb(a):
     claim = call("identity.claim", port=port)
     code = call("identity.code", port=port)["code"]
     custody = None if info["persistent"] else call("identity.export", port=port)
-    entry, created = keyring.upsert(code, name=info["name"], alias=a.name, serial=info["serial"],
+    entry, created = keyring.upsert(code, name=info["name"], alias=alias, serial=info["serial"],
                                     custody=custody, seen=True)
+    return entry, created, bool(claim.get("first")), custody is not None
+
+
+def _add_usb(a):
+    """Returns the entry, or None if no Pi is reachable over USB from here."""
+    from ..host.control import DEFAULT_PORT
+    got = add_usb_entry(getattr(a, "control_port", None) or DEFAULT_PORT, a.name)
+    if got is None:
+        return None
+    entry, created, first, custody = got
     print("%s %s%s" % ("Added" if created else "Updated", entry["alias"],
-                       " (claimed: first computer)" if claim.get("first") else ""))
+                       " (claimed: first computer)" if first else ""))
     if custody:
         print("No SD card: keeping a backup of its identity here")
     return entry
@@ -261,6 +275,13 @@ def rename_command(a):
         print("%s is taken here (another Pi); called it %s" % (new, alias))
 
 
+def ssh_port(entry, default=2222):
+    """The Pi's port for ssh: the default if it offers it (or nothing's known), else the first it offers."""
+    rec = entry.get("last_record")
+    ports = (rec or {}).get("ports") or [default]
+    return default if default in ports or not rec else ports[0]
+
+
 def ssh_config_command(a):
     pis = keyring.load()
     if not pis:
@@ -272,8 +293,7 @@ def ssh_config_command(a):
           "# then: ssh NAME. Each entry logs in to the computer that Pi is plugged into, as %s." % user)
     for e in sorted(pis.values(), key=lambda e: e["alias"]):
         rec = e.get("last_record")
-        ports = (rec or {}).get("ports") or [a.port]
-        port = a.port if a.port in ports or not rec else ports[0]
+        port = ssh_port(e, a.port)
         if rec and not rec.get("ports"):
             sys.stderr.write("%s offered no ports when last found (on its host: audiolink host --expose %d:22)\n"
                              % (e["alias"], a.port))

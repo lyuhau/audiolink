@@ -109,7 +109,14 @@ def _path_note(folder, environ):
     dirs = [os.path.normcase(os.path.normpath(p)) for p in environ.get("PATH", "").split(os.pathsep) if p]
     if os.path.normcase(os.path.normpath(str(folder))) in dirs:
         return None
-    return "%s isn't on your PATH: add it to run plain `audiolink`" % folder
+    if os.sep == "\\":
+        return ("%s isn't on your PATH; to run plain `audiolink`, add it (Settings: search \"environment "
+                "variables\" → Edit environment variables for your account → Path)" % folder)
+    home = os.path.expanduser("~")
+    shown = "$HOME" + str(folder)[len(home):] if str(folder).startswith(home + os.sep) else str(folder)
+    profile = "~/.zprofile" if sys.platform == "darwin" else "~/.profile"
+    return ("%s isn't on your PATH; to run plain `audiolink`: echo 'export PATH=\"%s:$PATH\"' >> %s, "
+            "then open a new terminal" % (shown.replace("$HOME", "~", 1), shown, profile))
 
 
 def install(runner, platform=sys.platform, home=None, environ=None, what=None, python=None):
@@ -155,3 +162,14 @@ def install(runner, platform=sys.platform, home=None, environ=None, what=None, p
     if note:
         notes.append(note)
     return Installed(argv, changed=changed, where=dest, notes=notes)
+
+
+def here(python=None):
+    """Installed for the audiolink running now, where it is (setup --no-install)."""
+    kind, src, exe = running()
+    python = python or sys.executable
+    if kind == "frozen":
+        return Installed([str(src / exe)], where=src)
+    if kind == "pyz":
+        return Installed([python, str(src)], where=src.parent)
+    return Installed([python, "-m", "audiolink"], env={"PYTHONPATH": str(src)})
