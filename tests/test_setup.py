@@ -506,12 +506,12 @@ class Setup(TempConfig):
 
         def disks(runner):                      # the card goes in a while after rpiboot
             n["calls"] += 1
-            return {"/dev/disk7": 31914983424} if n["calls"] > 12 else {}
+            return {"/dev/disk7": 31914983424} if n["calls"] > 30 else {}
         with mock.patch("audiolink.card.external_disks", disks):
             out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client",
                                    usb_state=self.card_states("rom", "rom", "msd", "pi"))
         self.assertIsNone(code, out)
-        self.assertIn("Opening its card from this computer... no card in it\nPut its SD card in\n"
+        self.assertIn("Opening its card from this computer... no card showed up\nPut its SD card in\n"
                       "Waiting for the card... 31.9 GB", out)
         self.assertEqual(calls["written"][0][0], "/dev/disk7")
 

@@ -256,9 +256,9 @@ class Guide:
         end = time.monotonic() + 15            # its firmware shows up as a card reader first
         while self.usb_state() != "msd" and time.monotonic() < end:
             self.sleep(0.5)
-        disk = self.new_disk(before, 5)         # then the card in it, if there is one
+        disk = self.new_disk(before, 20)        # then the card in it, once its firmware has started it
         if not disk:
-            done("no card in it")
+            done("no card showed up")
             print("Put its SD card in")
             step("Waiting for the card")
             disk = self.new_disk(before, 180)
