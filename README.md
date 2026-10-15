@@ -33,6 +33,15 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
 
 ## Quick start: got a ready Pi? Start here
 
+**Start here: `audiolink setup`.** Get audiolink (step 1 below), plug the Pi in, and
+run `audiolink setup` on that computer: it installs audiolink somewhere permanent, adds
+the Pi, puts it on Wi-Fi, asks whether the Pi stays plugged in there (then: ssh to that
+computer from elsewhere, and `audiolink host` started at login) and sets up `ssh NAME`.
+On each other computer, `audiolink setup` finds the Pi on the network (or takes its
+code) and sets up `ssh NAME` there. Run it again any time to see what's set or change
+it; `audiolink setup --help` lists a flag for each question. The steps below are what it
+does, by hand.
+
 You need the Pi with its card, a USB data cable to its port marked **USB** (not PWR
 IN; it powers the Pi too), and audiolink on each computer you'll use.
 
@@ -131,13 +140,16 @@ network can reach: `curl -x http://127.0.0.1:47801 https://example.com`, or set
 
 ### Keep `audiolink host` running
 
-To start it at login and restart it if it stops, instead of a terminal window (stop
-the one in the terminal first: only one host runs at a time):
+To start it at login and restart it if it stops, instead of a terminal window:
+`audiolink setup host` sets this up (`--no-autostart` takes it out again), with what
+it exposes saved in audiolink's settings (`host.json`), which `audiolink host` reads
+(flags given to it win). By hand (stop the host in the terminal first: only one host
+runs at a time):
 
 **macOS:** save as `~/Library/LaunchAgents/com.audiolink.host.plist` (with your paths),
-then `launchctl load ~/Library/LaunchAgents/com.audiolink.host.plist`. `caffeinate -i`
-keeps the Mac from sleeping while it runs. If it doesn't connect, look in
-`/tmp/audiolink-host.log`, and under System Settings → Privacy & Security →
+then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.audiolink.host.plist`.
+`caffeinate -i` keeps the Mac from sleeping while it runs. If it doesn't connect, look in
+`~/Library/Logs/audiolink-host.log`, and under System Settings → Privacy & Security →
 Microphone: a program started this way may need its own permission.
 
 ```xml
@@ -154,13 +166,13 @@ Microphone: a program started this way may need its own permission.
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/audiolink-host.log</string>
-  <key>StandardErrorPath</key><string>/tmp/audiolink-host.log</string>
+  <key>StandardOutPath</key><string>/Users/you/Library/Logs/audiolink-host.log</string>
+  <key>StandardErrorPath</key><string>/Users/you/Library/Logs/audiolink-host.log</string>
 </dict>
 </plist>
 ```
 
-`launchctl unload` with the same path stops it.
+`launchctl bootout gui/$(id -u)/com.audiolink.host` stops it.
 
 **Linux:** save as `~/.config/systemd/user/audiolink-host.service`, then
 `systemctl --user enable --now audiolink-host` (`journalctl --user -u audiolink-host`
@@ -244,6 +256,7 @@ built-in values. Code alone updates without a new card: `audiolink update`.
 
 | Command | |
 |---|---|
+| `audiolink setup [host]` | start here: this computer (and the Pi, plugged in here): install, add, Wi-Fi, host at login, `ssh NAME`; `host`: just the host part |
 | `audiolink host [--expose PIPORT:PORT] [--wifi NAME]` | run on the host; keeps the link up, reconnects on its own |
 | `audiolink add [CODE] [--at ADDR] [--pairing-code N]` | add a Pi: over USB, found on the network, or by connect code |
 | `audiolink pis` / `share PI` / `forget PI` / `rename PI NEW [--on-pi]` | the Pis this machine knows |
