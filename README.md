@@ -231,7 +231,8 @@ what differs between Pis is on the card (its state, and `settings.txt`).
    - Windows: `Expand-Archive audiolink-pi-VER.zip -DestinationPath E:\`
    - Linux: `unzip audiolink-pi-VER.zip -d /media/$USER/AUDIOPI`
 3. Optionally edit its `settings.txt` (*The card's settings*). Eject the card
-   (macOS: `diskutil eject /Volumes/AUDIOPI`) and put it in the Pi.
+   (macOS: `diskutil eject /Volumes/AUDIOPI`; if it says the disk is busy, Spotlight
+   is looking at the new card: wait a few seconds and eject again) and put it in the Pi.
 
 **A newer image on a used card:** unzip over it without replacing `settings.txt`
 (`unzip -o audiolink-pi-VER.zip -x settings.txt -d /Volumes/AUDIOPI`; on Windows,
