@@ -46,8 +46,9 @@ def main():
     out = DIST / zipname
     out.unlink(missing_ok=True)
     if sys.platform == "darwin":
-        # ditto keeps the symlinks, permissions and signatures PyInstaller made
-        subprocess.run(["ditto", "-c", "-k", "--keepParent", str(folder), str(out)], check=True)
+        # ditto keeps the symlinks, permissions and signatures PyInstaller made; no ._ files
+        # for extended attributes (a plain unzip would leave them as clutter)
+        subprocess.run(["ditto", "-c", "-k", "--norsrc", "--noextattr", "--keepParent", str(folder), str(out)], check=True)
     else:
         shutil.make_archive(str(out.with_suffix("")), "zip", DIST, "audiolink")
     print("%s (%.1f MB)" % (out.relative_to(ROOT), out.stat().st_size / 1e6))
