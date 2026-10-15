@@ -7,12 +7,12 @@ from .ui import detail
 
 
 class Runner:
-    def run(self, cmd):
+    def run(self, cmd, timeout=60):
         """Run a command to the end -> (exit status, its output). A missing tool is 127."""
         detail("$ %s", " ".join(cmd))
         try:
             p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               stdin=subprocess.DEVNULL, timeout=60)
+                               stdin=subprocess.DEVNULL, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as e:
             detail("%s", e)
             return 127, str(e)

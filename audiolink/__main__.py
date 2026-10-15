@@ -140,6 +140,8 @@ def build_parser():
     stp.add_argument("--pairing-code", metavar="CODE", help="the 6-digit code, for a Pi found on this network")
     stp.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     stp.add_argument("--pi", help="which Pi this computer already knows to set up ssh for (see: audiolink pis)")
+    stp.add_argument("--card-image", metavar="ZIP",
+                     help="the Pi has no card set up: write this image (default: the release's for this version)")
     stp.add_argument("--no-install", action="store_true",
                      help="use audiolink where it is (don't copy it to a permanent place)")
     sub.add_parser("list-devices", help="list audio devices")

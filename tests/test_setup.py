@@ -26,7 +26,7 @@ class FakeRunner:
     def __init__(self, answers=None):
         self.cmds, self.answers, self.spawned = [], answers or {}, []
 
-    def run(self, cmd):
+    def run(self, cmd, timeout=60):
         self.cmds.append(list(cmd))
         for prefix, reply in self.answers.items():
             if " ".join(cmd).startswith(prefix):
@@ -243,6 +243,30 @@ class Launcher(unittest.TestCase):
         self.assertEqual(pis._launcher(["/inst/audiolink"], {}), "/inst/audiolink")
 
 
+class CardUsb(unittest.TestCase):
+    IOREG = """+-o Root  <class IORegistryEntry>
+  +-o AppleT8112USBXHCI@00000000
+  | +-o BCM2710 Boot@00100000  <class IOUSBHostDevice>
+  |     "idProduct" = 10084
+  |     "USB Product Name" = "BCM2710 Boot"
+  |     "idVendor" = 2652
+"""
+
+    def test_boot_mode_on_macos(self):
+        from audiolink import card
+        runner = FakeRunner({"ioreg": (0, self.IOREG)})
+        self.assertEqual(card.usb_devices(runner, "darwin"), [("0a5c", "2764", "BCM2710 Boot")])
+        self.assertEqual(card.usb_state(runner, "darwin", hints=("audiopi",)), "rom")
+        runner = FakeRunner({"ioreg": (0, self.IOREG.replace("BCM2710 Boot", "AudioPi"))})
+        self.assertEqual(card.usb_state(runner, "darwin", hints=("audiopi",)), "pi")
+
+    def test_disks_from_diskutil(self):
+        from audiolink import card
+        runner = FakeRunner({"diskutil list": (0, "/dev/disk7 (external, physical):\n   #: TYPE NAME\n"),
+                             "diskutil info": (0, "   Disk Size:   31.9 GB (31914983424 Bytes) (exactly 1 512-Byte-Units)\n")})
+        self.assertEqual(card.external_disks(runner), {"/dev/disk7": 31914983424})
+
+
 class SshBlock(TempConfig):
     def test_replaced_in_place_never_twice(self):
         path = self.dir / ".ssh" / "config"
@@ -350,7 +374,7 @@ class Setup(TempConfig):
         self.runner.spawn = spawn
         self.banners = []
 
-    def setup(self, *argv, pi_device=True, sshd=True, banner=(True, "SSH-2.0-OpenSSH_9.8")):
+    def setup(self, *argv, pi_device=True, sshd=True, banner=(True, "SSH-2.0-OpenSSH_9.8"), usb_state=None):
         a = build_parser().parse_args(["setup", *argv])
         inst = install.Installed(["/inst/audiolink"], where=self.dir / "inst", changed=True)
 
@@ -358,7 +382,8 @@ class Setup(TempConfig):
             self.banners.append((alias, port))
             return banner
         g = guide.Guide(a, runner=self.runner, platform="darwin", home=self.home, pi_device=lambda: pi_device,
-                        sshd=lambda: sshd, banner=ssh, installer=lambda: inst)
+                        sshd=lambda: sshd, banner=ssh, installer=lambda: inst,
+                        usb_state=usb_state or (lambda: "pi" if pi_device else None))
         g.ask.tty = False
         out = io.StringIO()
         code = None
@@ -439,6 +464,53 @@ class Setup(TempConfig):
         self.assertFalse((self.home / "Library").exists())
         self.assertEqual(self.banners, [])
         self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])   # only for the setup
+
+    def card_states(self, *states):
+        """usb_state answers: each given state once, the last one from then on."""
+        seq = list(states)
+        return lambda: seq.pop(0) if len(seq) > 1 else seq[0]
+
+    def card_mocks(self, disks_after, rpiboot=["/rp", "-d", "/msd"]):
+        calls = {"disks": 0, "written": []}
+
+        def disks(runner):
+            calls["disks"] += 1
+            return {"/dev/disk2": 10 ** 12} if calls["disks"] == 1 else dict({"/dev/disk2": 10 ** 12}, **disks_after)
+        for target, value in (("audiolink.card.rpiboot_command", lambda platform: rpiboot),
+                              ("audiolink.card.external_disks", disks),
+                              ("audiolink.card.write", lambda runner, dev, image, sleep: calls["written"].append((dev, image))),
+                              ("audiolink.card.fetch_image", lambda runner, folder: Path("/cache/audiolink-pi.zip"))):
+            p = mock.patch(target, value)
+            p.start()
+            self.addCleanup(p.stop)
+        return calls
+
+    def test_card_through_the_pi(self):
+        self.host.running = False
+        calls = self.card_mocks({"/dev/disk7": 31914983424})
+        out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client",
+                               usb_state=self.card_states("rom", "rom", "pi"))
+        self.assertIsNone(code, out)
+        for line in ("A Pi is plugged in with no card set up", "Set up its card? (erases the card in it) yes",
+                     "Downloading its card image", "Opening its card from this computer... 31.9 GB",
+                     "Writing it... done", "Unplug the Pi and plug it back in", "Waiting for it to start... started",
+                     "Added green-rowan"):
+            self.assertIn(line, out)
+        self.assertEqual(calls["written"], [("/dev/disk7", Path("/cache/audiolink-pi.zip"))])   # never disk2
+        self.assertEqual(self.runner.ran("/rp"), [["/rp", "-d", "/msd"]])
+
+    def test_card_needs_rpiboot(self):
+        self.host.running = False
+        self.card_mocks({}, rpiboot=None)
+        out, code = self.setup("--yes", usb_state=lambda: "rom")
+        self.assertIn("needs rpiboot: brew install rpiboot", code)
+
+    def test_card_too_big_is_not_written(self):
+        self.host.running = False
+        calls = self.card_mocks({"/dev/disk9": 2 * 10 ** 12})
+        out, code = self.setup("--yes", usb_state=lambda: "rom")
+        self.assertIn("too big to be the Pi's card", code)
+        self.assertEqual(calls["written"], [])
 
     def test_a_running_host_is_left_alone_without_a_terminal(self):
         out, code = self.setup("--yes", "--no-wifi", "--autostart")     # started by hand: it has to stop first

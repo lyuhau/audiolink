@@ -25,7 +25,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-from . import install
+from . import card, install
 from .client import keyring, pis, sshconfig
 from .host import autostart as autostart_mod, config as host_config, control
 from .system import Runner
@@ -128,8 +128,10 @@ def ssh_banner(alias, port):
 
 class Guide:
     def __init__(self, a, runner=None, platform=sys.platform, home=None, sleep=None,
-                 pi_device=pi_device_present, sshd=sshd_running, banner=ssh_banner, installer=None):
+                 pi_device=pi_device_present, sshd=sshd_running, banner=ssh_banner, installer=None,
+                 usb_state=None):
         self.a = a
+        self.usb_state = usb_state or (lambda: card.usb_state(self.runner, self.platform))
         self.ask = Ask(a)
         self.runner = runner or Runner()
         self.platform, self.home = platform, home
@@ -208,6 +210,11 @@ class Guide:
     def usb(self):
         """Is the Pi plugged in here (with a host running for it, started now if needed)?"""
         p = self.peer()
+        if p is None or not p.get("connected"):
+            state = self.usb_state()
+            if state in ("rom", "msd"):
+                self.card_part(state)
+                p = self.peer()
         if p is None:
             if not self.pi_device():
                 return False
@@ -223,6 +230,84 @@ class Guide:
         if "identity" not in caps:
             raise SystemExit("%s's audiolink is too old for this; update it: audiolink update" % self.name)
         return True
+
+    # ---- the card, through the Pi (card.py)
+    def card_part(self, state):
+        print("A Pi is plugged in with no card set up (it's waiting in its USB boot mode)")
+        if not self.ask.yes("Set up its card? (erases the card in it)", default=True):
+            raise SystemExit("Not set up: put a card set up for audiolink in it, or run audiolink setup again")
+        if self.platform != "darwin":
+            raise SystemExit("Setting up its card from here works on macOS only so far: write it by hand "
+                             "(README: Make the card), then run audiolink setup again")
+        cmd = card.rpiboot_command(self.platform)
+        if not cmd:
+            raise SystemExit("To set up its card through it, this computer needs rpiboot: %s; then run "
+                             "audiolink setup again" % card.install_hint(self.platform))
+        image = self.card_image()
+        if state == "msd":
+            print("It's still showing its card from an earlier try: unplug it and plug it back in")
+            self.wait_usb("rom", "Waiting for it", 180)
+        before = card.external_disks(self.runner)
+        step("Opening its card from this computer")
+        status, out = self.runner.run(cmd, timeout=90)
+        if status:
+            done("failed")
+            raise SystemExit("rpiboot failed: %s" % ((out.strip().splitlines() or ["no output"])[-1]))
+        disk = self.new_disk(before, 20)
+        if not disk:
+            done("no card in it")
+            print("Put its SD card in")
+            step("Waiting for the card")
+            disk = self.new_disk(before, 180)
+            if not disk:
+                done("none")
+                raise SystemExit("No card showed up; unplug the Pi, put its card in, plug it back in, and run "
+                                 "audiolink setup again")
+        dev, size = disk
+        if size > card.MAX_CARD:
+            done("%s, %d GB" % (dev, size // 10 ** 9))
+            raise SystemExit("%s is too big to be the Pi's card; nothing written" % dev)
+        done("%.1f GB" % (size / 1e9))
+        step("Writing it")
+        card.write(self.runner, dev, image, sleep=self.sleep)
+        done("done")
+        print("Unplug the Pi and plug it back in")
+        self.wait_usb("pi", "Waiting for it to start", 300)
+        self.sleep(3)                   # its sound device, a moment after the USB device
+
+    def card_image(self):
+        if self.a.card_image:
+            return card.check_image(self.a.card_image)
+        from .paths import cache_dir
+        step("Downloading its card image (audiolink %s)" % card.__version__)
+        try:
+            path = card.fetch_image(self.runner, cache_dir() / "cards")
+        except SystemExit:
+            done("failed")
+            raise
+        done("checked")
+        return path
+
+    def new_disk(self, before, seconds):
+        """(device, bytes) of a disk that wasn't in `before`, waiting up to `seconds`."""
+        end = time.monotonic() + seconds
+        while True:
+            new = {d: n for d, n in card.external_disks(self.runner).items() if d not in before}
+            if new:
+                return sorted(new.items())[0]
+            if time.monotonic() >= end:
+                return None
+            self.sleep(1)
+
+    def wait_usb(self, state, what, seconds):
+        step(what)
+        end = time.monotonic() + seconds
+        while self.usb_state() != state:
+            if time.monotonic() >= end:
+                done("not yet")
+                raise SystemExit("The Pi didn't come back; plug it in again and run audiolink setup again")
+            self.sleep(1)
+        done("yes" if state != "pi" else "started")
 
     def wait_for_pi(self, seconds):
         p = self.peer(connected=True)

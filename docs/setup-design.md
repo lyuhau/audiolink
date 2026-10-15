@@ -26,8 +26,13 @@ needs a pairing code.
 `audiolink setup` with no part named works out what this computer can do and offers only
 that. With the Pi on USB (setup talks to it through a host of its own, so none needs to
 be running), these become available, each one optional and independent:
-1. The card, if the Pi has none set up (it shows up in its USB boot mode): write it, then
-   wait for the replug. (To build.)
+1. The card, if the Pi has none set up (it waits in its USB boot mode, 0a5c:2764): through
+   rpiboot (installed separately; its "msd" firmware shows the card as a disk), the
+   release's card image for this version (checked against SHA256SUMS; --card-image ZIP),
+   erase, unzip, eject, then wait for the replug. macOS only so far (audiolink/card.py).
+   Considered: audiolink speaking the boot protocol itself (pyusb + libusb + the msd
+   firmware: no rpiboot install, but Windows still needs WinUSB), a card reader, and
+   booting over USB with no card at all (two cables). Left out for now.
 2. The Pi: claim it over USB (no code, no "claim it?" question), optional name, Wi-Fi
    (picker). Skip what's already done.
 3. "Make this computer NAME's host?" yes: expose this computer's ssh (2222:22; Remote
