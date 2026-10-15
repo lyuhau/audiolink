@@ -3,7 +3,7 @@
   1. audiolink itself, somewhere permanent (install.py)
   With the Pi on USB (through `audiolink host`, started for the setup if none runs):
   2. the Pi: added here (USB is the trust: no code, no question), its name, Wi-Fi
-  3. "Make this computer its host?" it exposes this computer's ssh (saved settings,
+  3. "Make this computer its host?" yes: it exposes this computer's ssh (saved settings,
      host/config.py), and starts at login if asked to (--autostart, host/autostart.py); a check that ssh
      through the Pi reaches this computer
   4. "Register this computer as a client?" ssh NAME from here (no code: USB is the trust).
@@ -171,7 +171,7 @@ class Guide:
             if host and self.ssh_port:
                 self.try_ssh(client)
             elif client:
-                print("ssh %s works once %s is plugged into its host, set up there with audiolink setup"
+                print("ssh %s works once %s is plugged into a host set up with audiolink setup"
                       % (self.name, self.name))
             if self.end_note:
                 print(self.end_note)
@@ -228,27 +228,27 @@ class Guide:
                              "the README); then run audiolink setup again")
         caps = ((self.peer() or {}).get("peer") or {}).get("caps", [])
         if "identity" not in caps:
-            raise SystemExit("%s's audiolink is too old for this; update it: audiolink update" % self.name)
+            raise SystemExit("%s runs an audiolink too old for setup; update: audiolink update" % self.name)
         return True
 
     # ---- the card, through the Pi (card.py)
     def card_part(self, state):
-        print("A Pi is plugged in with no card set up (it's waiting in its USB boot mode)")
-        if not self.ask.yes("Set up its card? (erases the card in it)", default=True):
-            raise SystemExit("Not set up: put a card set up for audiolink in it, or run audiolink setup again")
+        print("Pi in USB boot mode: no card set up")
+        if not self.ask.yes("Set up the Pi's card? (erases the card)", default=True):
+            raise SystemExit("Card not set up: insert a card set up for audiolink, or run audiolink setup again")
         if self.platform != "darwin":
-            raise SystemExit("Setting up its card from here works on macOS only so far: write it by hand "
+            raise SystemExit("Setting up the card through the Pi works on macOS only so far; write the card by hand "
                              "(README: Make the card), then run audiolink setup again")
         cmd = card.rpiboot_command(self.platform)
         if not cmd:
-            raise SystemExit("To set up its card through it, this computer needs rpiboot: %s; then run "
+            raise SystemExit("Setting up the card through the Pi needs rpiboot: %s; then run "
                              "audiolink setup again" % card.install_hint(self.platform))
         image = self.card_image()
         if state == "msd":
-            print("It's still showing its card from an earlier try: unplug it and plug it back in")
-            self.wait_usb("rom", "Waiting for it", 180)
+            print("The Pi is still in card mode from an earlier try: unplug the Pi and plug it back in")
+            self.wait_usb("rom", "Waiting for the Pi", 180)
         before = card.external_disks(self.runner)
-        step("Opening its card from this computer")
+        step("Opening the card")
         status, out = self.runner.run(cmd, timeout=90)
         if status:
             done("failed")
@@ -256,33 +256,32 @@ class Guide:
         end = time.monotonic() + 15            # its firmware shows up as a card reader first
         while self.usb_state() != "msd" and time.monotonic() < end:
             self.sleep(0.5)
-        disk = self.new_disk(before, 20)        # then the card in it, once its firmware has started it
+        disk = self.new_disk(before, 5)         # then the card, if there is one
         if not disk:
-            done("no card showed up")
-            print("Put its SD card in")
-            step("Waiting for the card")
+            done("no card detected")
+            step("Waiting for a card")
             disk = self.new_disk(before, 180)
             if not disk:
                 done("none")
-                raise SystemExit("No card showed up; unplug the Pi, put its card in, plug it back in, and run "
+                raise SystemExit("No card detected; unplug the Pi, insert the card, plug the Pi back in, and run "
                                  "audiolink setup again")
         dev, size = disk
         if size > card.MAX_CARD:
             done("%s, %d GB" % (dev, size // 10 ** 9))
             raise SystemExit("%s is too big to be the Pi's card; nothing written" % dev)
         done("%.1f GB" % (size / 1e9))
-        step("Writing it")
+        step("Writing the card")
         card.write(self.runner, dev, image, sleep=self.sleep)
         done("done")
         print("Unplug the Pi and plug it back in")
-        self.wait_usb("pi", "Waiting for it to start", 300)
+        self.wait_usb("pi", "Waiting for the Pi to start", 300)
         self.sleep(3)                   # its sound device, a moment after the USB device
 
     def card_image(self):
         if self.a.card_image:
             return card.check_image(self.a.card_image)
         from .paths import cache_dir
-        step("Downloading its card image (audiolink %s)" % card.__version__)
+        step("Downloading the card image (audiolink %s)" % card.__version__)
         try:
             path = card.fetch_image(self.runner, cache_dir() / "cards")
         except SystemExit:
@@ -354,7 +353,7 @@ class Guide:
         end = time.monotonic() + 15
         while self.peer() is None and time.monotonic() < end:
             if self.temp_host.poll() is not None:
-                raise SystemExit("audiolink host stopped (its output: %s)" % log)
+                raise SystemExit("audiolink host stopped (output: %s)" % log)
             self.sleep(0.5)
 
     def stop_temp_host(self):
@@ -379,15 +378,15 @@ class Guide:
         self.entry = entry
         name = entry["alias"]
         if created:
-            print("Added %s%s" % (name, " (claimed: this is its first computer)" if first else ""))
+            print("Added %s%s" % (name, " (claimed: first computer)" if first else ""))
             ran("audiolink add")
         else:
             print("%s: added here" % name)
         if custody:
-            print("No SD card: keeping a backup of its identity here")
+            print("No SD card: keeping a backup of the Pi's identity here")
         wanted = self.a.name
         if not wanted and created:
-            wanted = self.ask.text_default("Its name", name).strip().lower()
+            wanted = self.ask.text_default("Name", name).strip().lower()
         if wanted and wanted != name:
             pis.rename_command(SimpleNamespace(name=name, new=wanted, on_pi=True, control_port=self.port))
             ran("audiolink rename %s %s --on-pi" % (name, wanted))
@@ -400,7 +399,7 @@ class Guide:
         peer = self.peer(connected=True) or {}
         wifi_cli._set_pi(peer.get("peer"))
         if "wifi" not in (peer.get("peer") or {}).get("caps", []):
-            print("%s's audiolink can't manage Wi-Fi; update it: audiolink update" % self.name)
+            print("%s runs an audiolink that can't manage Wi-Fi; update: audiolink update" % self.name)
             return
         wa = SimpleNamespace(security=None, open=False, hidden=False, reenter=False, portal=False,
                              no_portal=False, password_stdin=self.a.password_stdin)
@@ -489,15 +488,15 @@ class Guide:
             return
         print("This computer's ssh server is off")
         if self.platform == "darwin":
-            print("Turn on Remote Login: System Settings → General → Sharing (opening it); it needs an admin")
+            print("Turn on Remote Login (needs an admin): System Settings → General → Sharing (opening now)")
             self.runner.run(["open", MAC_SHARING])
         elif self.platform == "win32":
             print("Turn on OpenSSH Server: Settings → System → Optional features, then start the sshd "
                   "service (as an admin)")
         else:
-            print("Start it: e.g. sudo apt install openssh-server && sudo systemctl enable --now ssh")
+            print("Start an ssh server: e.g. sudo apt install openssh-server && sudo systemctl enable --now ssh")
         if self.ask.tty and not self.ask.auto:
-            self.ask.text("Press Enter when it's on (or to go on without it) ")
+            self.ask.text("Press Enter once Remote Login is on (or to skip) ")
             print("ssh server: %s" % ("on" if self.sshd() else "still off (ssh to this computer won't work "
                                                                 "until it's on)"))
 
@@ -508,7 +507,7 @@ class Guide:
         if not want:
             if svc.installed():
                 why = svc.remove()
-                print("audiolink host: no longer starts at login" if not why else "Couldn't remove it: %s" % why)
+                print("audiolink host: no longer starts at login" if not why else "Couldn't remove the login item: %s" % why)
             if running:
                 if settings_changed:
                     print("Restart audiolink host for the new settings")
@@ -518,7 +517,7 @@ class Guide:
                 self.start_temp_host(again=True)
                 if not self.wait_for_pi(60):
                     self.ssh_port = None
-            self.end_note = "Use it: audiolink host (keep it running while you want %s reachable)" % self.name
+            self.end_note = "To reach %s through this computer, keep audiolink host running" % self.name
             return
         if svc.current() and running and not settings_changed:
             print("audiolink host: starts at login, running")
@@ -530,12 +529,12 @@ class Guide:
             print(autostart_mod.MAC_MIC)
         why = svc.restart() if svc.current() else svc.install()
         if why:
-            print("Couldn't set it to start at login: %s" % why)
+            print("Couldn't set audiolink host to start at login: %s" % why)
             return
         print("audiolink host: starts at login")
         detail("%s", svc.shown())
-        detail("its output: %s", svc.where_output())
-        step("Starting it")
+        detail("output: %s", svc.where_output())
+        step("Starting audiolink host")
         end = time.monotonic() + 60
         p = None
         while p is None and time.monotonic() < end:
@@ -543,16 +542,16 @@ class Guide:
             p = self.peer(connected=True)
         done("connected to %s" % self.pi_name() if p else "not connected yet")
         if p is None:
-            print("If it doesn't connect: its output is in %s%s" % (
+            print("If the Pi doesn't connect: output is in %s%s" % (
                 svc.where_output(), "; and see System Settings → Privacy & Security → Microphone"
                 if self.platform == "darwin" else ""))
 
     def wait_for_other_host(self):
         """A host started by hand (in a terminal) holds the Pi: it has to stop first."""
-        print("audiolink host is running here: stop it (Ctrl-C in its window), so the one started at login "
+        print("audiolink host is running here: stop that one (Ctrl-C in its terminal), so the one started at login "
               "takes over")
         self.ask.need_tty("stop audiolink host")
-        step("Waiting for it to stop")
+        step("Waiting for audiolink host to stop")
         while self.peer() is not None:
             self.sleep(1)
         done("stopped")
@@ -588,8 +587,8 @@ class Guide:
         if known:
             return self.ask.choose("Set up which Pi?", [(e["alias"], e) for e in known])
         print("No Pi found: not plugged in here, and not on this network")
-        print("Just plugged it in? It takes about 15 s to start: run audiolink setup again")
-        code = self.ask.text("Or its connect code (al1-..., from audiolink share NAME on a computer that has it): ")
+        print("Just plugged in? The Pi takes about 15 s to start; then run audiolink setup again")
+        code = self.ask.text("Or the Pi's connect code (al1-..., from audiolink share NAME on a computer that has the Pi): ")
         add.code = code.strip()
         if not add.code:
             raise SystemExit("Not set up. Join the Pi's network (or its setup network, audiopi-...) and run "
@@ -614,7 +613,7 @@ class Guide:
         print("ssh %s: %s" % (self.name, "updated" if result == "updated" else "set up"))
         detail("in %s", path)
         for line in sshconfig.others(path, tag, self.name):
-            print("%s line %d has another Host %s, which ssh may use instead: remove it" % (path, line, self.name))
+            print("%s line %d has another Host %s, which ssh may use instead: remove that one" % (path, line, self.name))
         self.ssh_port = port
 
     def try_ssh(self, client=True):
@@ -625,10 +624,10 @@ class Guide:
         if ok:
             print("Done%s" % (": ssh %s" % self.name if client else ""))
         elif self.is_host:
-            print("It will once %s is online (audiolink wifi status) and this computer's ssh server is on"
-                  % self.name)
+            print("ssh %s works once %s is online (audiolink wifi status) and this computer's ssh server is on"
+                  % (self.name, self.name))
         else:
-            print("ssh %s works once %s is online and its host is set up (audiolink setup there)"
+            print("ssh %s works once %s is online and its host is set up (audiolink setup on that computer)"
                   % (self.name, self.name))
 
 

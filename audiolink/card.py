@@ -28,7 +28,7 @@ LABEL = "AUDIOPI"
 MAX_CARD = 512 * 10 ** 9                    # bigger than any card: not the Pi's
 INSTALL_RPIBOOT = {
     "darwin": "brew install rpiboot",
-    "linux": "sudo apt install rpiboot (or build it: github.com/raspberrypi/usbboot)",
+    "linux": "sudo apt install rpiboot (or build from github.com/raspberrypi/usbboot)",
     "win32": "the installer from github.com/raspberrypi/usbboot",
 }
 
@@ -132,7 +132,7 @@ def fetch_image(runner, folder, version=__version__):
     status, out = runner.run(["curl", "-fsSL", "--retry", "2", "-o", str(sums),
                               release_url("SHA256SUMS", version)], timeout=60)
     if status:
-        raise CardError("Couldn't get audiolink %s's card image from its release (%s); give one: "
+        raise CardError("Couldn't get the card image for audiolink %s from the release (%s); give one: "
                         "--card-image ZIP" % (version, (out.strip().splitlines() or ["no answer"])[-1]))
     want = next((ln.split()[0] for ln in sums.read_text().splitlines() if ln.split()[-1:] == [name]), None)
     if not want:
@@ -145,7 +145,7 @@ def fetch_image(runner, folder, version=__version__):
         os.replace(str(zpath) + ".part", str(zpath))
         if sha256(zpath) != want:
             zpath.unlink()
-            raise CardError("%s arrived damaged (its checksum doesn't match); try again" % name)
+            raise CardError("%s arrived damaged (checksum mismatch); try again" % name)
     return zpath
 
 
@@ -187,4 +187,4 @@ def write(runner, disk, image, sleep=time.sleep):
         if not status:
             return
         sleep(5)
-    raise CardError("Wrote the card, but couldn't eject it (%s); eject it, then go on" % out.strip())
+    raise CardError("Wrote the card, but couldn't eject the card (%s); eject the card, then go on" % out.strip())

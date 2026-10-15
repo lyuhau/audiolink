@@ -407,10 +407,10 @@ class Setup(TempConfig):
         out, code = self.setup("--yes", "--wifi", "Home", "--autostart")
         self.assertIsNone(code, out)
         self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])
-        for line in ("Installed audiolink in", "Added green-rowan (claimed: this is its first computer)",
+        for line in ("Installed audiolink in", "Added green-rowan (claimed: first computer)",
                      "  (audiolink add)", "Connecting green-rowan to Home... online", '  (audiolink wifi join "Home")',
                      "This computer's ssh is reachable through green-rowan", "microphone",
-                     "audiolink host: starts at login\n", "Starting it... connected to green-rowan",
+                     "audiolink host: starts at login\n", "Starting audiolink host... connected to green-rowan",
                      "Make this computer green-rowan's host? yes",
                      "Register this computer as a client (ssh green-rowan)? yes", "ssh green-rowan: set up",
                      "Trying ssh green-rowan... works", "Done: ssh green-rowan",
@@ -441,11 +441,11 @@ class Setup(TempConfig):
         self.assertIsNone(code, out)
         self.assertIn("  (audiolink rename green-rowan kitchen --on-pi)", out)
         self.assertIn("kitchen: not on Wi-Fi", out)
-        self.assertIn("Use it: audiolink host (keep it running while you want kitchen reachable)", out)
+        self.assertIn("To reach kitchen through this computer, keep audiolink host running", out)
         self.assertEqual(len(self.runner.spawned), 2)        # its own host again, with the new settings
         self.assertFalse(self.plist().exists())              # not started at login unless asked
         self.assertIn("Checking that ssh kitchen reaches this computer... yes", out)
-        self.assertIn("Done\nUse it: audiolink host", out)
+        self.assertIn("Done\nTo reach kitchen through this computer, keep audiolink host running", out)
         self.assertIn("Next, on your other computers: audiolink setup", out)
         self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
         self.assertFalse((self.home / ".ssh" / "config").exists())
@@ -457,7 +457,7 @@ class Setup(TempConfig):
         out, code = self.setup("--no-host", "--client", "--no-wifi", "--name", "green-rowan")
         self.assertIsNone(code, out)
         self.assertIn("ssh green-rowan: set up", out)
-        self.assertIn("ssh green-rowan works once green-rowan is plugged into its host, set up there with "
+        self.assertIn("ssh green-rowan works once green-rowan is plugged into a host set up with "
                       "audiolink setup", out)
         self.assertNotIn("Next, on your other computers", out)
         self.assertEqual(host_config.load(), {})
@@ -491,9 +491,9 @@ class Setup(TempConfig):
         out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client",
                                usb_state=self.card_states("rom", "rom", "msd", "pi"))
         self.assertIsNone(code, out)
-        for line in ("A Pi is plugged in with no card set up", "Set up its card? (erases the card in it) yes",
-                     "Downloading its card image", "Opening its card from this computer... 31.9 GB",
-                     "Writing it... done", "Unplug the Pi and plug it back in", "Waiting for it to start... started",
+        for line in ("Pi in USB boot mode: no card set up", "Set up the Pi's card? (erases the card) yes",
+                     "Downloading the card image", "Opening the card... 31.9 GB",
+                     "Writing the card... done", "Unplug the Pi and plug it back in", "Waiting for the Pi to start... started",
                      "Added green-rowan"):
             self.assertIn(line, out)
         self.assertEqual(calls["written"], [("/dev/disk7", Path("/cache/audiolink-pi.zip"))])   # never disk2
@@ -511,8 +511,7 @@ class Setup(TempConfig):
             out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client",
                                    usb_state=self.card_states("rom", "rom", "msd", "pi"))
         self.assertIsNone(code, out)
-        self.assertIn("Opening its card from this computer... no card showed up\nPut its SD card in\n"
-                      "Waiting for the card... 31.9 GB", out)
+        self.assertIn("Opening the card... no card detected\nWaiting for a card... 31.9 GB", out)
         self.assertEqual(calls["written"][0][0], "/dev/disk7")
 
     def test_card_needs_rpiboot(self):
@@ -530,7 +529,7 @@ class Setup(TempConfig):
 
     def test_a_running_host_is_left_alone_without_a_terminal(self):
         out, code = self.setup("--yes", "--no-wifi", "--autostart")     # started by hand: it has to stop first
-        self.assertIn("stop it (Ctrl-C in its window)", out)
+        self.assertIn("stop that one (Ctrl-C in its terminal)", out)
         self.assertIn("without a terminal", code)
         self.assertEqual(self.runner.ran("launchctl"), [])
 
@@ -596,7 +595,7 @@ class Setup(TempConfig):
         self.assertEqual(host_config.load(), {"expose": ["2222:22", "8080:80"]})
         self.assertIn("Remote Login", out)
         self.assertEqual(self.runner.ran("open"), [["open", guide.MAC_SHARING]])
-        self.assertIn("Use it: audiolink host", out)
+        self.assertIn("keep audiolink host running", out)
         out, code = self.setup("host", "--yes", "--no-expose", "--autostart")
         self.assertEqual(host_config.load(), {"expose": []})
         self.assertIn("audiolink host: starts at login", out)
