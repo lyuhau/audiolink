@@ -366,6 +366,10 @@ def add_over_network(a, ask):
     finally:
         conn.close()
     entry, created = keyring.upsert(result["code"], name=result["name"], alias=a.name, seen=True)
+    rec = result.get("record")
+    if isinstance(rec, dict) and rec.get("ts"):     # where it is now (older Pis don't say)
+        keyring.update(keyring.pub_of(result["code"]), last_record=rec)
+        entry["last_record"] = rec
     print("%s %s" % ("Added" if created else "Updated", entry["alias"]))
     return entry
 

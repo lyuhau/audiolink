@@ -13,6 +13,8 @@ random one), so asking doesn't tell a stranger when there's a code to guess.
 
 Endpoint requests:
   {"op":"pair","msg":X,"client":id} -> {"msg":Y}; {"confirm":cA} -> {"confirm":cB,"payload":sealed}
+      payload: {"code","name","record"}; record: where the Pi is now, as its DHT record would
+      say (services/discovery.py), absent while it can't tell the time
   {"op":"new_code","proof":...}     -> {"sealed": {"code","expires_in"}}      (auth)
 """
 import hmac
@@ -39,8 +41,9 @@ class PairingService(Service):
     name = "pairing"
     caps = ("pairing",)
 
-    def __init__(self, identity, endpoint):
+    def __init__(self, identity, endpoint, where=None):
         self.identity = identity
+        self.where = where              # -> the Pi's record as of now, or None
         self.lock = threading.Lock()
         self.code = None                # {"code", "expires", "tries"}
         self.failures = {}              # address -> {"count", "until", "last"}
@@ -129,6 +132,9 @@ class PairingService(Service):
         if first:
             self.identity.claim()
         payload = {"code": self.identity.code(), "name": name}
+        rec = self.where() if self.where else None
+        if rec:
+            payload["record"] = rec     # the new machine knows its network and ports at once
         conn.send({"confirm": ours.hex(), "payload": seal(key, json.dumps(payload).encode()).hex()})
         log.info("pairing: %s paired from %s%s", req.get("client", "a machine"), conn.addr[0],
                  " (first: claimed)" if first else "")

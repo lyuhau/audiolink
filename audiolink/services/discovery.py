@@ -52,6 +52,17 @@ class DiscoveryService(Service):
             return {"ok": True}
         raise ValueError("unknown discovery operation %r" % op)
 
+    def record_now(self):
+        """Where the Pi is now, as its record would say (for a machine pairing over the
+        network, which may read the record anyway), or None while the time is unknown."""
+        from ..discovery.record import make_record
+        session = getattr(self, "session", None)
+        if session is None or session.now() < CLOCK_SANE:
+            return None
+        conn = self.wifi.connection()
+        return make_record(self.identity.keys()[1], self.identity.pi_name(), [conn["ip"]] if conn["ip"] else [],
+                           conn["ssid"], self.streams.ports(), ts=session.now())[0]
+
     # ---- publishing
     def _current(self):
         """What the record should say, or None if there's nothing to publish yet."""

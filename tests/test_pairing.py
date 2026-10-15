@@ -98,6 +98,24 @@ class AddOverNetwork(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "6 digits"):
             self.add(SlowAsk(None), pairing_code="")
 
+    def pis(self):
+        from audiolink.client import pis
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            pis.pis_command(argparse.Namespace())
+        return out.getvalue().splitlines()[1].split()
+
+    def test_the_pis_network_comes_with_pairing(self):
+        rec = {"v": 1, "name": "pi", "ts": 1700000000, "lan": ["10.0.0.5"], "ssid": "HomeWifi", "ports": [2222]}
+        self.svc.where = lambda: rec
+        self.add(SlowAsk(self.svc.new_code()["code"], wait=0))
+        self.assertEqual(self.pis()[-1], "HomeWifi")
+        self.assertEqual(keyring.load()[self.identity.info()["pub"]]["last_record"], rec)
+
+    def test_an_older_pi_says_no_network(self):
+        self.add(SlowAsk(self.svc.new_code()["code"], wait=0))
+        self.assertEqual(self.pis()[-1], "-")
+        self.assertNotIn("last_record", keyring.load()[self.identity.info()["pub"]])
+
     def test_a_rotated_code_says_so(self):
         old = self.identity.code()
         keyring.upsert(old, name="pi")
@@ -206,6 +224,23 @@ class Replies(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()) as out:
             pairing.code_command(argparse.Namespace(pi="pi", at=None, control_port=None))
         self.assertIn("pi is unclaimed: no code needed", out.getvalue())
+
+
+class RecordNow(unittest.TestCase):
+    def test_where_the_pi_is_once_it_knows_the_time(self):
+        from types import SimpleNamespace
+        from audiolink.services.discovery import DiscoveryService
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        wifi = SimpleNamespace(connection=lambda: {"ip": "10.0.0.5", "ssid": "HomeWifi", "internet": "offline"})
+        svc = DiscoveryService(IdentityService(d), wifi, SimpleNamespace(ports=lambda: [2222]))
+        self.assertIsNone(svc.record_now())                     # not attached yet
+        now = [5]
+        svc.attach(SimpleNamespace(now=lambda: now[0]))
+        self.assertIsNone(svc.record_now())                     # the time isn't known
+        now[0] = 1800000000
+        rec = svc.record_now()
+        self.assertEqual((rec["ssid"], rec["lan"], rec["ports"], rec["ts"]), ("HomeWifi", ["10.0.0.5"], [2222], now[0]))
 
 
 if __name__ == "__main__":

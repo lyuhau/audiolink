@@ -412,7 +412,7 @@ def run_pi(a, allow, port, gate):
     from .services.relay import RelayAgent
     relay = RelayAgent(identity, wifi, streams, [] if a.relay == "off" else [a.relay])
     update = UpdateService(endpoint=endpoint)
-    session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint),
+    session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint, discovery.record_now),
                              setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery, radio), relay,
                              LogsService(endpoint=endpoint), update, debug, NetworkShells(endpoint, debug, identity)])
     audio = AlsaAudio(session.link, a.device)
