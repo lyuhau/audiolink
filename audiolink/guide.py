@@ -4,9 +4,9 @@
   With the Pi on USB (through `audiolink host`, started for the setup if none runs):
   2. the Pi: added here (USB is the trust: no code, no question), its name, Wi-Fi
   3. "Make this computer its host?" it exposes this computer's ssh (saved settings,
-     host/config.py) and starts at login (host/autostart.py); then a check that ssh
+     host/config.py), and starts at login if asked to (--autostart, host/autostart.py); a check that ssh
      through the Pi reaches this computer
-  4. "Use this computer as a client?" ssh NAME from here (no code: USB is the trust).
+  4. "Register this computer as a client?" ssh NAME from here (no code: USB is the trust).
      Either, both or neither: setting the Pi up here and plugging it in at its host later
      is no host, yes client.
   Without it: this computer is a client: find the Pi on this network (or take its connect
@@ -143,6 +143,7 @@ class Guide:
         self.entry = None
         self.is_host = False
         self.ssh_port = SSH_PI_PORT
+        self.end_note = None            # what to do once setup is done
 
     def call(self, op, args=None, timeout=120):
         return control.call(op, args, port=self.port, timeout=timeout)
@@ -153,7 +154,10 @@ class Guide:
         if self.a.part == "host":
             if self.peer(connected=True):
                 self.name = self.pi_name()
-            return self.host_part()
+            self.host_part()
+            if self.end_note:
+                print(self.end_note)
+            return
         if self.usb():
             self.pi_part()
             host, client = self.host_wanted(), self.client_wanted()
@@ -167,6 +171,8 @@ class Guide:
             elif client:
                 print("ssh %s works once %s is plugged into its host, set up there with audiolink setup"
                       % (self.name, self.name))
+            if self.end_note:
+                print(self.end_note)
             if host:
                 print("Next, on your other computers: audiolink setup")
             return
@@ -241,7 +247,7 @@ class Guide:
             pass
         return True
 
-    def start_temp_host(self):
+    def start_temp_host(self, again=False):
         from .paths import cache_dir
         log = cache_dir() / "setup-host.log"
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -252,6 +258,8 @@ class Guide:
         if env_note:
             os.environ.update(env_note)                 # the child inherits it
         self.temp_host = self.runner.spawn(cmd, log)
+        if again:
+            return
         ran("audiolink host, until setup is done")
         if self.platform == "darwin":
             print("If macOS asks whether your terminal may use the microphone, or to allow an accessory: allow it")
@@ -346,7 +354,7 @@ class Guide:
             return self.a.client
         if self.has_block():
             return True                 # it is already
-        return self.ask.yes("Use this computer as a client (ssh %s)?" % self.name, default=True)
+        return self.ask.yes("Register this computer as a client (ssh %s)?" % self.name, default=True)
 
     def has_block(self):
         return bool(sshconfig.current(sshconfig.default_path(self.home), keyring.pub_of(self.entry["code"])[:8]))
@@ -407,17 +415,22 @@ class Guide:
 
     def autostart_part(self, settings_changed):
         svc = autostart_mod.Autostart(self.installed.argv, self.installed.env, self.runner, self.platform, self.home)
-        want = not self.a.no_autostart
+        want = self.a.autostart if self.a.autostart is not None else svc.installed()   # opt-in
         running = self.peer() is not None and self.temp_host is None
         if not want:
             if svc.installed():
                 why = svc.remove()
                 print("audiolink host: no longer starts at login" if not why else "Couldn't remove it: %s" % why)
-            if not running:
-                print("Start it when you need the Pi: audiolink host")
-                self.ssh_port = None        # nothing to check until then
-            elif settings_changed:
-                print("Restart audiolink host for the new settings")
+            if running:
+                if settings_changed:
+                    print("Restart audiolink host for the new settings")
+                return
+            if self.temp_host is not None and settings_changed:
+                self.stop_temp_host()           # the setup's own host: again, with the new settings
+                self.start_temp_host(again=True)
+                if not self.wait_for_pi(60):
+                    self.ssh_port = None
+            self.end_note = "Use it: audiolink host (keep it running while you want %s reachable)" % self.name
             return
         if svc.current() and running and not settings_changed:
             print("audiolink host: starts at login, running")

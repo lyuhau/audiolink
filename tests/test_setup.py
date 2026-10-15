@@ -379,7 +379,7 @@ class Setup(TempConfig):
 
     def test_first_plug_in_with_the_host_part(self):
         self.host.running = False                   # no host yet: setup starts one for itself
-        out, code = self.setup("--yes", "--wifi", "Home")
+        out, code = self.setup("--yes", "--wifi", "Home", "--autostart")
         self.assertIsNone(code, out)
         self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])
         for line in ("Installed audiolink in", "Added green-rowan (claimed: this is its first computer)",
@@ -387,7 +387,7 @@ class Setup(TempConfig):
                      "This computer's ssh is reachable through green-rowan", "microphone",
                      "audiolink host: starts at login\n", "Starting it... connected to green-rowan",
                      "Make this computer green-rowan's host? yes",
-                     "Use this computer as a client (ssh green-rowan)? yes", "ssh green-rowan: set up",
+                     "Register this computer as a client (ssh green-rowan)? yes", "ssh green-rowan: set up",
                      "Trying ssh green-rowan... works", "Done: ssh green-rowan",
                      "Next, on your other computers: audiolink setup"):
             self.assertIn(line, out)
@@ -416,9 +416,12 @@ class Setup(TempConfig):
         self.assertIsNone(code, out)
         self.assertIn("  (audiolink rename green-rowan kitchen --on-pi)", out)
         self.assertIn("kitchen: not on Wi-Fi", out)
-        self.assertIn("audiolink host: starts at login", out)            # plugged in here: its host
+        self.assertIn("Use it: audiolink host (keep it running while you want kitchen reachable)", out)
+        self.assertEqual(len(self.runner.spawned), 2)        # its own host again, with the new settings
+        self.assertFalse(self.plist().exists())              # not started at login unless asked
         self.assertIn("Checking that ssh kitchen reaches this computer... yes", out)
-        self.assertIn("Done\nNext, on your other computers: audiolink setup", out)
+        self.assertIn("Done\nUse it: audiolink host", out)
+        self.assertIn("Next, on your other computers: audiolink setup", out)
         self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
         self.assertFalse((self.home / ".ssh" / "config").exists())
         self.assertEqual(self.banners, [("kitchen", 2222)])
@@ -438,7 +441,7 @@ class Setup(TempConfig):
         self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])   # only for the setup
 
     def test_a_running_host_is_left_alone_without_a_terminal(self):
-        out, code = self.setup("--yes", "--no-wifi")     # started by hand: it has to stop first
+        out, code = self.setup("--yes", "--no-wifi", "--autostart")     # started by hand: it has to stop first
         self.assertIn("stop it (Ctrl-C in its window)", out)
         self.assertIn("without a terminal", code)
         self.assertEqual(self.runner.ran("launchctl"), [])
@@ -505,8 +508,8 @@ class Setup(TempConfig):
         self.assertEqual(host_config.load(), {"expose": ["2222:22", "8080:80"]})
         self.assertIn("Remote Login", out)
         self.assertEqual(self.runner.ran("open"), [["open", guide.MAC_SHARING]])
-        self.assertIn("Start it when you need the Pi: audiolink host", out)
-        out, code = self.setup("host", "--yes", "--no-expose")
+        self.assertIn("Use it: audiolink host", out)
+        out, code = self.setup("host", "--yes", "--no-expose", "--autostart")
         self.assertEqual(host_config.load(), {"expose": []})
         self.assertIn("audiolink host: starts at login", out)
         out, code = self.setup("host", "--no-expose", "--no-autostart")

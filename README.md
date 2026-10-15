@@ -35,10 +35,10 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
 
 **Start here: `audiolink setup`.** Get audiolink (step 1 below), plug the Pi in, and
 run `audiolink setup` on that computer: it installs audiolink somewhere permanent, adds
-the Pi, puts it on Wi-Fi, asks whether the Pi stays plugged in there (then: ssh to that
-computer from elsewhere, and `audiolink host` started at login) and sets up `ssh NAME`.
-On each other computer, `audiolink setup` finds the Pi on the network (or takes its
-code) and sets up `ssh NAME` there. Run it again any time to see what's set or change
+the Pi, puts it on Wi-Fi, and offers to make that computer its host (its ssh reachable
+through the Pi; then keep `audiolink host` running) and to register it as a client
+(`ssh NAME`). On each other computer, `audiolink setup` finds the Pi on the network (or
+takes its code) and registers that computer as a client. Run it again any time to see what's set or change
 it; `audiolink setup --help` lists a flag for each question. The steps below are what it
 does, by hand.
 
@@ -141,7 +141,7 @@ network can reach: `curl -x http://127.0.0.1:47801 https://example.com`, or set
 ### Keep `audiolink host` running
 
 To start it at login and restart it if it stops, instead of a terminal window:
-`audiolink setup host` sets this up (`--no-autostart` takes it out again), with what
+`audiolink setup host --autostart` sets this up (`--no-autostart` takes it out again), with what
 it exposes saved in audiolink's settings (`host.json`), which `audiolink host` reads
 (flags given to it win). By hand (stop the host in the terminal first: only one host
 runs at a time):
@@ -256,7 +256,7 @@ built-in values. Code alone updates without a new card: `audiolink update`.
 
 | Command | |
 |---|---|
-| `audiolink setup [host]` | start here: this computer (and the Pi, plugged in here): install, add, Wi-Fi, host at login, `ssh NAME`; `host`: just the host part |
+| `audiolink setup [host]` | start here: this computer (and the Pi, plugged in here): install, add, Wi-Fi, host, client (`ssh NAME`); `host`: just the host part |
 | `audiolink host [--expose PIPORT:PORT] [--wifi NAME]` | run on the host; keeps the link up, reconnects on its own |
 | `audiolink add [CODE] [--at ADDR] [--pairing-code N]` | add a Pi: over USB, found on the network, or by connect code |
 | `audiolink pis` / `share PI` / `forget PI` / `rename PI NEW [--on-pi]` | the Pis this machine knows |

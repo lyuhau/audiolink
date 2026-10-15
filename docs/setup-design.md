@@ -31,14 +31,15 @@ be running), these become available, each one optional and independent:
 2. The Pi: claim it over USB (no code, no "claim it?" question), optional name, Wi-Fi
    (picker). Skip what's already done.
 3. "Make this computer NAME's host?" yes: expose this computer's ssh (2222:22; Remote
-   Login pane if it's off), saved host config, autostart, start it; check that ssh
+   Login pane if it's off), saved host config (start at login only with --autostart:
+   otherwise "Use it: audiolink host"); check that ssh
    through the Pi reaches this computer.
-4. "Use this computer as a client (ssh NAME)?" yes: the ssh block, from the Pi's key over
+4. "Register this computer as a client (ssh NAME)?" yes: the ssh block, from the Pi's key over
    USB (no pairing code). Without being its host too: set the Pi up here, plug it in at
    its host later, and ssh NAME works once that host is set up.
 Questions only where the answer isn't obvious (its name, Wi-Fi, host, client); already-done
 parts are shown, not asked; everything else is a flag (--host/--no-host,
---client/--no-client, --expose, --no-autostart, --user).
+--client/--no-client, --expose, --autostart/--no-autostart, --user).
 Without the Pi on USB: client only: find the Pi (LAN/mDNS) or ask for a code (from
 `audiolink invite`), pair, write the ssh block, test (ssh banner through the Pi), end
 with "Done: ssh NAME".

@@ -103,8 +103,8 @@ def build_parser():
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "Set up this computer, and the Pi if it's plugged in here.\n"
                              "The Pi plugged in here: adds it, puts it on Wi-Fi, and offers to make this\n"
-                             "computer its host (its ssh reachable through the Pi; audiolink host started at\n"
-                             "login) and its client (ssh NAME). Not plugged in here: a client: finds the Pi\n"
+                             "computer its host (its ssh reachable through the Pi; --autostart: audiolink host\n"
+                             "started at login) and register it as a client (ssh NAME). Not plugged in here: a client: finds the Pi\n"
                              "on this network (or takes its connect code) and sets up ssh NAME.\n"
                              "Run it again any time: it shows what's set. Each question has a flag below."))
     stp.add_argument("part", nargs="?", choices=["host"],
@@ -130,8 +130,11 @@ def build_parser():
                     help="what the Pi exposes for this computer (repeatable; replaces the saved list), "
                          "e.g. 2222:22 for its ssh")
     ex.add_argument("--no-expose", action="store_true", help="expose nothing")
-    stp.add_argument("--no-autostart", action="store_true",
-                     help="don't start audiolink host at login (removes it if set up)")
+    au = stp.add_mutually_exclusive_group()
+    au.add_argument("--autostart", action="store_true", default=None,
+                    help="start audiolink host at login, and keep it running")
+    au.add_argument("--no-autostart", dest="autostart", action="store_false",
+                    help="don't start audiolink host at login (removes it if set up)")
     stp.add_argument("--user", help="ssh NAME: your login on the computer the Pi is plugged into")
     stp.add_argument("--code", metavar="CODE", help="the Pi's connect code (al1-...), if it isn't on this network")
     stp.add_argument("--pairing-code", metavar="CODE", help="the 6-digit code, for a Pi found on this network")
