@@ -87,7 +87,7 @@ def list_devices():
         print("%s %3d  %-40s %-20s in=%d out=%d" % (mark, d["index"], d["name"], d["hostapi"],
                                                     d["inputs"], d["outputs"]))
     print("\n* = Pi audio device" if found else "\nNo Pi audio device found (plugged in?)")
-    return 0 if found else 1
+    return 0                    # the listing worked; a missing Pi is shown, not an error
 
 
 def build_parser():
