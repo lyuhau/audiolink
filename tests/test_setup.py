@@ -386,7 +386,8 @@ class Setup(TempConfig):
                      "  (audiolink add)", "Connecting green-rowan to Home... online", '  (audiolink wifi join "Home")',
                      "This computer's ssh is reachable through green-rowan", "microphone",
                      "audiolink host: starts at login\n", "Starting it... connected to green-rowan",
-                     "Also use this computer as a client (ssh green-rowan)? yes", "ssh green-rowan: set up",
+                     "Make this computer green-rowan's host? yes",
+                     "Use this computer as a client (ssh green-rowan)? yes", "ssh green-rowan: set up",
                      "Trying ssh green-rowan... works", "Done: ssh green-rowan",
                      "Next, on your other computers: audiolink setup"):
             self.assertIn(line, out)
@@ -411,7 +412,7 @@ class Setup(TempConfig):
 
     def test_first_plug_in_not_a_client(self):
         self.host.running = False
-        out, code = self.setup("--no-client", "--no-wifi", "--name", "kitchen")
+        out, code = self.setup("--host", "--no-client", "--no-wifi", "--name", "kitchen")
         self.assertIsNone(code, out)
         self.assertIn("  (audiolink rename green-rowan kitchen --on-pi)", out)
         self.assertIn("kitchen: not on Wi-Fi", out)
@@ -422,6 +423,19 @@ class Setup(TempConfig):
         self.assertFalse((self.home / ".ssh" / "config").exists())
         self.assertEqual(self.banners, [("kitchen", 2222)])
         self.assertEqual(keyring.lookup("kitchen")["name"], "kitchen")
+
+    def test_first_plug_in_client_not_host(self):         # set it up here, plug it in at its host later
+        self.host.running = False
+        out, code = self.setup("--no-host", "--client", "--no-wifi", "--name", "green-rowan")
+        self.assertIsNone(code, out)
+        self.assertIn("ssh green-rowan: set up", out)
+        self.assertIn("ssh green-rowan works once green-rowan is plugged into its host, set up there with "
+                      "audiolink setup", out)
+        self.assertNotIn("Next, on your other computers", out)
+        self.assertEqual(host_config.load(), {})
+        self.assertFalse((self.home / "Library").exists())
+        self.assertEqual(self.banners, [])
+        self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])   # only for the setup
 
     def test_a_running_host_is_left_alone_without_a_terminal(self):
         out, code = self.setup("--yes", "--no-wifi")     # started by hand: it has to stop first

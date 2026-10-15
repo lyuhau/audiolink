@@ -23,21 +23,22 @@ connection), autostart, the identity custody backup. A computer with the Pi on U
 needs a pairing code.
 
 ## `audiolink setup` = do whatever this computer can do right now
-With the Pi on USB (first plug-in, or its host): being plugged in is what makes this
-computer its host (the Pi keeps nothing about which computer that is), so setting the Pi
-up on a laptop and moving it later is the same flow: run setup again where it goes.
-A host is started for the setup if none runs (no question). Three questions at most:
-its name, its Wi-Fi, and "Also use this computer as a client (ssh NAME)?"
-1. The Pi: claim it over USB (no code, no "claim it?" question), optional name, Wi-Fi
+`audiolink setup` with no part named works out what this computer can do and offers only
+that. With the Pi on USB (setup talks to it through a host of its own, so none needs to
+be running), these become available, each one optional and independent:
+1. The card, if the Pi has none set up (it shows up in its USB boot mode): write it, then
+   wait for the replug. (To build.)
+2. The Pi: claim it over USB (no code, no "claim it?" question), optional name, Wi-Fi
    (picker). Skip what's already done.
-2. This computer as its host, no question: expose this computer's ssh (2222:22; Remote
-   Login pane if it's off), saved host config, autostart, start it.
-3. Client too? yes: the ssh block, then ssh through the Pi is tried. No: still a check
-   that ssh through the Pi reaches this computer. End: "Next, on your other computers:
-   audiolink setup".
-Everything else is a flag, never a question (--client/--no-client, --expose,
---no-autostart, --user): questions only where the answer isn't obvious, and each one's
-effect is said after.
+3. "Make this computer NAME's host?" yes: expose this computer's ssh (2222:22; Remote
+   Login pane if it's off), saved host config, autostart, start it; check that ssh
+   through the Pi reaches this computer.
+4. "Use this computer as a client (ssh NAME)?" yes: the ssh block, from the Pi's key over
+   USB (no pairing code). Without being its host too: set the Pi up here, plug it in at
+   its host later, and ssh NAME works once that host is set up.
+Questions only where the answer isn't obvious (its name, Wi-Fi, host, client); already-done
+parts are shown, not asked; everything else is a flag (--host/--no-host,
+--client/--no-client, --expose, --no-autostart, --user).
 Without the Pi on USB: client only: find the Pi (LAN/mDNS) or ask for a code (from
 `audiolink invite`), pair, write the ssh block, test (ssh banner through the Pi), end
 with "Done: ssh NAME".

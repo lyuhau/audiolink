@@ -102,14 +102,19 @@ def build_parser():
     stp = sub.add_parser("setup", help="start here: set up this computer (and the Pi, if it's plugged in)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "Set up this computer, and the Pi if it's plugged in here.\n"
-                             "The Pi plugged in here: adds it, puts it on Wi-Fi, and makes this computer its\n"
-                             "host (its ssh reachable through the Pi; audiolink host started at login); this\n"
-                             "computer can be a client too (ssh NAME). Not plugged in here: a client: finds\n"
-                             "the Pi on this network (or takes its connect code) and sets up ssh NAME.\n"
+                             "The Pi plugged in here: adds it, puts it on Wi-Fi, and offers to make this\n"
+                             "computer its host (its ssh reachable through the Pi; audiolink host started at\n"
+                             "login) and its client (ssh NAME). Not plugged in here: a client: finds the Pi\n"
+                             "on this network (or takes its connect code) and sets up ssh NAME.\n"
                              "Run it again any time: it shows what's set. Each question has a flag below."))
     stp.add_argument("part", nargs="?", choices=["host"],
                      help="host: only this computer's host part (what it exposes, starting at login)")
     stp.add_argument("--yes", action="store_true", help="take the suggested answer to every question")
+    hst = stp.add_mutually_exclusive_group()
+    hst.add_argument("--host", action="store_true", default=None,
+                     help="the Pi plugged in here: make this computer its host (don't ask)")
+    hst.add_argument("--no-host", dest="host", action="store_false",
+                     help="the Pi plugged in here: don't make this computer its host")
     cl = stp.add_mutually_exclusive_group()
     cl.add_argument("--client", action="store_true", default=None,
                     help="the Pi plugged in here: also set up ssh NAME on this computer (don't ask)")
