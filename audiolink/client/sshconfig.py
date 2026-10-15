@@ -19,8 +19,7 @@ def block(tag, alias, port, user, proxy):
         "# %s: written by audiolink setup (run it again to change this; it replaces this block)" % alias,
         "Host %s" % alias,
         "  HostName %s" % alias,
-        "  Port %d" % port,
-        "  User %s" % user,
+        "  Port %d" % port] + (["  User %s" % user] if user else []) + [
         "  ProxyCommand %s connect %s %%p" % (proxy, alias),
         END % tag]) + "\n"
 

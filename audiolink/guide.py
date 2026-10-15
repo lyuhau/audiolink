@@ -1,19 +1,20 @@
 """`audiolink setup`: set up this computer, and the Pi if it's plugged in here.
 
   1. audiolink itself, somewhere permanent (install.py)
-  With the Pi on USB (through `audiolink host`; setup offers to start one for itself):
-  2. the Pi: added here (USB is the trust: no code, no question), a name, Wi-Fi
-  3. "Will it stay plugged into this computer?" yes: this computer is its host: what it
-     exposes (ssh), saved settings (host/config.py), started at login (host/autostart.py)
+  With the Pi on USB (through `audiolink host`, started for the setup if none runs):
+  2. the Pi: added here (USB is the trust: no code, no question), its name, Wi-Fi
+  3. "Make this computer its host?" yes: it exposes this computer's ssh (saved settings,
+     host/config.py) and starts at login (host/autostart.py); then a check that ssh NAME
+     reaches this computer through the Pi. No: 4, and plug it in at its host.
+  Without it: find it on this network (or take its connect code), then 4.
   4. ssh NAME from this computer: a block in ~/.ssh/config (client/sshconfig.py)
-  Without it: find it on this network (or take its connect code), then 4, and try ssh.
 `audiolink setup host`: just this computer's host part (3).
 
-Running it again shows what's set and lets you change answers; what's already done is
-skipped. Every question has a flag (--yes takes the suggested answers). The audiolink
-commands it stands for are shown as "  (audiolink ...)" lines; system commands with -v.
+The only questions are the Pi's name, its Wi-Fi and whether this is its host; the rest
+has flags (--expose, --no-autostart, --no-ssh, --user). Running it again shows what's
+set and skips what's done. The audiolink commands it stands for are shown as
+"  (audiolink ...)" lines; system commands with -v.
 """
-import getpass
 import os
 import socket
 import sys
@@ -151,15 +152,14 @@ class Guide:
             return self.host_part()
         if self.usb():
             self.pi_part()
-            stays = self.is_host = self.stays()
-            if stays:
+            if self.stays():
+                self.is_host = True
                 self.host_part()
-            if stays and not ssh_exposed(host_config.load(strict=False).get("expose", [])):
-                return                  # nothing to ssh to from here
-            if self.client_block() and stays:
-                self.try_ssh()
-            if not stays:
-                print("Next: plug %s into its home computer and run audiolink setup there" % self.name)
+                if self.ssh_port:
+                    self.try_ssh()
+                return
+            self.client_block()
+            print("Next: plug %s into its host, and run audiolink setup there" % self.name)
             return
         self.client_part()
 
@@ -195,9 +195,6 @@ class Guide:
         p = self.peer()
         if p is None:
             if not self.pi_device():
-                return False
-            print("The Pi is plugged in here, and audiolink host isn't running")
-            if not self.ask.yes("Start it for this setup?", default=True):
                 return False
             self.start_temp_host()
         elif not p.get("connected"):
@@ -330,7 +327,10 @@ class Guide:
     def stays(self):
         if self.a.host is not None:
             return self.a.host
-        return self.ask.yes("Will %s stay plugged into this computer?" % self.name, default=True)
+        if autostart_mod.Autostart(self.installed.argv, self.installed.env, self.runner, self.platform,
+                                   self.home).installed():
+            return True                 # it is already
+        return self.ask.yes("Make this computer %s's host?" % self.name, default=True)
 
     # ---- this computer as its host
     def host_part(self):
@@ -341,23 +341,29 @@ class Guide:
         restart = changed if uses is None else sorted(uses) != sorted(exposes)   # the running host's
         if changed:
             path = host_config.update(expose=exposes)
-            print("Saved for audiolink host: %s" % (" ".join("--expose " + e for e in exposes) or "nothing exposed"))
-            detail("in %s", path)
-        else:
-            print("audiolink host: %s" % (", ".join("exposes " + e for e in exposes) or "exposes nothing"))
+            detail("saved %s in %s", " ".join("--expose " + e for e in exposes) or "no --expose", path)
+        print(self.exposes_shown(exposes))
+        self.ssh_port = ssh_exposed(exposes)
         self.autostart_part(restart)
+
+    def exposes_shown(self, exposes):
+        ssh = ssh_exposed(exposes)
+        shown = ["This computer's ssh"] if ssh else []
+        shown += ["--expose %s" % e for e in exposes if _ssh_target(e)[0] != ssh]
+        if not shown:
+            return "Nothing on this computer is reachable through %s" % self.name
+        return "%s %s reachable through %s" % (" and ".join(shown), "is" if len(shown) == 1 else "are",
+                                               self.name)
 
     def choose_exposes(self, current):
         if self.a.expose:
             exposes = list(dict.fromkeys(self.a.expose))
         elif self.a.no_expose:
             exposes = []
+        elif "expose" in host_config.load(strict=False):
+            exposes = list(current)     # as saved (setup host --expose/--no-expose changes it)
         else:
-            had = ssh_exposed(current)
-            others = [e for e in current if _ssh_target(e)[0] != had] if had else list(current)
-            want = self.ask.yes("Reach this computer's ssh from elsewhere, through %s?" % self.name,
-                                default=bool(had) or not current)
-            exposes = others + (["%d:22" % (had or SSH_PI_PORT)] if want else [])
+            exposes = ["%d:22" % SSH_PI_PORT]
         if ssh_exposed(exposes):
             self.check_sshd()
         return exposes
@@ -382,10 +388,7 @@ class Guide:
 
     def autostart_part(self, settings_changed):
         svc = autostart_mod.Autostart(self.installed.argv, self.installed.env, self.runner, self.platform, self.home)
-        if self.a.no_autostart:
-            want = False
-        else:
-            want = self.ask.yes("Start audiolink host at login, and keep it running?", default=True)
+        want = not self.a.no_autostart
         running = self.peer() is not None and self.temp_host is None
         if not want:
             if svc.installed():
@@ -393,6 +396,7 @@ class Guide:
                 print("audiolink host: no longer starts at login" if not why else "Couldn't remove it: %s" % why)
             if not running:
                 print("Start it when you need the Pi: audiolink host")
+                self.ssh_port = None        # nothing to check until then
             elif settings_changed:
                 print("Restart audiolink host for the new settings")
             return
@@ -408,7 +412,8 @@ class Guide:
         if why:
             print("Couldn't set it to start at login: %s" % why)
             return
-        print("audiolink host: starts at login (%s)" % tilde(svc.shown()))
+        print("audiolink host: starts at login")
+        detail("%s", svc.shown())
         detail("its output: %s", svc.where_output())
         step("Starting it")
         end = time.monotonic() + 60
@@ -436,7 +441,8 @@ class Guide:
     def client_part(self):
         entry = self.find_pi()
         self.entry, self.name = entry, entry["alias"]
-        if self.client_block():
+        self.client_block()
+        if not self.a.no_ssh:
             self.try_ssh()
 
     def find_pi(self):
@@ -460,8 +466,9 @@ class Guide:
             return known[0]
         if known:
             return self.ask.choose("Set up which Pi?", [(e["alias"], e) for e in known])
-        print("No Pi found on this network")
-        code = self.ask.text("Its connect code (al1-..., from audiolink share NAME on a computer that has it): ")
+        print("No Pi found: not plugged in here, and not on this network")
+        print("Just plugged it in? It takes about 15 s to start: run audiolink setup again")
+        code = self.ask.text("Or its connect code (al1-..., from audiolink share NAME on a computer that has it): ")
         add.code = code.strip()
         if not add.code:
             raise SystemExit("Not set up. Join the Pi's network (or its setup network, audiopi-...) and run "
@@ -471,50 +478,44 @@ class Guide:
         return entry
 
     def client_block(self):
-        """The ~/.ssh/config block for ssh NAME -> whether it's there."""
+        """The ~/.ssh/config block for ssh NAME (not on its host: that's this computer)."""
         if self.a.no_ssh:
-            return False
+            return
         entry = keyring.lookup(self.name, known=True)
-        if self.a.user is None and not self.ask.yes("Set up ssh %s on this computer?" % self.name, default=True):
-            return False
-        this_is_host = self.is_host
-        user = self.a.user
-        if user is None:
-            here = getpass.getuser()
-            if this_is_host:
-                user = here
-            else:
-                old = sshconfig.current(sshconfig.default_path(self.home), keyring.pub_of(entry["code"])[:8])
-                if old:
-                    here = next((ln.split()[1] for ln in old.splitlines() if ln.strip().startswith("User ")), here)
-                user = self.ask.text_default("Your login on the computer %s is plugged into" % self.name, here)
-        port = ssh_exposed(host_config.load(strict=False).get("expose", [])) if this_is_host else None
-        port = port or pis.ssh_port(entry, SSH_PI_PORT)
         path = sshconfig.default_path(self.home)
         tag = keyring.pub_of(entry["code"])[:8]
+        user = self.a.user
+        if user is None:                # as before, or ssh's own default (this login's name)
+            old = sshconfig.current(path, tag) or ""
+            user = next((ln.split()[1] for ln in old.splitlines() if ln.strip().startswith("User ")), None)
+        port = pis.ssh_port(entry, SSH_PI_PORT)
         text = sshconfig.block(tag, self.name, port, user,
                                pis._launcher(self.installed.argv, self.installed.env))
         result = sshconfig.write(path, tag, text)
-        print("ssh %s: %s (%s)" % (self.name, {"added": "set up", "updated": "updated",
-                                               "unchanged": "set up"}[result], tilde(path)))
+        print("ssh %s: %s" % (self.name, "updated" if result == "updated" else "set up"))
+        detail("in %s", path)
         for line in sshconfig.others(path, tag, self.name):
             print("%s line %d has another Host %s, which ssh may use instead: remove it" % (path, line, self.name))
         self.ssh_port = port
-        return True
 
     def try_ssh(self):
-        step("Trying ssh %s" % self.name)
+        if self.is_host:
+            step("Checking that ssh %s reaches this computer" % self.name)
+        else:
+            step("Trying ssh %s" % self.name)
         ok, what = self.banner(self.name, self.ssh_port)
-        done("works" if ok else what)
+        done("yes" if ok and self.is_host else "works" if ok else what)
         detail("%s", what)
-        if ok:
+        if ok and self.is_host:
+            print("Done. Set up each computer that should reach this one with: audiolink setup")
+        elif ok:
             print("Done: ssh %s" % self.name)
         elif self.is_host:
-            print("Set up; ssh %s works once %s is online (audiolink wifi status) and this computer's ssh "
-                  "server is on" % (self.name, self.name))
+            print("It will once %s is online (audiolink wifi status) and this computer's ssh server is on"
+                  % self.name)
         else:
-            print("Set up; ssh %s works once %s is online and its computer exposes ssh (audiolink setup "
-                  "there)" % (self.name, self.name))
+            print("ssh %s works once %s is online and its host is set up (audiolink setup there)"
+                  % (self.name, self.name))
 
 
 def setup_command(a):

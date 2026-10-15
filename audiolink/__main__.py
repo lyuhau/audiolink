@@ -111,9 +111,9 @@ def build_parser():
     stp.add_argument("--yes", action="store_true", help="take the suggested answer to every question")
     hst = stp.add_mutually_exclusive_group()
     hst.add_argument("--host", action="store_true", default=None,
-                     help="the Pi stays plugged into this computer: set it up as its host")
+                     help="make this computer the Pi's host (don't ask)")
     hst.add_argument("--no-host", dest="host", action="store_false",
-                     help="the Pi won't stay plugged in here: skip the host part")
+                     help="this computer isn't the Pi's host: only ssh NAME from here")
     stp.add_argument("--name", help="the Pi's name (renames it when it's plugged in here)")
     wf = stp.add_mutually_exclusive_group()
     wf.add_argument("--wifi", metavar="NETWORK", help="put the Pi on this Wi-Fi network")

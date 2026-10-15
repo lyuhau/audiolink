@@ -22,8 +22,7 @@ LABEL = "com.audiolink.host"
 UNIT = "audiolink-host"
 TASK = "audiolink-host"
 
-MAC_MIC = ("macOS may ask whether audiolink can use the microphone: allow it (that's how data comes "
-           "in from the Pi; System Settings → Privacy & Security → Microphone)")
+MAC_MIC = "If macOS asks whether audiolink may use the microphone: allow it (that's how the Pi's data comes in)"
 
 
 class Autostart:

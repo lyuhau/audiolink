@@ -384,24 +384,26 @@ class Setup(TempConfig):
         self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])
         for line in ("Installed audiolink in", "Added green-rowan (claimed: this is its first computer)",
                      "  (audiolink add)", "Connecting green-rowan to Home... online", '  (audiolink wifi join "Home")',
-                     "Will green-rowan stay plugged into this computer? yes",
-                     "Saved for audiolink host: --expose 2222:22", "microphone",
-                     "audiolink host: starts at login (", "Starting it... connected to green-rowan",
-                     "ssh green-rowan: set up", "Trying ssh green-rowan... works", "Done: ssh green-rowan"):
+                     "Make this computer green-rowan's host? yes",
+                     "This computer's ssh is reachable through green-rowan", "microphone",
+                     "audiolink host: starts at login\n", "Starting it... connected to green-rowan",
+                     "Checking that ssh green-rowan reaches this computer... yes",
+                     "Done. Set up each computer that should reach this one with: audiolink setup"):
             self.assertIn(line, out)
         self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
         self.assertTrue(self.plist().exists())
-        self.assertIn("Host green-rowan\n  HostName green-rowan\n  Port 2222\n  User %s\n"
-                      "  ProxyCommand /inst/audiolink connect green-rowan %%p" % getpass.getuser(), self.ssh_config())
+        self.assertFalse((self.home / ".ssh" / "config").exists())     # its host: ssh to itself is no use
+        self.assertNotIn("Start it for this setup", out)                 # the Pi is here: no question
         self.assertEqual(self.banners, [("green-rowan", 2222)])
 
         out, code = self.setup("--yes")             # again: nothing to do, nothing doubled
         self.assertIsNone(code, out)
-        for line in ("green-rowan: added here", "green-rowan: on Wi-Fi Home", "audiolink host: exposes 2222:22",
-                     "audiolink host: starts at login, running", "Done: ssh green-rowan"):
+        for line in ("green-rowan: added here", "green-rowan: on Wi-Fi Home",
+                     "This computer's ssh is reachable through green-rowan",
+                     "audiolink host: starts at login, running", "reaches this computer... yes"):
             self.assertIn(line, out)
         self.assertNotIn("(audiolink", out)
-        self.assertEqual(self.ssh_config().count("# BEGIN audiolink"), 1)
+        self.assertNotIn("host? ", out)                                  # it is already
         self.assertEqual(len(self.runner.ran("launchctl bootstrap")), 1)
 
     def test_first_plug_in_without_the_host_part(self):
@@ -409,10 +411,11 @@ class Setup(TempConfig):
         self.assertIsNone(code, out)
         self.assertIn("  (audiolink rename green-rowan kitchen --on-pi)", out)
         self.assertIn("kitchen: not on Wi-Fi", out)
-        self.assertIn("Next: plug kitchen into its home computer and run audiolink setup there", out)
+        self.assertIn("Next: plug kitchen into its host, and run audiolink setup there", out)
         self.assertEqual(host_config.load(), {})
         self.assertFalse((self.home / "Library").exists())
-        self.assertIn("Host kitchen\n  HostName kitchen\n  Port 2222\n  User bob\n", self.ssh_config())
+        self.assertIn("Host kitchen\n  HostName kitchen\n  Port 2222\n  User bob\n  ProxyCommand /inst/audiolink "
+                      "connect kitchen %p", self.ssh_config())
         self.assertEqual(self.banners, [])
         self.assertEqual(keyring.lookup("kitchen")["name"], "kitchen")
 
@@ -426,7 +429,7 @@ class Setup(TempConfig):
         self.host.expose = ["2222:22"]                   # started by hand with --expose 2222:22
         out, code = self.setup("--yes", "--no-wifi", "--no-autostart")
         self.assertIsNone(code, out)
-        self.assertIn("Saved for audiolink host: --expose 2222:22", out)
+        self.assertIn("This computer's ssh is reachable through green-rowan", out)
         self.assertNotIn("Restart audiolink host", out)
         self.host.expose = []
         out, code = self.setup("host", "--expose", "2222:22", "--expose", "8080:80", "--no-autostart")
@@ -455,11 +458,25 @@ class Setup(TempConfig):
         self.assertIn("Trying ssh green-rowan... green-rowan is offline", out)
         self.assertEqual(self.ssh_config().count("# BEGIN audiolink"), 1)
 
+    def test_second_computer_asks_nothing(self):
+        self.host.running = False
+        code = code_for(new_identity())
+
+        def found(a, ask):
+            entry, _ = keyring.upsert(code, name="green-rowan", seen=True)
+            return entry
+        with mock.patch("audiolink.client.pairing.add_over_network", found):
+            out, exit_code = self.setup(pi_device=False)          # no --yes, no terminal: no questions
+        self.assertIsNone(exit_code, out)
+        self.assertNotIn("?", out)
+        self.assertNotIn("User ", self.ssh_config())               # ssh's own default: this login
+        self.assertIn("Done: ssh green-rowan", out)
+
     def test_nothing_found_asks_for_a_code(self):
         self.host.running = False
         with mock.patch("audiolink.client.pairing.add_over_network", lambda a, ask: None):
             out, code = self.setup("--yes", pi_device=False)
-        self.assertIn("No Pi found on this network", out)
+        self.assertIn("No Pi found: not plugged in here, and not on this network", out)
         self.assertIn("without a terminal", code)
 
     def test_setup_host_alone(self):

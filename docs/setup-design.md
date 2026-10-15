@@ -23,23 +23,27 @@ connection), autostart, the identity custody backup. A computer with the Pi on U
 needs a pairing code.
 
 ## `audiolink setup` = do whatever this computer can do right now
-With the Pi on USB (first plug-in, or its home computer):
+With the Pi on USB (first plug-in, or its host): a host is started for the setup if none
+runs (no question). Three questions at most: its name, its Wi-Fi, and "Make this
+computer NAME's host?"
 1. The Pi: claim it over USB (no code, no "claim it?" question), optional name, Wi-Fi
    (picker). Skip what's already done.
-2. This computer as a client: keyring entry + managed ~/.ssh/config block (re-running
-   replaces, no duplicates). Offered, default yes.
-3. This computer as its host: "Will the Pi stay plugged into this computer?"
-   - yes: exposed ports (e.g. "reach this computer's ssh from elsewhere?" → open the
-     Remote Login settings, save --expose 2222:22), saved host config, autostart
-     (launchd/systemd/Task Scheduler), start it now.
-   - no: skip; say "plug it into its home computer and run `audiolink setup` there".
+2. Host, yes: expose this computer's ssh (2222:22; Remote Login pane if it's off), saved
+   host config, autostart, start it; check that ssh NAME reaches this computer. No ssh
+   block here (ssh to itself is no use). End: "set up each computer that should reach
+   this one with: audiolink setup".
+3. Host, no: this computer is a client: the ssh block; "plug it into its host and run
+   audiolink setup there".
+Everything else is a flag, never a question (--expose, --no-autostart, --no-ssh, --user):
+questions only where the answer isn't obvious, and each one's effect is said after.
 Without the Pi on USB: client only: find the Pi (LAN/mDNS) or ask for a code (from
 `audiolink invite`), pair, write the ssh block, test (ssh banner through the Pi), end
 with "Done: ssh NAME".
 Also: install itself (copy to a permanent place, PATH link, clear macOS quarantine).
-Re-running is idempotent and shows what's set, letting you change answers.
+Re-running is idempotent and shows what's set.
 `audiolink setup host` == configure; `audiolink host` == run the daemon (what autostart runs).
-Every question has a flag for scripting; the guide prints the lower-level commands it ran.
+Every question has a flag for scripting (--yes takes the suggested answers); the guide
+prints the lower-level commands it ran.
 
 ## Saved host config
 A small file (e.g. ~/Library/Application Support/audiolink/host.toml or json) read by
