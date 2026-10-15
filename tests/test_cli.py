@@ -195,6 +195,18 @@ class Reaching(KeyringCase):
         self.assertEqual(pis._quote(r"C:\Program Files\audiolink.exe", windows=True),
                          r'"C:\Program Files\audiolink.exe"')
 
+    def test_add_says_what_next(self):
+        entry = keyring.lookup("kitchen")
+        with mock.patch.object(pis, "_add_usb", return_value=entry):          # on its host
+            out, _, _ = self.run_cmd(pis.add_command, code=None, at=None)
+        self.assertEqual(out.splitlines()[-1], "Next: audiolink wifi (put it on Wi-Fi); on your other computers: "
+                                               "audiolink pairing code kitchen here, then audiolink add there")
+        with mock.patch.object(pis, "_add_usb", return_value=None), \
+                mock.patch("audiolink.client.pairing.add_over_network", return_value=entry):
+            out, _, _ = self.run_cmd(pis.add_command, code=None, at=None)
+        self.assertIn("audiolink ssh-config --user YOU >> ~/.ssh/config", out.splitlines()[-1])
+        self.assertIn("then ssh kitchen", out.splitlines()[-1])
+
     def test_launcher_frozen_is_the_real_executable(self):
         d = Path(self.tmp.name)
         (d / "audiolink folder").mkdir()

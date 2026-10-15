@@ -150,10 +150,12 @@ def add_command(a):
     from ..ui import line_buffered
     from .pairing import add_over_network
     line_buffered()
+    usb = False
     if a.code:
         entry = _add_code(a)
     else:
         entry = None if a.at else _add_usb(a)
+        usb = entry is not None
         if entry is None:
             print("Searching this network...", flush=True)
             entry = add_over_network(a, Prompter(a, "--pairing-code, --at"))
@@ -162,7 +164,12 @@ def add_command(a):
                          "  plug it in here (with audiolink host running)\n"
                          "  or join its network or setup network (audiopi-...)  [--at ADDRESS if not found]\n"
                          "  or paste its code: audiolink add al1-...  (from: audiolink share NAME)")
-    print("Connect: audiolink ssh-config >> ~/.ssh/config, then ssh %s" % entry["alias"])
+    if usb:                             # this is its host: next, Wi-Fi and the other computers
+        print("Next: audiolink wifi (put it on Wi-Fi); on your other computers: audiolink pairing "
+              "code %s here, then audiolink add there" % entry["alias"])
+    else:
+        print("Connect: audiolink ssh-config --user YOU >> ~/.ssh/config (YOU: your login on the "
+              "computer it's plugged into), then ssh %s" % entry["alias"])
 
 
 def rotate_secret_command(a):
