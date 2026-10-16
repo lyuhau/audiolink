@@ -125,6 +125,13 @@ class AddOverNetwork(unittest.TestCase):
         self.assertEqual(entry["code"], self.identity.code())
         self.assertIn("audiolink pairing code", out)
 
+    def test_a_given_code_needs_no_hint(self):
+        code = self.svc.new_code()["code"]
+        entry, out = self.add(SlowAsk(wait=0), pairing_code=code)
+        self.assertEqual(entry["code"], self.identity.code())
+        self.assertIn("(claimed): pairing with the code given", out)
+        self.assertNotIn("audiolink pairing code", out)
+
     def test_claiming_after_a_slow_yes(self):
         self.identity.start_over()
         entry, _ = self.add(SlowAsk())

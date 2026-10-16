@@ -392,13 +392,17 @@ def add_over_network(a, ask):
     detail("%s, tag %s, at %s", name, hello["tag"], ip)
     code = None
     if hello["claimed"]:
+        given = a.pairing_code is not None
         if hello["pub"] in known:
-            print("%s's code has changed; this computer needs a pairing code. Get one on a computer "
-                  "that has it: audiolink pairing code %s" % (name, name))
+            print("%s's code has changed; this computer needs a pairing code%s" % (
+                name, ": pairing with the one given" if given else
+                ". Get one on a computer that has it: audiolink pairing code %s" % name))
+        elif given:
+            print("Found %s (claimed): pairing with the code given" % name)
         else:
             print("Found %s (claimed). Get a code on a computer that knows it: audiolink pairing code %s"
                   % (name, name))
-        code = pairing_code(a.pairing_code if a.pairing_code is not None else ask.text("Pairing code: "), name)
+        code = pairing_code(a.pairing_code if given else ask.text("Pairing code: "), name)
     elif not ask.yes("Found %s (unclaimed). Claim it?" % name, default=True):
         raise SystemExit("Not added")
     conn, hello = _again(ip, hello["pub"], name)
