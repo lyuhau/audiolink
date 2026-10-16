@@ -3,6 +3,7 @@ named by the Pi's key (so renaming it replaces the block), replaced in place whe
 runs again, never added twice. Everything else in the file stays as it is."""
 import os
 import re
+import sys
 from pathlib import Path
 
 BEGIN, END = "# BEGIN audiolink %s", "# END audiolink %s"
@@ -74,7 +75,9 @@ def write(path, tag, text):
         new = "\n".join(new_lines) + "\n"
     else:
         new = old + ("\n" if old and not old.endswith("\n") else "") + ("\n" if old.strip() else "") + text
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Windows: no mode. Python 3.12.4+ turns 0o700 into an ACL for OWNER RIGHTS, which
+    # Windows OpenSSH refuses ("Bad permissions"); the profile's inherited ACL is what it wants.
+    path.parent.mkdir(**({} if sys.platform == "win32" else {"mode": 0o700}), parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".audiolink-tmp")
     with open(str(tmp), "w", encoding="utf-8", newline="\n") as f:
         f.write(new)

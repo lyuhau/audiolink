@@ -312,6 +312,15 @@ class SshBlock(TempConfig):
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
 
+    def test_windows_ssh_folder_keeps_the_profiles_acl(self):
+        # a mode on Windows becomes an OWNER RIGHTS ACL, which Windows OpenSSH refuses
+        path = self.dir / "h" / ".ssh" / "config"
+        with mock.patch.object(sshconfig.sys, "platform", "win32"), \
+                mock.patch.object(Path, "mkdir", autospec=True) as mkdir:
+            mkdir.side_effect = lambda p, *a, **k: os.makedirs(str(p), exist_ok=True)
+            sshconfig.write(path, "t", sshconfig.block("t", "x", 2222, "me", "a"))
+        self.assertNotIn("mode", mkdir.call_args.kwargs)
+
 
 class FakeHost:
     """A running `audiolink host` and the Pi on it, as the control port shows them."""
