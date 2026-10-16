@@ -233,7 +233,7 @@ class Pins(unittest.TestCase):
                     fh.write("%s\n" % v)
         os.makedirs(os.path.join(d, "gpio533"))
         open(os.path.join(d, "gpio533", "value"), "w").close()
-        self.assertEqual(gpio_path(21, d), os.path.join(d, "gpio533", "value"))
+        self.assertEqual(gpio_path(21, d), d + "/gpio533/value")             # sysfs paths: /
 
 
 if __name__ == "__main__":

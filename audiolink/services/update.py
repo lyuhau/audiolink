@@ -114,7 +114,7 @@ class UpdateService(Service):
         except zipfile.BadZipFile as e:
             os.remove(self.new)
             raise ValueError("not an audiolink .pyz (%s)" % e)
-        with open(self.new, "rb") as f:
+        with open(self.new, "r+b") as f:        # Windows won't fsync a read-only handle
             os.fsync(f.fileno())
         os.replace(self.new, self.path)
         if os.path.exists(self.path + ".bad"):

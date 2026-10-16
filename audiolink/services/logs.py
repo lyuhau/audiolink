@@ -4,6 +4,7 @@ boot before's copy on the SD card (the platform's keep_logs; /boot/logs on the o
 pre-platform image). Paired machines read them over the network too (endpoint "logs",
 `audiolink logs --pi PI`)."""
 import os
+import posixpath
 
 from ..paths import platform_env
 from . import Service
@@ -18,7 +19,7 @@ FILES = ("audiolink.log", "audiolink.log.1", "audiolink.log.2", "audiolink.log.3
 
 def prev_dir(env=None):
     logs = (platform_env() if env is None else env).get("APP_LOGS")
-    return os.path.join(logs, "prev") if logs else LEGACY_PREV_DIR
+    return posixpath.join(logs, "prev") if logs else LEGACY_PREV_DIR
 MAX_LINES = 5000
 
 
