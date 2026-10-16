@@ -9,6 +9,7 @@ otherwise over the network, proving this machine already knows the Pi).
 import hmac
 import json
 import re
+import select
 import socket
 import ssl
 import struct
@@ -27,6 +28,7 @@ from ..services.pairing import ID_CLIENT, ID_PI
 from ..services.setup_ap import AP_ADDR as SETUP_ADDR      # where the Pi sits on its setup network
 
 SERVICE = b"_audiolink._tcp.local"
+HOSTNAME = "audiopi.local"          # the card's hostname setting, by default
 
 
 # ---------------------------------------------------------------- finding Pis
@@ -36,27 +38,71 @@ def _mdns_query(name):
     return struct.pack(">6H", 0, 0, 1, 0, 0, 0) + q + struct.pack(">2H", 12, 0x8001)
 
 
-def browse(timeout=2.0):
-    """IPs of hosts answering for _audiolink._tcp over mDNS (multicast; blocked on
-    some networks, which is what --at and the setup network are for)."""
-    found = set()
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+def local_ips():
+    """This computer's IPv4 addresses, loopback aside: the default route's first."""
+    ips = []
     try:
-        s.settimeout(0.3)
-        for _ in range(2):
-            s.sendto(_mdns_query(SERVICE), ("224.0.0.251", 5353))
-            end = time.monotonic() + timeout / 2
-            while time.monotonic() < end:
-                try:
-                    data, addr = s.recvfrom(9000)
-                except socket.timeout:
-                    continue
-                if b"\x0a_audiolink\x04_tcp" in data:
-                    found.add(addr[0])
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 9))         # picks the route; sends nothing
+            ips.append(s.getsockname()[0])
+        finally:
+            s.close()
     except OSError:
         pass
+    try:
+        ips += [a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    return [ip for ip in dict.fromkeys(ips) if not ip.startswith(("127.", "0."))]
+
+
+def is_answer(data):
+    """An mDNS response (not a query, ours included) that names _audiolink._tcp."""
+    return len(data) > 2 and data[2] & 0x80 and b"\x0a_audiolink\x04_tcp" in data
+
+
+def browse(timeout=2.0, resolve=False):
+    """IPs of hosts answering for _audiolink._tcp over mDNS (multicast; blocked on
+    some networks, which is what --at and the setup network are for). Asked on every
+    interface: Windows sends multicast out one only, often a virtual one (Hyper-V, WSL).
+    resolve: none answered: try the OS resolver for audiopi.local (finds one Pi at most;
+    slow to fail on some systems, so not on every connect)."""
+    found = set()
+    socks = []
+    for ip in local_ips() or [None]:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            if ip:
+                s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+            socks.append(s)
+        except OSError:
+            s.close()
+    try:
+        for _ in range(2):
+            for s in socks:
+                try:
+                    s.sendto(_mdns_query(SERVICE), ("224.0.0.251", 5353))
+                except OSError:                 # an interface without multicast
+                    pass
+            end = time.monotonic() + timeout / 2
+            while socks and time.monotonic() < end:
+                ready, _, _ = select.select(socks, [], [], 0.3)
+                for s in ready:
+                    try:
+                        data, addr = s.recvfrom(9000)
+                    except OSError:
+                        continue
+                    if is_answer(data):
+                        found.add(addr[0])
     finally:
-        s.close()
+        for s in socks:
+            s.close()
+    if resolve and not found:
+        try:
+            found.update(a[4][0] for a in socket.getaddrinfo(HOSTNAME, None, socket.AF_INET))
+        except OSError:
+            pass
     return sorted(found)
 
 
@@ -217,7 +263,7 @@ def reach(entry, at=(), with_dht=False, busy=None):
 def candidates(at=()):
     """[(PiConn, hello)] for every Pi reachable over the network right now."""
     out, seen = [], set()
-    for ip in list(at) + browse() + [SETUP_ADDR]:
+    for ip in list(at) + browse(resolve=True) + [SETUP_ADDR]:
         if ip in seen:
             continue
         seen.add(ip)

@@ -23,6 +23,51 @@ from audiolink.services.pairing import ID_CLIENT, ID_PI, PairingService
 from .helpers import FakeClock, patch_time
 
 
+class Browse(unittest.TestCase):
+    """Finding Pis over mDNS: asked on every interface, answers only."""
+
+    def test_answers_count_not_queries(self):
+        query = pairing._mdns_query(pairing.SERVICE)          # ours, looped back
+        self.assertFalse(pairing.is_answer(query))
+        answer = bytes([0, 0, 0x84, 0]) + query[4:]
+        self.assertTrue(pairing.is_answer(answer))
+
+    def test_local_ips_leave_out_loopback(self):
+        self.assertFalse([ip for ip in pairing.local_ips() if ip.startswith("127.")])
+
+    def test_asked_on_every_interface(self):
+        sent = []
+
+        class Sock:
+            def __init__(self, *a):
+                self.ifaddr = None
+
+            def setsockopt(self, level, opt, value):
+                self.ifaddr = value
+
+            def sendto(self, data, addr):
+                sent.append((self.ifaddr, addr))
+
+            def close(self):
+                pass
+
+        with mock.patch.object(pairing, "local_ips", lambda: ["192.168.1.5", "172.28.144.1"]), \
+                mock.patch.object(pairing.socket, "socket", Sock), \
+                mock.patch.object(pairing.select, "select", lambda r, w, x, t: ([], [], [])):
+            self.assertEqual(pairing.browse(0.01), [])
+        ifaces = {ifaddr for ifaddr, _ in sent}
+        self.assertEqual(ifaces, {pairing.socket.inet_aton("192.168.1.5"), pairing.socket.inet_aton("172.28.144.1")})
+
+    def test_resolver_only_when_asked_and_nothing_answered(self):
+        with mock.patch.object(pairing, "local_ips", lambda: []), \
+                mock.patch.object(pairing.select, "select", lambda r, w, x, t: ([], [], [])), \
+                mock.patch.object(pairing.socket, "getaddrinfo",
+                                  return_value=[(2, 2, 17, "", ("192.168.1.9", 0))]) as gai:
+            self.assertEqual(pairing.browse(0.01), [])
+            self.assertEqual(pairing.browse(0.01, resolve=True), ["192.168.1.9"])
+        self.assertEqual(gai.call_args.args[0], pairing.HOSTNAME)
+
+
 class SlowAsk:
     """A person who takes their time at every prompt (longer than the Pi waits)."""
 
