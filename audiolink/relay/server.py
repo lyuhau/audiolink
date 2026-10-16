@@ -17,6 +17,7 @@ import threading
 import time
 
 from ..crypto import ed25519_verify
+from ..net import reuse_addr
 from . import parse_addr
 from .wire import (MIN_VERSION, REGISTER, VERSION, Control, close, read_line, send_line,
                    server_context, splice, tune)
@@ -47,7 +48,7 @@ class Relay:
     # ---- listening
     def listen(self, host, port):
         srv = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        reuse_addr(srv)
         srv.bind((host, port))
         srv.listen(128)
         return srv

@@ -37,6 +37,7 @@ import struct
 import threading
 import time
 
+from ..net import reuse_addr
 from ..wire.protocol import T_CLOSE, T_CREDIT, T_DATA, T_OPEN
 from . import Service
 
@@ -326,7 +327,7 @@ class Streams(Service):
 
     def forward(self, lport, target, bind="0.0.0.0", exposed=False):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        reuse_addr(srv)
         try:
             srv.bind((bind, lport))
             srv.listen(16)

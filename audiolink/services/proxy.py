@@ -13,6 +13,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+from ..net import reuse_addr
 from . import Service
 
 log = logging.getLogger("audiolink")
@@ -93,7 +94,7 @@ def serve(port=PROXY_PORT, on_request=lambda: None):
     """on_request() runs for every proxied connection (used to notice demand for
     the Pi's internet while a captive portal is blocking it)."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    reuse_addr(srv)
     srv.bind(("127.0.0.1", port))
     srv.listen(32)
 

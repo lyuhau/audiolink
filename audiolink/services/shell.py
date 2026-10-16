@@ -33,6 +33,7 @@ import threading
 import time
 import warnings
 
+from ..net import reuse_addr
 from . import Service
 from .access import DEBUG
 from .endpoint import Takeover
@@ -184,7 +185,7 @@ class ShellServer:
         self.argv = list(argv)
         self.slots = threading.BoundedSemaphore(MAX_SHELLS)
         self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        reuse_addr(self.srv)
         self.srv.bind((bind, port))
         self.srv.listen(4)
         self.port = self.srv.getsockname()[1]

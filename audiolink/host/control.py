@@ -12,6 +12,8 @@ import socket
 import threading
 import time
 
+from ..net import reuse_addr
+
 log = logging.getLogger("audiolink")
 
 DEFAULT_PORT = int(os.environ.get("AUDIOLINK_CONTROL_PORT", "47800"))
@@ -21,7 +23,7 @@ def listen(port=DEFAULT_PORT):
     """Take the control port: the first thing `audiolink host` does, since holding it is
     also what keeps a second host off the Pi's audio device (two would corrupt the link)."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    reuse_addr(srv)
     try:
         srv.bind(("127.0.0.1", port))
     except OSError as e:

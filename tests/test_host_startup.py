@@ -41,7 +41,10 @@ class Startup(unittest.TestCase):
         return str(e.exception.code)
 
     def test_second_host_stops_before_the_audio_device(self):
-        srv, port = taken_port()
+        from audiolink.host import control
+        port = free_port()
+        srv = control.listen(port)              # as the first host took it (on Windows its socket
+                                                # options once let a second host share the port)
         self.addCleanup(srv.close)
 
         def answer():                           # a running host's control port
