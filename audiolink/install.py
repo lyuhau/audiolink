@@ -127,8 +127,7 @@ def install(runner, platform=sys.platform, home=None, environ=None, what=None, p
     dest, bindir = places(platform, home, environ)
     notes = []
     if kind == "source":
-        return Installed([python, "-m", "audiolink"], env={"PYTHONPATH": str(src)},
-                         notes=["Running from a source checkout (%s): not installing" % src])
+        return Installed([python, str(src)], notes=["Running from a source checkout (%s): not installing" % src])
     changed = False
     if kind == "frozen":
         if not _same(src, dest):
@@ -172,4 +171,4 @@ def here(python=None):
         return Installed([str(src / exe)], where=src)
     if kind == "pyz":
         return Installed([python, str(src)], where=src.parent)
-    return Installed([python, "-m", "audiolink"], env={"PYTHONPATH": str(src)})
+    return Installed([python, str(src)])         # the checkout's __main__.py

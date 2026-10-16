@@ -1,5 +1,8 @@
 """Shared test helpers: a fake clock, and two link ends joined by an in-memory wire."""
+import os
 import random
+import sys
+import tempfile
 import time as _time
 import unittest
 from unittest import mock
@@ -9,6 +12,24 @@ from audiolink import tls
 # For tests that connect to a Pi's endpoint (TLS 1.3 with an Ed25519 key): macOS's
 # /usr/bin/python3 (LibreSSL) can't, and audiolink says so to its users instead.
 needs_tls = unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
+
+
+def _can_symlink():
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            os.symlink("x", os.path.join(d, "link"))
+        except OSError:
+            return False
+    return True
+
+
+# For tests whose stand-ins are made of symlinks: Windows makes them only in Developer Mode
+# or as an administrator.
+needs_symlinks = unittest.skipUnless(_can_symlink(), "can't make symlinks here (Windows: only in Developer Mode)")
+
+# For tests that check a file's mode bits: Windows has none to set beyond read-only (a file
+# in the user's profile is private by the folder's permissions).
+needs_modes = unittest.skipIf(sys.platform == "win32", "Windows files have no mode bits to make private")
 
 
 class FakeClock:

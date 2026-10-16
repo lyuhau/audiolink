@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from audiolink import paths, ui
+from tests.helpers import needs_modes
 
 
 class Storage(unittest.TestCase):
@@ -15,6 +16,7 @@ class Storage(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.path = os.path.join(self.dir.name, "state.json")
 
+    @needs_modes
     def test_round_trip_private(self):
         paths.save_json(self.path, {"a": 1})
         self.assertEqual(paths.load_json(self.path), {"a": 1})

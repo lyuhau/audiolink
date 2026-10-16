@@ -45,7 +45,8 @@ def _launcher(argv=None, env=None):
     arg0 = os.path.abspath(sys.argv[0])
     if arg0.endswith(".pyz"):
         return "%s %s" % (_quote(sys.executable), _quote(arg0))
-    return "%s -m audiolink" % _quote(sys.executable)
+    checkout = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return "%s %s" % (_quote(sys.executable), _quote(checkout))     # its __main__.py
 
 
 def pis_command(a):

@@ -5,6 +5,9 @@ import contextlib
 import io
 import json
 import os
+import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +17,7 @@ from audiolink.__main__ import build_parser
 from audiolink import guide, install
 from audiolink.client import keyring, sshconfig
 from audiolink.discovery.record import code_for, new_identity
-from tests.helpers import FakeClock
+from tests.helpers import FakeClock, needs_modes, needs_symlinks
 from audiolink.host import config as host_config
 from audiolink.host.autostart import Autostart
 
@@ -167,14 +170,16 @@ class SelfInstall(TempConfig):
         self.home = self.dir / "home"
         self.env = {"PATH": "/usr/bin"}
 
-    def release(self):
+    def release(self, link=True):
         src = self.dir / "Downloads" / "audiolink"
         (src / "_internal").mkdir(parents=True)
         (src / "audiolink").write_text("v1")
         (src / "_internal" / "lib").write_text("lib")
-        os.symlink("lib", str(src / "_internal" / "link"))
+        if link:
+            os.symlink("lib", str(src / "_internal" / "link"))
         return src
 
+    @needs_symlinks
     def test_frozen_folder_on_macos(self):
         src = self.release()
         r = FakeRunner()
@@ -195,7 +200,7 @@ class SelfInstall(TempConfig):
         self.assertFalse(got.changed)                     # running the installed one: nothing to do
 
     def test_someone_elses_file_is_left_alone(self):
-        src = self.release()
+        src = self.release(link=False)
         (self.home / "bin").mkdir(parents=True)
         (self.home / "bin" / "audiolink").write_text("#!/bin/sh\necho mine\n")
         got = install.install(FakeRunner(), "darwin", self.home, {"PATH": str(self.home / "bin")},
@@ -212,7 +217,7 @@ class SelfInstall(TempConfig):
         dest = self.home / ".local" / "share" / "audiolink" / "audiolink.pyz"
         self.assertEqual(got.argv, ["/usr/bin/python3", str(dest)])
         launcher = (self.home / ".local" / "bin" / "audiolink").read_text()
-        self.assertIn("exec /usr/bin/python3 %s \"$@\"" % dest, launcher)
+        self.assertIn("exec /usr/bin/python3 %s \"$@\"" % shlex.quote(str(dest)), launcher)
         self.assertEqual(r.cmds, [])
         again = install.install(r, "linux", self.home, self.env, what=("pyz", src, None), python="/usr/bin/python3")
         self.assertFalse(again.changed)
@@ -229,7 +234,7 @@ class SelfInstall(TempConfig):
     def test_source_checkout_isnt_installed(self):
         got = install.install(FakeRunner(), "darwin", self.home, self.env, what=("source", Path("/src"), None),
                               python="/py")
-        self.assertEqual((got.argv, got.env, got.where), (["/py", "-m", "audiolink"], {"PYTHONPATH": "/src"}, None))
+        self.assertEqual((got.argv, got.env, got.where), (["/py", str(Path("/src"))], {}, None))
         self.assertIn("source checkout", got.notes[0])
         self.assertFalse(self.home.exists())
 
@@ -237,9 +242,18 @@ class SelfInstall(TempConfig):
 class Launcher(unittest.TestCase):
     def test_environment_goes_through_env(self):          # ssh execs ProxyCommand: VAR=x alone fails
         from audiolink.client import pis
-        got = pis._launcher(["/py", "-m", "audiolink"], {"PYTHONPATH": "/src dir"})
+        with mock.patch.object(sys, "platform", "linux"):
+            got = pis._launcher(["/py", "-m", "audiolink"], {"PYTHONPATH": "/src dir"})
         self.assertEqual(got, "env PYTHONPATH='/src dir' /py -m audiolink")
         self.assertEqual(pis._launcher(["/inst/audiolink"], {}), "/inst/audiolink")
+
+    def test_checkout_runs_without_pythonpath(self):     # what a source checkout's ProxyCommand runs
+        checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        p = subprocess.run([sys.executable, checkout, "--help"], cwd=tempfile.gettempdir(), env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(b"audiolink", p.stdout)
 
 
 class CardUsb(unittest.TestCase):
@@ -291,6 +305,7 @@ class SshBlock(TempConfig):
             f.write("Host pantry\n")
         self.assertEqual(sshconfig.others(path, "abcd1234", "pantry"), [len(text.splitlines()) + 1])
 
+    @needs_modes
     def test_new_file_is_private(self):
         path = self.dir / "h" / ".ssh" / "config"
         sshconfig.write(path, "t", sshconfig.block("t", "x", 2222, "me", "a"))

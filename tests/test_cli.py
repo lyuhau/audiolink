@@ -12,6 +12,7 @@ from unittest import mock
 
 from audiolink.client import keyring, pis
 from audiolink.discovery.record import code_for, new_identity
+from tests.helpers import needs_symlinks
 
 BAD = ["al1-garbage", "al1-!!", "al1-"]
 
@@ -207,6 +208,12 @@ class Reaching(KeyringCase):
         self.assertIn("audiolink ssh-config --user YOU >> ~/.ssh/config", out.splitlines()[-1])
         self.assertIn("then ssh kitchen", out.splitlines()[-1])
 
+    def test_launcher_from_a_checkout_runs_the_checkout(self):     # no PYTHONPATH needed
+        checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with mock.patch.object(sys, "argv", [os.path.join(checkout, "audiolink", "__main__.py")]):
+            self.assertEqual(pis._launcher(), "%s %s" % (pis._quote(sys.executable), pis._quote(checkout)))
+
+    @needs_symlinks
     def test_launcher_frozen_is_the_real_executable(self):
         d = Path(self.tmp.name)
         (d / "audiolink folder").mkdir()
