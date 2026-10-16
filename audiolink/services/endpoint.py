@@ -35,6 +35,7 @@ import time
 
 from .. import tls
 from ..crypto import ed25519_verify, open_sealed, seal
+from ..net import reuse_addr
 from .access import DEBUG, KEY_LABEL, PUBLIC, RELAY_SOURCE, decide, route_of
 
 log = logging.getLogger("audiolink")
@@ -47,6 +48,7 @@ IDLE = 30                   # s between requests on a proven connection
 EXEMPT = (RELAY_SOURCE, "127.0.0.1")    # the relay (proven there; services/relay.py caps it), the Pi
 BUSY = {"error": "busy", "code": "busy"}
 LOG_EVERY = 60              # s between logged refusals of one address
+LINGER = 1                  # s a turned-away connection stays open after BUSY
 UPGRADE = {"error": "This Pi's audiolink is newer than this computer's: update audiolink here",
            "code": "upgrade"}
 
@@ -124,8 +126,9 @@ class Endpoint:
         self.active = 0                         # connections being served
         self.unproven = {}                      # address -> its connections not yet proven
         self.turned_away = {}                   # address -> when that was last logged
+        self.closing = []                       # [(when, socket)] turned away, closed then
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        reuse_addr(srv)
         srv.bind((bind, port))
         srv.listen(8)
         self.port = srv.getsockname()[1]
@@ -177,9 +180,13 @@ class Endpoint:
         return {"error": why[1], "code": why[0]}
 
     def _accept(self, srv):
+        srv.settimeout(LINGER)
         while True:
+            self._close_turned_away()
             try:
                 sock, addr = srv.accept()
+            except socket.timeout:
+                continue
             except OSError as e:                # e.g. out of file descriptors
                 log.warning("endpoint: %s", e)
                 time.sleep(1)
@@ -224,8 +231,13 @@ class Endpoint:
             sock.send((json.dumps(BUSY) + "\n").encode())
             sock.shutdown(socket.SHUT_WR)
         except OSError:
-            pass
-        sock.close()
+            sock.close()
+        else:
+            # Closed now, with the client's TLS hello unread, it would get a reset, and
+            # Windows drops the BUSY it already has when one comes: closed later instead.
+            self.closing.append((time.monotonic() + LINGER, sock))
+            while len(self.closing) > MAX_CONNS:
+                self.closing.pop(0)[1].close()
         now = time.monotonic()
         with self.lock:
             if now - self.turned_away.get(ip, -LOG_EVERY) < LOG_EVERY:
@@ -233,6 +245,11 @@ class Endpoint:
             self.turned_away = {k: t for k, t in self.turned_away.items() if now - t < LOG_EVERY}
             self.turned_away[ip] = now
         log.warning("endpoint: turned away %s (%s)", ip, why)
+
+    def _close_turned_away(self):
+        now = time.monotonic()
+        while self.closing and self.closing[0][0] <= now:
+            self.closing.pop(0)[1].close()
 
     def _serve(self, sock, addr):
         held, conn = True, None
