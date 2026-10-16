@@ -339,6 +339,8 @@ def build_parser():
 
 
 def main(argv=None):
+    from . import ui
+    ui.safe_output()                    # before argparse, whose help and errors print too
     ap = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     command = None
@@ -349,7 +351,6 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "shell":
         a.command = command
-    from . import ui
     ui.VERBOSE = bool(getattr(a, "verbose", False))
     from .host import config as host_config
     if a.cmd == "host":

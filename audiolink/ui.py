@@ -79,6 +79,16 @@ class LogGate(logging.Handler):
                 self.held = []
 
 
+def safe_output():
+    """Text a stream's encoding can't hold (→ in cp1252: Windows output to a pipe, a
+    file or a scheduled task's log) comes out as ? instead of ending the command."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except AttributeError:          # None (no console) or not a text stream
+            pass
+
+
 def line_buffered():
     try:
         sys.stdout.reconfigure(line_buffering=True)   # keep prints in order with logs/errors

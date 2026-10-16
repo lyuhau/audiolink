@@ -403,3 +403,21 @@ class Help(unittest.TestCase):
             self.assertTrue(p.description, name)
             for act in p._actions:
                 self.assertTrue(act.help, (name, act.option_strings or act.dest))
+
+
+class Output(unittest.TestCase):
+    def test_a_narrow_encoding_doesnt_end_the_command(self):
+        # Windows: output to a pipe or file is cp1252, which has no →
+        from audiolink import ui
+        raw = io.BytesIO()
+        out = io.TextIOWrapper(raw, encoding="cp1252")
+        with mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", out):
+            ui.safe_output()
+            print("Pi port 2222 → this computer's port 22")
+            out.flush()
+        self.assertIn(b"2222 ? this", raw.getvalue())
+
+    def test_no_console_is_fine(self):
+        from audiolink import ui
+        with mock.patch.object(sys, "stdout", None), mock.patch.object(sys, "stderr", None):
+            ui.safe_output()
