@@ -20,6 +20,7 @@ set and skips what's done. The audiolink commands it stands for are shown as
 "  (audiolink ...)" lines; system commands with -v.
 """
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -246,6 +247,12 @@ class Guide:
         if p is None:
             if not self.pi_device():
                 return False
+            held = self.other_host()
+            if held:
+                raise SystemExit("audiolink host is already running for the Pi (%s): run audiolink setup "
+                                 "--control-port %s, or stop that host first" % (
+                                     "control port %d" % held if held is not True else "another control port",
+                                     held if held is not True else "PORT"))
             self.start_temp_host()
         elif not p.get("connected"):
             if not self.pi_device():
@@ -258,6 +265,26 @@ class Guide:
         if "identity" not in caps:
             raise SystemExit("%s runs an audiolink too old for setup; update: audiolink update" % self.name)
         return True
+
+    def other_host(self):
+        """An audiolink host already running here, not on our control port (none answers
+        there): its port, True if it can't be told (saved in another config), or None.
+        Two hosts on the Pi's sound device corrupt the link; holding the control port is
+        what normally keeps a second one off, and another port gets past it."""
+        if self.port != control.DEFAULT_PORT:
+            try:
+                control.call("peer", port=control.DEFAULT_PORT, timeout=5)
+                return control.DEFAULT_PORT
+            except SystemExit:
+                pass
+        if self.platform == "win32":
+            return None
+        _, out = self.runner.run(["ps", "-axo", "args="])
+        for line in out.splitlines():
+            if re.search(r"(?:^|[ /])audiolink(?:\.pyz)?\s+host(?:\s|$)", line):
+                m = re.search(r"--control-port[ =](\d+)", line)
+                return int(m.group(1)) if m else True
+        return None
 
     # ---- the card, through the Pi (card.py)
     def card_part(self, state):

@@ -627,6 +627,20 @@ class Setup(TempConfig):
         self.assertIn("Trying ssh green-rowan... green-rowan is offline", out)
         self.assertEqual(self.ssh_config().count("# BEGIN audiolink"), 1)
 
+    def test_another_host_holds_the_pi(self):           # another config's, or another control port
+        self.host.running = False
+        for line, port in (("/Applications/audiolink/audiolink host --control-port 47811", "control port 47811"),
+                           ("/usr/bin/python3 /Users/me/audiolink host", "another control port"),
+                           ("/usr/bin/python3 -m audiolink host -v", "another control port")):
+            self.runner.answers["ps"] = (0, "/sbin/launchd\n%s\n" % line)
+            out, code = self.setup("--yes")
+            self.assertIn("audiolink host is already running for the Pi (%s)" % port, code)
+            self.assertEqual(self.runner.spawned, [])                     # no second host
+        self.runner.answers["ps"] = (0, "/usr/bin/python3 -m audiolink setup host\nvim audiolink/host.py\n")
+        out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client", "--name", "green-rowan")
+        self.assertIsNone(code, out)
+        self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])
+
     def test_ssh_check_reads_the_file_written(self):      # ssh reads the passwd home's, not $HOME's
         self.host.running = False
         code = code_for(new_identity())
