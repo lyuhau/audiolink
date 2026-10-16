@@ -432,7 +432,7 @@ class Setup(TempConfig):
                 host.running = False
             return mock.Mock(poll=lambda: None, terminate=stop, wait=lambda timeout: 0)
         self.runner.spawn = spawn
-        self.banners, self.ssh_configs = [], []
+        self.banners, self.ssh_configs, self.lookups = [], [], []
 
     def setup(self, *argv, pi_device=True, sshd=True, banner=(True, "SSH-2.0-OpenSSH_9.8"), usb_state=None):
         a = build_parser().parse_args(["setup", *argv])
@@ -444,6 +444,7 @@ class Setup(TempConfig):
             return banner
         g = guide.Guide(a, runner=self.runner, platform="darwin", home=self.home, pi_device=lambda: pi_device,
                         sshd=lambda: sshd, banner=ssh, login=ssh, installer=lambda: inst,
+                        lookup=lambda code: (self.lookups.append(code), (None, 0))[1],
                         usb_state=usb_state or (lambda: "pi" if pi_device else None))
         g.ask.tty = False
         out = io.StringIO()
@@ -626,6 +627,38 @@ class Setup(TempConfig):
         self.assertIn("User alice", self.ssh_config())       # its earlier answer
         self.assertIn("Trying ssh green-rowan... green-rowan is offline", out)
         self.assertEqual(self.ssh_config().count("# BEGIN audiolink"), 1)
+        self.assertEqual(self.lookups, [code])          # added before: its record fetched; not when just added
+
+    def test_added_before_gets_its_current_record(self):
+        self.host.running = False
+        code = code_for(new_identity())
+        keyring.upsert(code, name="green-rowan", seen=True)
+        rec = {"name": "green-rowan", "lan": ["192.168.99.185"], "ports": [2222], "ts": 1}
+
+        def lookup(c):
+            keyring.update(keyring.pub_of(c), last_record=rec)
+            return rec, 0.5
+        with mock.patch("audiolink.client.pairing.add_over_network", lambda a, ask: None):
+            a = build_parser().parse_args(["setup", "--yes", "-v"])
+            g = guide.Guide(a, home=self.home, pi_device=lambda: False, lookup=lookup)
+            g.ask.tty = False
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), mock.patch("audiolink.ui.VERBOSE", True):
+                entry = g.find_pi()
+        self.assertEqual(entry["last_record"]["lan"], ["192.168.99.185"])
+        self.assertIn("[record: 192.168.99.185]", out.getvalue())
+
+    def test_no_record_is_no_failure(self):
+        self.host.running = False
+        code = code_for(new_identity())
+        keyring.upsert(code, name="green-rowan", seen=True)
+
+        def lookup(c):
+            raise SystemExit("Found its record, but can't read it")
+        a = build_parser().parse_args(["setup", "--yes", "--pi", "green-rowan"])
+        g = guide.Guide(a, home=self.home, pi_device=lambda: False, lookup=lookup)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(g.find_pi()["alias"], "green-rowan")
 
     def test_another_host_holds_the_pi(self):           # another config's, or another control port
         self.host.running = False

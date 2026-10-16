@@ -167,7 +167,7 @@ def ssh_login(alias, port, config=None):
 class Guide:
     def __init__(self, a, runner=None, platform=sys.platform, home=None, sleep=None,
                  pi_device=pi_device_present, sshd=sshd_running, banner=ssh_banner, installer=None,
-                 usb_state=None, login=ssh_login):
+                 usb_state=None, login=ssh_login, lookup=None):
         self.a = a
         self.usb_state = usb_state or (lambda: card.usb_state(self.runner, self.platform))
         self.ask = Ask(a)
@@ -176,6 +176,9 @@ class Guide:
         self.port = getattr(a, "control_port", None) or control.DEFAULT_PORT
         self.sleep = sleep or time.sleep
         self.pi_device, self.sshd, self.banner, self.login = pi_device, sshd, banner, login
+        if lookup is None:
+            from .client.find import lookup
+        self.lookup = lookup
         self.installer = installer or (lambda: install.install(self.runner, platform, home))
         self.temp_host = None           # an `audiolink host` started for this setup
         self.installed = None
@@ -629,6 +632,18 @@ class Guide:
         self.client_block()
         self.try_ssh()
 
+    def refreshed(self, entry):
+        """A Pi added before: fetch its current record (audiolink find), so ssh NAME tries
+        its LAN address before the relay. Pairing with an older Pi left none. Quiet: the
+        relay still works without it."""
+        try:
+            rec, took = self.lookup(entry["code"])
+        except (SystemExit, OSError, ValueError) as e:
+            detail("no record (%s)", e)
+            return entry
+        detail("record: %s", ", ".join(rec["lan"]) if rec and rec.get("lan") else "none")
+        return keyring.lookup(entry["alias"], known=True) if rec else entry
+
     def find_pi(self):
         a = self.a
         add = SimpleNamespace(code=a.code, name=a.name, no_lookup=False, at=a.at, pairing_code=a.pairing_code)
@@ -637,7 +652,7 @@ class Guide:
             ran("audiolink add CODE")
             return entry
         if a.pi:
-            return keyring.lookup(a.pi, known=True)
+            return self.refreshed(keyring.lookup(a.pi, known=True))
         from .client.pairing import add_over_network
         print("Looking for a Pi on this network...", flush=True)
         entry = add_over_network(add, self.ask)
@@ -647,9 +662,9 @@ class Guide:
         known = sorted(keyring.load().values(), key=lambda e: e["alias"])
         if len(known) == 1:
             print("No new Pi here; setting up %s (added before)" % known[0]["alias"])
-            return known[0]
+            return self.refreshed(known[0])
         if known:
-            return self.ask.choose("Set up which Pi?", [(e["alias"], e) for e in known])
+            return self.refreshed(self.ask.choose("Set up which Pi?", [(e["alias"], e) for e in known]))
         print("No Pi found: not plugged in here, and not on this network")
         print("Just plugged in? The Pi takes about 15 s to start; then run audiolink setup again")
         if in_wsl():
