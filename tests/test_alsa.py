@@ -1,5 +1,6 @@
 """The Pi's aplay/arecord loops (wire/alsa.py), with stand-ins for the processes."""
 import collections
+import sys
 import time
 import unittest
 from unittest import mock
@@ -55,6 +56,7 @@ def until(cond, timeout=2):
     return cond()
 
 
+@unittest.skipIf(sys.platform == "win32", "the Pi's ALSA loops (Linux): they use fcntl")
 class Loops(unittest.TestCase):
     def setUp(self):
         self.host = Host()

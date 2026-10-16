@@ -2,6 +2,7 @@
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import unittest
 
@@ -51,7 +52,11 @@ def read(path):
 
 FAST = AudioFormat(96000, 8)
 
+# The gadget is the Pi's: its stand-in here is configfs made of symlinks (and gadget.sh)
+pi_only = unittest.skipIf(sys.platform == "win32", "the Pi's USB gadget (Linux): symlinks and sh scripts")
 
+
+@pi_only
 class OnThePlatform(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -91,6 +96,7 @@ class OnThePlatform(unittest.TestCase):
             self.g.set_format(FAST)
 
 
+@pi_only
 class WithoutThePlatform(unittest.TestCase):
     """The older, pre-platform image's gadget, changed here."""
     def setUp(self):

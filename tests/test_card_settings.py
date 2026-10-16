@@ -3,6 +3,7 @@ settings files) as `audiolink pi` arguments; config/pi.toml's defaults."""
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -11,8 +12,10 @@ from audiolink.relay import DEFAULT
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PIN = "ab" * 32
+pi_only = unittest.skipIf(sys.platform == "win32", "the Pi's shell scripts (Linux): no sh here")
 
 
+@pi_only
 class CardSettings(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
@@ -73,6 +76,7 @@ class Config(unittest.TestCase):
         self.assertEqual(cfg["app"]["settings"]["relay"]["default"], DEFAULT)
         self.assertEqual(build_parser().parse_args(["pi"]).relay, DEFAULT)
 
+    @pi_only
     def test_shell_syntax(self):
         for p in ("card-settings.sh", "start-audiolink.sh", "app-start.sh"):
             subprocess.run(["sh", "-n", os.path.join(REPO, "pi", p)], check=True)
