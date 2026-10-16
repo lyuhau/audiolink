@@ -325,12 +325,12 @@ class SshBlock(TempConfig):
 class SshLogin(unittest.TestCase):
     """setup's "Trying ssh NAME": the real ssh, so a config ssh refuses shows."""
 
-    def login(self, returncode, stderr, ssh="/usr/bin/ssh"):
+    def login(self, returncode, stderr, ssh="/usr/bin/ssh", **kw):
         done = subprocess.CompletedProcess([], returncode, "", stderr)
         with mock.patch.object(guide.shutil, "which", lambda name: ssh), \
                 mock.patch.object(guide.subprocess, "run", return_value=done) as run, \
                 mock.patch.object(guide, "ssh_banner", lambda alias, port: (True, "banner")):
-            got = guide.ssh_login("green-rowan", 2222)
+            got = guide.ssh_login("green-rowan", 2222, **kw)
         return got, run
 
     def test_reaching_the_login_is_enough(self):
@@ -340,6 +340,12 @@ class SshLogin(unittest.TestCase):
         self.assertEqual(argv[-2:], ["green-rowan", "exit"])
         self.assertIn("BatchMode=yes", argv)
         self.assertIn("UserKnownHostsFile=" + os.devnull, argv)     # the user's known_hosts untouched
+
+    def test_another_config_file(self):
+        _, run = self.login(0, "", config="/tmp/home/.ssh/config")
+        self.assertEqual(run.call_args.args[0][1:3], ["-F", "/tmp/home/.ssh/config"])
+        _, run = self.login(0, "")
+        self.assertNotIn("-F", run.call_args.args[0])
 
     def test_logged_in(self):
         self.assertEqual(self.login(0, "")[0], (True, "logged in"))
@@ -426,14 +432,15 @@ class Setup(TempConfig):
                 host.running = False
             return mock.Mock(poll=lambda: None, terminate=stop, wait=lambda timeout: 0)
         self.runner.spawn = spawn
-        self.banners = []
+        self.banners, self.ssh_configs = [], []
 
     def setup(self, *argv, pi_device=True, sshd=True, banner=(True, "SSH-2.0-OpenSSH_9.8"), usb_state=None):
         a = build_parser().parse_args(["setup", *argv])
         inst = install.Installed(["/inst/audiolink"], where=self.dir / "inst", changed=True)
 
-        def ssh(alias, port):
+        def ssh(alias, port, config=None):
             self.banners.append((alias, port))
+            self.ssh_configs.append(config)
             return banner
         g = guide.Guide(a, runner=self.runner, platform="darwin", home=self.home, pi_device=lambda: pi_device,
                         sshd=lambda: sshd, banner=ssh, login=ssh, installer=lambda: inst,
@@ -619,6 +626,17 @@ class Setup(TempConfig):
         self.assertIn("User alice", self.ssh_config())       # its earlier answer
         self.assertIn("Trying ssh green-rowan... green-rowan is offline", out)
         self.assertEqual(self.ssh_config().count("# BEGIN audiolink"), 1)
+
+    def test_ssh_check_reads_the_file_written(self):      # ssh reads the passwd home's, not $HOME's
+        self.host.running = False
+        code = code_for(new_identity())
+        found = lambda a, ask: keyring.upsert(code, name="green-rowan", seen=True)[0]
+        with mock.patch("audiolink.client.pairing.add_over_network", found):
+            self.setup("--yes", pi_device=False)
+            self.assertEqual(self.ssh_configs, [self.home / ".ssh" / "config"])
+            with mock.patch.object(sshconfig, "ssh_default_path", lambda: self.home / ".ssh" / "config"):
+                self.setup("--yes", pi_device=False)
+            self.assertEqual(self.ssh_configs[1:], [None])           # the same file: ssh as it is
 
     def test_second_computer_asks_nothing(self):
         self.host.running = False

@@ -128,15 +128,17 @@ def ssh_banner(alias, port):
     return False, "no ssh server answered" if not data else "something other than ssh answered"
 
 
-def ssh_login(alias, port):
+def ssh_login(alias, port, config=None):
     """ssh ALIAS as the user will run it -> (True, what) or (False, why). Reaching the
     login is enough: a refused password-less try still means ssh read the config, ran the
-    ProxyCommand and got through to the ssh server. No ssh here: the banner check."""
+    ProxyCommand and got through to the ssh server. config: the file to read instead of
+    ssh's own (-F). No ssh here: the banner check."""
     ssh = shutil.which("ssh")
     if not ssh:
         return ssh_banner(alias, port)
     try:
-        r = subprocess.run([ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
+        r = subprocess.run([ssh] + (["-F", str(config)] if config else []) + [
+                            "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
                             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=" + os.devnull,
                             "-o", "LogLevel=ERROR", alias, "exit"],
                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
@@ -647,7 +649,12 @@ class Guide:
         step(("Trying ssh %s" if client else "Checking that ssh %s reaches this computer") % self.name)
         # a client has its ssh NAME block: try that, as the user will; the host's own
         # check has no block to use
-        ok, what = (self.login if client else self.banner)(self.name, self.ssh_port)
+        if client:
+            written = sshconfig.default_path(self.home)
+            own = sshconfig.ssh_default_path()     # where ssh looks: the passwd home, not $HOME
+            ok, what = self.login(self.name, self.ssh_port, **({} if own == written else {"config": written}))
+        else:
+            ok, what = self.banner(self.name, self.ssh_port)
         done(("works" if client else "yes") if ok else what)
         detail("%s", what)
         if ok:

@@ -13,6 +13,16 @@ def default_path(home=None):
     return Path(home or Path.home()) / ".ssh" / "config"
 
 
+def ssh_default_path():
+    """The file ssh itself reads: under the passwd entry's home (ssh ignores $HOME),
+    or the profile folder on Windows. None if that can't be told."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".ssh" / "config"
+    except (ImportError, KeyError):
+        return Path(os.environ["USERPROFILE"]) / ".ssh" / "config" if os.environ.get("USERPROFILE") else None
+
+
 def block(tag, alias, port, user, proxy):
     """proxy: how to run audiolink in a ProxyCommand (already quoted)."""
     return "\n".join([
