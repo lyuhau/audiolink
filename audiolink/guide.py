@@ -129,6 +129,15 @@ def ssh_banner(alias, port):
     return False, "no ssh server answered" if not data else "something other than ssh answered"
 
 
+def in_wsl():
+    """Linux under Windows (WSL): mDNS answers don't reach it, NAT or mirrored networking."""
+    try:
+        with open("/proc/version") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
 def ssh_login(alias, port, config=None):
     """ssh ALIAS as the user will run it -> (True, what) or (False, why). Reaching the
     login is enough: a refused password-less try still means ssh read the config, ran the
@@ -217,7 +226,7 @@ class Guide:
         self.installed = got
         if got.changed:
             print("Installed audiolink in %s" % tilde(got.where))
-        else:
+        elif got.where:                 # None: run where it is (a source checkout: its note says)
             detail("audiolink is installed in %s", got.where)
         for note in got.notes:
             print(note)
@@ -643,7 +652,10 @@ class Guide:
             return self.ask.choose("Set up which Pi?", [(e["alias"], e) for e in known])
         print("No Pi found: not plugged in here, and not on this network")
         print("Just plugged in? The Pi takes about 15 s to start; then run audiolink setup again")
-        print("Know its address? audiolink setup --at ADDRESS")
+        if in_wsl():
+            print("WSL doesn't hear the Pi's answers on the network: audiolink setup --at ADDRESS")
+        else:
+            print("Know its address? audiolink setup --at ADDRESS")
         code = self.ask.text("Or the Pi's connect code (al1-..., from audiolink share NAME on a computer that has the Pi): ")
         add.code = code.strip()
         if not add.code:

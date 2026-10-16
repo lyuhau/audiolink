@@ -673,6 +673,25 @@ class Setup(TempConfig):
         self.assertIn("No Pi found: not plugged in here, and not on this network", out)
         self.assertIn("without a terminal", code)
 
+    def test_nothing_found_in_wsl_says_use_at(self):
+        self.host.running = False
+        for wsl, line in ((True, "WSL doesn't hear the Pi's answers on the network: audiolink setup --at ADDRESS"),
+                          (False, "Know its address? audiolink setup --at ADDRESS")):
+            with mock.patch("audiolink.client.pairing.add_over_network", lambda a, ask: None), \
+                    mock.patch.object(guide, "in_wsl", lambda: wsl):
+                out, _ = self.setup("--yes", pi_device=False)
+            self.assertIn(line, out)
+            self.assertEqual(out.count("--at ADDRESS"), 1)
+
+    def test_running_where_it_is_names_no_folder(self):
+        g = guide.Guide(build_parser().parse_args(["setup", "-v"]), home=self.home,
+                        installer=lambda: install.Installed(["/py", "/src"], notes=["Running from a source checkout (/src): not installing"]))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch("audiolink.ui.VERBOSE", True):
+            g.install_step()
+        self.assertNotIn("None", out.getvalue())
+        self.assertIn("not installing", out.getvalue())
+
     def test_setup_host_alone(self):
         self.host.running = False
         out, code = self.setup("host", "--expose", "2222:22", "--expose", "8080:80", "--no-autostart",
