@@ -20,7 +20,9 @@ set and skips what's done. The audiolink commands it stands for are shown as
 "  (audiolink ...)" lines; system commands with -v.
 """
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import time
 from types import SimpleNamespace
@@ -126,10 +128,34 @@ def ssh_banner(alias, port):
     return False, "no ssh server answered" if not data else "something other than ssh answered"
 
 
+def ssh_login(alias, port):
+    """ssh ALIAS as the user will run it -> (True, what) or (False, why). Reaching the
+    login is enough: a refused password-less try still means ssh read the config, ran the
+    ProxyCommand and got through to the ssh server. No ssh here: the banner check."""
+    ssh = shutil.which("ssh")
+    if not ssh:
+        return ssh_banner(alias, port)
+    try:
+        r = subprocess.run([ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
+                            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=" + os.devnull,
+                            "-o", "LogLevel=ERROR", alias, "exit"],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False, "no answer"
+    except OSError as e:
+        return False, "ssh didn't start (%s)" % e
+    lines = [ln.strip() for ln in r.stderr.splitlines() if ln.strip()]
+    if r.returncode == 0:
+        return True, "logged in"
+    if any("Permission denied" in ln for ln in lines):
+        return True, "reached the login"
+    return False, lines[-1] if lines else "ssh exited with %d" % r.returncode
+
+
 class Guide:
     def __init__(self, a, runner=None, platform=sys.platform, home=None, sleep=None,
                  pi_device=pi_device_present, sshd=sshd_running, banner=ssh_banner, installer=None,
-                 usb_state=None):
+                 usb_state=None, login=ssh_login):
         self.a = a
         self.usb_state = usb_state or (lambda: card.usb_state(self.runner, self.platform))
         self.ask = Ask(a)
@@ -137,7 +163,7 @@ class Guide:
         self.platform, self.home = platform, home
         self.port = getattr(a, "control_port", None) or control.DEFAULT_PORT
         self.sleep = sleep or time.sleep
-        self.pi_device, self.sshd, self.banner = pi_device, sshd, banner
+        self.pi_device, self.sshd, self.banner, self.login = pi_device, sshd, banner, login
         self.installer = installer or (lambda: install.install(self.runner, platform, home))
         self.temp_host = None           # an `audiolink host` started for this setup
         self.installed = None
@@ -588,6 +614,7 @@ class Guide:
             return self.ask.choose("Set up which Pi?", [(e["alias"], e) for e in known])
         print("No Pi found: not plugged in here, and not on this network")
         print("Just plugged in? The Pi takes about 15 s to start; then run audiolink setup again")
+        print("Know its address? audiolink setup --at ADDRESS")
         code = self.ask.text("Or the Pi's connect code (al1-..., from audiolink share NAME on a computer that has the Pi): ")
         add.code = code.strip()
         if not add.code:
@@ -618,7 +645,9 @@ class Guide:
 
     def try_ssh(self, client=True):
         step(("Trying ssh %s" if client else "Checking that ssh %s reaches this computer") % self.name)
-        ok, what = self.banner(self.name, self.ssh_port)
+        # a client has its ssh NAME block: try that, as the user will; the host's own
+        # check has no block to use
+        ok, what = (self.login if client else self.banner)(self.name, self.ssh_port)
         done(("works" if client else "yes") if ok else what)
         detail("%s", what)
         if ok:

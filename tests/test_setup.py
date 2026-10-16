@@ -322,6 +322,37 @@ class SshBlock(TempConfig):
         self.assertNotIn("mode", mkdir.call_args.kwargs)
 
 
+class SshLogin(unittest.TestCase):
+    """setup's "Trying ssh NAME": the real ssh, so a config ssh refuses shows."""
+
+    def login(self, returncode, stderr, ssh="/usr/bin/ssh"):
+        done = subprocess.CompletedProcess([], returncode, "", stderr)
+        with mock.patch.object(guide.shutil, "which", lambda name: ssh), \
+                mock.patch.object(guide.subprocess, "run", return_value=done) as run, \
+                mock.patch.object(guide, "ssh_banner", lambda alias, port: (True, "banner")):
+            got = guide.ssh_login("green-rowan", 2222)
+        return got, run
+
+    def test_reaching_the_login_is_enough(self):
+        got, run = self.login(255, "lyuhau@green-rowan: Permission denied (publickey,password).\n")
+        self.assertEqual(got, (True, "reached the login"))
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[-2:], ["green-rowan", "exit"])
+        self.assertIn("BatchMode=yes", argv)
+        self.assertIn("UserKnownHostsFile=" + os.devnull, argv)     # the user's known_hosts untouched
+
+    def test_logged_in(self):
+        self.assertEqual(self.login(0, "")[0], (True, "logged in"))
+
+    def test_a_refused_config_is_a_failure(self):
+        got, _ = self.login(255, "Bad permissions. Try removing permissions for user: OWNER RIGHTS\n"
+                                 "Bad owner or permissions on C:\\Users\\me/.ssh/config\n")
+        self.assertEqual(got, (False, "Bad owner or permissions on C:\\Users\\me/.ssh/config"))
+
+    def test_no_ssh_here_checks_the_banner(self):
+        self.assertEqual(self.login(0, "", ssh=None)[0], (True, "banner"))
+
+
 class FakeHost:
     """A running `audiolink host` and the Pi on it, as the control port shows them."""
 
@@ -405,7 +436,7 @@ class Setup(TempConfig):
             self.banners.append((alias, port))
             return banner
         g = guide.Guide(a, runner=self.runner, platform="darwin", home=self.home, pi_device=lambda: pi_device,
-                        sshd=lambda: sshd, banner=ssh, installer=lambda: inst,
+                        sshd=lambda: sshd, banner=ssh, login=ssh, installer=lambda: inst,
                         usb_state=usb_state or (lambda: "pi" if pi_device else None))
         g.ask.tty = False
         out = io.StringIO()
