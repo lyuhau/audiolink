@@ -44,7 +44,7 @@ class FakeUpdate(UpdateService):
 def pyz():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("__main__.py", "print('new')")
+        z.writestr(zipfile.ZipInfo("__main__.py", (2020, 1, 1, 0, 0, 0)), "print('new')")   # same bytes every time
     return buf.getvalue()
 
 

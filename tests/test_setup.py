@@ -2,7 +2,6 @@
 config block and `audiolink setup`'s flow (with the host daemon, the Pi and the system
 stubbed). Everything writes under temporary directories."""
 import contextlib
-import getpass
 import io
 import json
 import os
