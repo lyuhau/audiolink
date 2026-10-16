@@ -59,7 +59,7 @@ class Loops(unittest.TestCase):
     def setUp(self):
         self.host = Host()
         for patch in (mock.patch.object(alsa.subprocess, "Popen", self.host.popen),
-                      mock.patch.object(alsa, "RETRY", 0.05), mock.patch.object(alsa, "IDLE_RETRY", 0.2),
+                      mock.patch.object(alsa, "RETRY", 0.05), mock.patch.object(alsa, "IDLE_RETRY", 0.4),
                       mock.patch.object(alsa, "WAKE_CHECK", 0.01),
                       mock.patch("fcntl.fcntl", lambda *a: None)):
             patch.start()
