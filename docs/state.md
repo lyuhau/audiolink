@@ -107,57 +107,104 @@ current record. An unclaimed Pi pairs with anyone who reaches it, with no code.
 - found.json duplicates `last_record`, and ignores `AUDIOLINK_CONFIG_DIR`.
 - discovery/record.py's docstring says the host keeps the identity and pushes it to
   the Pi; the Pi has made its own since the move to Pi-side identity.
+- The read secret is both the way through the Pi and the right to manage it: anyone
+  who can ssh through a Pi can also change its Wi-Fi, read its logs and issue pairing
+  codes.
+- Custody: the host keeps the Pi's private key, on by default, so a Pi without saved
+  state keeps its identity. Anyone who can read the host's config folder can pose as
+  the Pi.
 
-## Proposed: hosts get an identity
+## Proposed
 
-The host becomes something a client pairs with; the Pi stays the route. Both kinds of
-ssh entry are supported:
+### Two gates
+
+A client reaches a host when both hold, independently:
+
+1. **Route** on a Pi in front of the host: the right to open a stream to a port the
+   host exposes through that Pi. Checked by the Pi.
+2. **ssh auth** on the host: its `authorized_keys` (or password). Checked by sshd.
+
+audiolink owns gate 1 only. Who may log in, and revoking a client, is ssh's business, as
+it would be without audiolink. Once through gate 1, ssh behaves as if the Pis didn't
+exist.
+
+### Privileges on the Pi
+
+| Privilege | Allows | Held by | Proven with |
+|---|---|---|---|
+| route | open a stream to an exposed port; read the Pi's record (to find it) | clients | the route secret |
+| admin | manage the Pi: Wi-Fi, name, logs, pairing codes, updates, giving out route, backup and restore | whoever manages the Pi | the admin secret (today's read secret) |
+| host | everything | the computer on its USB | being on the USB link (as now) |
+
+Admin doesn't include route; an admin can give route to anyone, itself included.
+Revoking route: rotate the route secret (admin), then hand the new one to the clients
+that keep it. Rotating it doesn't touch admin, and the reverse.
+
+Codes: `al1-` (admin, as now) and a route code (public key + route secret). Pairing
+with a 6-digit code gives what the person issuing the code chooses: route by default.
+
+### Hosts get an identity
+
+The host becomes something a client knows; the Pi stays the route. Knowing a host is
+not a gate: it's how a client finds the host's Pis and checks the host's ssh keys.
+Both kinds of ssh entry are supported:
 
 - **Host entry** (`ssh macbook`): a computer, whichever Pi it's behind. Everything ssh
-  needs is fixed and checked at pairing.
+  needs is fixed and checked when the host is added.
 - **Pi entry** (`ssh green-rowan`): whatever computer this Pi is plugged into (a Pi
   carried between machines). The host key is resolved at connect time, by host
-  identity.
+  identity. No `User` line: ssh's default login, or `ssh user@green-rowan`.
+
+`audiolink invite` on a host hands a client both at once (the host's code, and route on
+its Pis), but they stay two credentials, revoked separately.
 
 ### New on the host
 
 | What | Where | Made | Used |
 |---|---|---|---|
-| Host identity: ed25519 key, secret, name | config/host-identity.json | first `audiolink setup` that makes this computer a host | signing "I'm behind Pi P"; sealing its own DHT record; pairing as a host |
-| Its sshd host keys (public) | read from the ssh server (/etc/ssh/*.pub; %ProgramData%\ssh) | the OS | sent to clients at pairing; published in its signed statement |
+| Host identity: ed25519 key, secret, name | config/host-identity.json | first `audiolink setup` that makes this computer a host | signing "I'm behind Pi P"; sealing its own DHT record; `audiolink invite` |
+| Its sshd host keys (public) | read from the ssh server (/etc/ssh/*.pub; %ProgramData%\ssh) | the OS | sent to clients by `invite`; in its signed statement |
 
 The host's code would be `al1h-` + public key + secret, shared like a Pi's.
+
+Removed: custody. A Pi without saved state gets a new identity at each start; that's
+expected off the happy path (the Pi has an SD card). For those who want it:
+`audiolink pi backup NAME FILE` and `audiolink pi restore NAME FILE`, admin only (over
+USB or with the admin code), the file encrypted with a passphrase.
 
 ### New on the Pi
 
 | What | Where | Made | Used |
 |---|---|---|---|
+| Route secret | identity.json, beside the admin secret | first start; rotated by an admin | proving route; sealing the Pi's DHT record (route holders need it to find the Pi) |
 | Host statement: host public key, name, sshd host keys, since, signed by the host | memory (and identity.json if wanted across restarts) | each time a host connects over USB | added to the Pi's DHT record; sent on request to `connect` and `known-hosts` |
 
 ### New in the DHT
 
 | What | Made | Used |
 |---|---|---|
-| Each Pi's record also carries its host statement | the Pi, as now | clients checking which host is behind a Pi |
-| One item per host (under the host's key, sealed with the host's secret): its current Pi(s) and their connect codes | the host, published through its Pi when online | host entries: which Pi to go through |
+| Each Pi's record (now sealed with the route secret) also carries its host statement | the Pi, as now | clients checking which host is behind a Pi |
+| One item per host (under the host's key, sealed with the host's secret): its current Pi(s), by public key | the host, published through its Pi when online | host entries: which Pi to go through |
 
 ### New on the client
 
 | What | Where | Made | Used |
 |---|---|---|---|
-| Hosts: per host key alias, host code, sshd keys, last record | config/hosts.json | pairing with a host (`audiolink invite` on the host, 6-digit code here) | `connect --host`; setup |
-| Pis learned through a host | config/pis.json, as now, marked as learned | the host's record | routing only: no Pi entry is written for them |
+| Hosts: per host key alias, host code, sshd keys, last record | config/hosts.json | `audiolink invite` on the host, 6-digit code here | `connect --host`; setup |
+| Pis: route code (and admin code, for those who manage it) | config/pis.json, as now | invite, pairing, `add CODE` | gate 1; finding the Pi |
 | Host entry: `Host macbook`, `User`, `HostKeyAlias audiolink-<host key>`, `ProxyCommand audiolink connect --host <key> %p` | ~/.ssh/config | setup | `ssh macbook` |
-| Its sshd keys, under `audiolink-<host key>` | ~/.ssh/known_hosts | setup, from pairing: no first-use prompt | every `ssh macbook` |
-| Pi entry: adds `KnownHostsCommand audiolink known-hosts %n` | ~/.ssh/config | setup | each `ssh green-rowan`: asks the Pi for its host statement, checks the host's signature, answers with that host's keys (first contact with a new host: as ssh's own first-use prompt) |
+| Its sshd keys, under `audiolink-<host key>` | ~/.ssh/known_hosts | setup, from the invite: no first-use prompt | every `ssh macbook` |
+| Pi entry: `Host green-rowan`, no `User`, `KnownHostsCommand audiolink known-hosts %n`, `ProxyCommand audiolink connect green-rowan %p` | ~/.ssh/config | setup | each `ssh green-rowan`: `known-hosts` asks the Pi for its host statement, checks the host's signature, answers with the keys kept for that host (a new host: ssh's own first-use prompt) |
 
 ### What `connect` would do
 
-1. Host entry: the host's record (cache, then DHT) gives its Pi(s). Pi entry: the Pi.
+1. Host entry: the host's record (cache, then DHT) gives its Pi(s); any of them will
+   do. Pi entry: the Pi.
 2. Reach the Pi: cached LAN address, relay, DHT, **with TLS pinned to the Pi's key** on
    the direct path too (fixes trusting an IP address).
-3. Host entry: check the Pi's host statement names this host, signed by it.
-4. After going through the relay, refresh the Pi's record, so the next time is direct.
+3. Prove route (gate 1).
+4. Host entry: check the Pi's host statement names this host, signed by it.
+5. After going through the relay, refresh the Pi's record, so the next time is direct.
 
 ### Moves, under each entry
 
@@ -168,12 +215,20 @@ The host's code would be `al1h-` + public key + secret, shared like a Pi's.
 | Host image cloned (same sshd key) | the clone has another host identity: refused | the statement names the clone: told apart |
 | Pi card cloned (same Pi identity) | two Pis, one key: the relay could refuse the second registration | same |
 
+## Decided
+
+- One host, two Pis: one host entry; either Pi is the route. Later: choosing the best
+  one (same LAN, fastest), or using both.
+- Knowing a host gives nothing on its Pis beyond route. Managing a Pi takes admin, by
+  other paths; the ssh session never knows about Pis.
+- Per-client access is ssh's (`authorized_keys`), as without audiolink. audiolink's gate
+  is route, revoked by rotating the route secret.
+- Pi entries have no `User`.
+- No custody by default; backup and restore as admin commands.
+
 ## Open questions
 
-- One host, two Pis: one host entry, either Pi as the route?
-- Does pairing with a host give any access to its Pi beyond routing (logs, Wi-Fi)?
-  Probably not: managing the Pi stays with the Pi's own code.
-- Per-client access: the host identity makes it possible (the host keeps a list of
-  paired clients and their keys) without changing the Pi.
-- What a Pi entry's `User` should be when the host changes: ssh's default login, or
-  `user@green-rowan`.
+- How route reaches a host's clients after a rotation: re-invite, or the host
+  republishes it to those it invited (which means the host keeps a list).
+- Whether a Pi without saved state should refuse to pair, or pair with a warning that
+  the pairing lasts until it restarts.
