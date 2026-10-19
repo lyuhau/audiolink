@@ -64,10 +64,10 @@ def not_owner(identity, who="this computer"):
     names it, if it's on the list."""
     name = identity.pi_name()
     if not identity.claimed():
-        return Refused("not_owner", "%s has no owner yet: claim it with audiolink setup on the computer "
+        return Refused("not_owner", "No owner yet on %s: claim it with audiolink setup on the computer "
                                     "it's plugged into" % name)
-    return Refused("not_owner", "%s isn't an owner of %s: on an owner computer, audiolink invite %s --owner"
-                   % (who, name, "NAME" if who == "this computer" else who))
+    return Refused("not_owner", "Only an owner of %s can do that (%s isn't one): on an owner computer, "
+                                "audiolink invite %s --owner" % (name, who, "NAME" if who == "this computer" else who))
 
 
 def parse_key(text):

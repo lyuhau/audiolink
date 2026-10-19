@@ -65,7 +65,7 @@ class Link(unittest.TestCase):
             with self.assertRaises(Refused) as e:
                 self.link.check(op)
             self.assertEqual(e.exception.code, "not_owner")
-            self.assertIn("has no owner yet", str(e.exception))
+            self.assertIn("No owner yet on", str(e.exception))
 
     def test_claim_makes_the_link_an_owner_at_once(self):
         self.identity.handle("claim", {"key": ed25519_public(self.host).hex(), "name": "desktop"})
@@ -78,8 +78,8 @@ class Link(unittest.TestCase):
         self.assertEqual(self.auth(self.host), {"role": None})
         with self.assertRaises(Refused) as e:
             self.link.check("wifi.scan")
-        self.assertEqual(str(e.exception), "this computer isn't an owner of %s: on an owner computer, "
-                                           "audiolink invite NAME --owner" % self.identity.pi_name())
+        self.assertEqual(str(e.exception), "Only an owner of %s can do that (this computer isn't one): on an "
+                                           "owner computer, audiolink invite NAME --owner" % self.identity.pi_name())
         self.identity.add(ed25519_public(self.host), "desktop", USER)
         self.assertEqual(self.link.role(), USER)            # looked up live
         self.identity.add(ed25519_public(self.host), "desktop", OWNER)

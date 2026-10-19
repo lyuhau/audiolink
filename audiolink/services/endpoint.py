@@ -176,7 +176,7 @@ class Endpoint:
         if member is None:
             log.warning("endpoint: %s (%s) isn't on the list (key %s...)", conn.addr[0], conn.route, key.hex()[:8])
             if not self.identity.claimed():
-                return {"error": "%s has no owner yet: claim it with audiolink setup on the computer it's "
+                return {"error": "No owner yet on %s: claim it with audiolink setup on the computer it's "
                                  "plugged into" % name, "code": "not_listed"}
             return {"error": "This computer isn't on %s's list: ask an owner of %s for an invite (audiolink "
                              "invite NAME, on their computer)" % (name, name), "code": "not_listed"}

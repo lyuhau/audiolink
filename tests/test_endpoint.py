@@ -101,8 +101,8 @@ class Auth(Pi):
         self.assertEqual(user.ask({"op": "look"})["route"], "lan")
         refused = user.ask({"op": "manage"})
         self.assertEqual(refused["code"], "not_owner")
-        self.assertEqual(refused["error"], "laptop isn't an owner of %s: on an owner computer, audiolink invite "
-                                           "laptop --owner" % self.identity.pi_name())
+        self.assertEqual(refused["error"], "Only an owner of %s can do that (laptop isn't one): on an owner computer, "
+                                           "audiolink invite laptop --owner" % self.identity.pi_name())
         self.assertTrue(owner.ask({"op": "manage"})["ok"])
         self.assertTrue(owner.ask({"op": "look"})["ok"])
 
