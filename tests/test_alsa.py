@@ -76,7 +76,11 @@ class Loops(unittest.TestCase):
         self.audio.start(self.audio.format)
         time.sleep(1.0)
         self.assertEqual(stats["aplay_restarts"] + stats["arecord_restarts"], 0)
-        self.assertLess(self.host.spawned["aplay"], self.host.spawned["arecord"] / 2)   # backed off
+        # backed off: 0.05, 0.1, 0.2, then IDLE_RETRY (0.4) apart, so at most ~6 in the second
+        # (~20 without); arecord keeps RETRY (0.05). Counted absolutely: a slow runner slows
+        # arecord's count too, which made a ratio flaky.
+        self.assertLessEqual(self.host.spawned["aplay"], 6)
+        self.assertGreater(self.host.spawned["arecord"], self.host.spawned["aplay"])
         self.host.streaming = True
         spawned = self.host.spawned["aplay"]
         self.assertTrue(until(lambda: self.host.spawned["aplay"] > spawned, timeout=0.15),
