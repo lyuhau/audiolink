@@ -12,7 +12,10 @@ log = logging.getLogger("audiolink")
 RETRY = 0.5                     # s between restarts
 IDLE_RETRY = 2.0                # at most, for aplay while the host isn't streaming
 WAKE_CHECK = 0.1
-BUFFER_US, PERIOD_US = 20000, 5000      # ALSA's buffer and period (µs): what a byte waits behind
+# ALSA buffer and period (µs). aplay's buffer is a queue every byte to the host waits
+# through: short. arecord's only needs room for a late read (its delay is the period).
+PLAY_US = (10000, 2500)
+RECORD_US = (40000, 2500)
 
 
 class AlsaAudio:
@@ -50,10 +53,11 @@ class AlsaAudio:
         for p in procs:
             p.wait()
 
-    def _args(self):
+    def _args(self, play):
         f = self.format
+        buffer_us, period_us = PLAY_US if play else RECORD_US
         return ["-D", self.device, "-f", "S16_LE", "-r", str(f.rate), "-c", str(f.channels),
-                "-t", "raw", "--buffer-time=%d" % BUFFER_US, "--period-time=%d" % PERIOD_US]
+                "-t", "raw", "--buffer-time=%d" % buffer_us, "--period-time=%d" % period_us]
 
     def _spawn(self, gen, cmd, **kw):
         with self.lock:
@@ -74,7 +78,7 @@ class AlsaAudio:
         chunk = self.format.chunk
         idle = 0                        # restarts in a row without the host streaming
         while gen == self.gen:
-            p = self._spawn(gen, ["aplay", "-q"] + self._args() + ["-"], stdin=subprocess.PIPE)
+            p = self._spawn(gen, ["aplay", "-q"] + self._args(True) + ["-"], stdin=subprocess.PIPE)
             if p is None:
                 return
             began = time.monotonic()
@@ -107,7 +111,7 @@ class AlsaAudio:
     def _recorder(self, gen):
         chunk = self.format.chunk
         while gen == self.gen:
-            p = self._spawn(gen, ["arecord", "-q"] + self._args() + ["-"], stdout=subprocess.PIPE)
+            p = self._spawn(gen, ["arecord", "-q"] + self._args(False) + ["-"], stdout=subprocess.PIPE)
             if p is None:
                 return
             got = False

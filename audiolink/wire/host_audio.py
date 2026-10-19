@@ -19,8 +19,10 @@ OUT_FRAMES = 256               # macOS: PortAudio's output buffer, written a buf
 def host_buffer_frames(fmt, output):
     """PortAudio's frames per buffer. On macOS its output latency follows it: a whole
     chunk (10 ms) gave ~53 ms (96 kHz x8), 256 frames ~14 ms, about 40 ms less on every
-    round trip; written a buffer at a time, so the smaller ring doesn't run dry. 128
-    gained little more and dropped frames. Input stays a chunk: smaller lost data, and
+    round trip; written a buffer at a time, so the smaller ring doesn't run dry. Under a
+    bulk load it still runs dry now and then (a retransmit; ~500 per 20 MB echoed); 512
+    never did, at +20 ms. 128 gained little and dropped more; 384 (not a power of two)
+    stalled streams. Input stays a chunk: smaller lost data, and
     its latency didn't change. Elsewhere (WASAPI's period, ALSA): a chunk, untested."""
     if sys.platform == "darwin" and output:
         return min(fmt.chunk_frames, OUT_FRAMES)
