@@ -12,10 +12,9 @@ come by invites (services/pairing.py). The last owner can't be removed: the rese
 An identity.json from before the list (a read secret, "claimed", "discoverable") keeps
 its key and name and comes up unclaimed, to be claimed over USB again.
 
-The host that added the Pi may keep a copy ("custody") and restore it whenever the Pi
-comes up with a fresh identity (host/identity.py): after every reboot if the state
-directory is in RAM (no SD card), and once when a Pi first gets a card. A restore
-never replaces an established identity on a card.
+Nobody else keeps a copy of the key (hosts used to: "custody"). A Pi without an SD card
+keeps its identity in RAM: a new key and an empty list at every boot ("persistent" in
+the info says which, so a host can warn before claiming).
 """
 import logging
 import os
@@ -87,12 +86,11 @@ class IdentityService(Service):
         self.on_claim = []                  # fn(key) after a claim (services/access.py LinkAccess)
         self.inviter = None                 # (name, role) -> {"code", "expires_in"} (services/pairing.py)
         self.data = self._load()
-        self.fresh = not self.data          # created this run, nothing has happened to it yet
         if not self.data:
             self.data = self._new()
             self._save()
             log.info("identity: new identity, name %s%s", self.data["name"],
-                     "" if self.persistent else " (in RAM: lost at reboot unless a host keeps custody)")
+                     "" if self.persistent else " (in RAM: lost at reboot)")
 
     def _new(self):
         return {"seed": os.urandom(32).hex(), "name": name_for(self.serial), "members": []}
@@ -113,12 +111,11 @@ class IdentityService(Service):
         save_state(self.path, self.data)
 
     def _changed(self):
-        self.fresh = False
         self._save()
         for fn in self.listeners:
             fn()
         if getattr(self, "session", None):
-            self.session.send_event("identity", self.info())    # host refreshes its custody copy
+            self.session.send_event("identity", self.info())    # the host re-runs link.auth
 
     # ---- for other services
     def subscribe(self, fn):
@@ -162,7 +159,7 @@ class IdentityService(Service):
     def info(self):
         pub = self.public()
         return {"name": self.data["name"], "serial": self.serial, "pub": pub.hex(), "tag": pub.hex()[:4],
-                "owners": self.owners(), "persistent": self.persistent, "fresh": self.fresh}
+                "owners": self.owners(), "persistent": self.persistent}
 
     # ---- the list
     def claim(self, key, name):
@@ -273,19 +270,6 @@ class IdentityService(Service):
                 return self.remove_for(None, OWNER, args)       # the link: gated to owners
             if op == "rename":
                 self.rename(args.get("name"))
-                return self.info()
-            if op == "export":
-                return dict(self.data)
-            if op == "restore":
-                if self.persistent and not self.fresh and args.get("seed") != self.data["seed"]:
-                    raise ValueError("this Pi keeps its own identity on its SD card; not replacing it")
-                parse_key(args.get("seed"))
-                if not NAME_RE.match(str(args.get("name"))):
-                    raise ValueError("not an identity: no name")
-                # A copy from before the list has none: the Pi is then unclaimed, as after an update.
-                self.data = {"seed": args["seed"], "name": args["name"], "members": clean_members(args.get("members"))}
-                self._changed()
-                log.info("identity: restored %s from the host's custody copy", self.data["name"])
                 return self.info()
         raise ValueError("unknown identity operation %r" % op)
 

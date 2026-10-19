@@ -100,13 +100,6 @@ class Link(unittest.TestCase):
         self.link.on_down()
         self.assertIsNone(self.link.role())                 # proved again at the next link-up
 
-    def test_restore_on_an_unclaimed_pi_only(self):
-        self.link.check("identity.restore")
-        self.identity.claim(ed25519_public(self.other), "laptop")
-        self.link.on_up()                                   # another host, not the claimer
-        with self.assertRaises(Refused):
-            self.link.check("identity.restore")
-
 
 class Echo(Service):
     name = "echo"

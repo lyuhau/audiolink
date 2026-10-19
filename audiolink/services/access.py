@@ -134,8 +134,6 @@ class LinkAccess(Service):
         """Session gate: raises Refused unless the link's role may make this request."""
         if op in HOST_JOBS or op.startswith("audio."):
             return
-        if op == "identity.restore" and not self.identity.claimed():
-            return                              # an unclaimed Pi: as good as claiming
         if self.role() != OWNER:
             raise not_owner(self.identity)
 

@@ -2,9 +2,9 @@
 
 The Pi holds one outgoing connection to the relay (the control connection). A client
 asks the relay for a Pi by public key; the relay tells the Pi, the Pi dials a fresh
-data connection, and the relay joins the two. The relay is untrusted: the client and
-the Pi authenticate each other end to end over the joined connection (see tunnel.py),
-and the Pi decides which of its ports are reachable.
+data connection, and the relay joins the two. The relay is untrusted: the Pi splices
+the joined connection to its own endpoint, where the client runs TLS pinned to the
+Pi's key and proves its own key, as on the LAN (services/relay.py, docs/protocol.md).
 
 All relay connections are TLS to a self-signed certificate pinned by hash.
 """

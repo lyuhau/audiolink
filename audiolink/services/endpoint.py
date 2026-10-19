@@ -392,15 +392,3 @@ class Endpoint:
                     self.presence.release(ends)
             sock.close()
             self._leave(addr[0], held=held, proven=was_proven)
-
-
-# ---- Until the client side of roles-v1 lands: the old client code (client/pairing.py,
-# client/remote.py) still imports these. Nothing on the Pi uses them; delete with it.
-def proof_for(secret, op, nonce, pub):
-    import hashlib
-    import hmac
-    return hmac.new(secret, tls.bind(op.encode() + nonce, pub), hashlib.sha256).hexdigest()
-
-
-def key_message(op, nonce, pub):
-    return tls.bind(b"audiolink-debug-v1\0" + op.encode() + nonce, pub)

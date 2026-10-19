@@ -83,15 +83,6 @@ class List(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.id.rename("no spaces")
 
-    def test_export_and_restore_carry_the_list(self):
-        self.id.claim(self.desktop, "desktop")
-        copy = self.id.handle("export", {})
-        other = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, other)
-        fresh = IdentityService(other)
-        fresh.handle("restore", copy)
-        self.assertEqual((fresh.public(), fresh.members()), (self.id.public(), self.id.members()))
-
     def test_invites_go_to_the_inviter(self):
         asked = []
         self.id.inviter = lambda name, role: asked.append((name, role)) or {"code": "123456", "expires_in": 300}
@@ -116,14 +107,7 @@ class FromBefore(unittest.TestCase):
         save_state(os.path.join(self.dir, "identity.json"), self.old)
         ident = IdentityService(self.dir)
         self.assertEqual((ident.data["seed"], ident.pi_name(), ident.claimed()), (self.seed, "green-rowan", False))
-        self.assertFalse(ident.fresh)
         self.assertEqual(set(load_state(ident.path)), {"seed", "name", "members"})
-
-    def test_restore_an_old_custody_copy(self):
-        ident = IdentityService(self.dir)
-        ident.handle("restore", self.old)
-        self.assertEqual((ident.data["seed"], ident.claimed()), (self.seed, False))
-        self.assertNotIn("secret", ident.data)
 
     def test_damaged_entries_are_dropped(self):
         save_state(os.path.join(self.dir, "identity.json"), {
