@@ -3,7 +3,6 @@
 import os
 import shutil
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -27,9 +26,13 @@ class LinkAuth(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir, True)
-        p = mock.patch.object(keyring, "PATH", Path(self.dir) / "pis.json")
-        p.start()
-        self.addCleanup(p.stop)
+        for p in (mock.patch.object(keyring, "PATH", Path(self.dir) / "pis.json"),
+                  mock.patch.dict(os.environ, {"AUDIOLINK_CONFIG_DIR": self.dir}),
+                  # on_peer_hello's thread would outlive the test and its patches, and write
+                  # the real keyring: the tests run _sync themselves
+                  mock.patch("audiolink.host.identity.threading.Thread")):
+            p.start()
+            self.addCleanup(p.stop)
         self.key, self.pi = a_key(), ed25519_public(os.urandom(32))
         self.nonce = os.urandom(16)
         self.requests = []
@@ -61,8 +64,7 @@ class LinkAuth(unittest.TestCase):
     def test_a_new_link_starts_without_a_role(self):
         self.svc.on_peer_hello(self.hello())
         self.svc._sync()
-        with mock.patch.object(threading, "Thread"):        # the new link's auth hasn't run yet
-            self.svc.on_peer_hello(self.hello())
+        self.svc.on_peer_hello(self.hello())                # the new link's auth hasn't run yet
         self.assertEqual(self.svc.local_ops(), {"role": None})
 
     def test_refreshes_a_known_pi(self):
@@ -80,7 +82,7 @@ class ControlToken(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir, True)
-        p = mock.patch.object(control, "config_dir", lambda: Path(self.dir))
+        p = mock.patch.dict(os.environ, {"AUDIOLINK_CONFIG_DIR": self.dir})
         p.start()
         self.addCleanup(p.stop)
         self.srv = control.listen(0)

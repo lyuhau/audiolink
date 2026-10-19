@@ -27,6 +27,9 @@ class KeyringCase(unittest.TestCase):
         p = mock.patch.object(keyring, "PATH", Path(self.tmp.name) / "pis.json")
         p.start()
         self.addCleanup(p.stop)
+        env = mock.patch.dict(os.environ, {"AUDIOLINK_CONFIG_DIR": self.tmp.name})   # this computer's key too
+        env.start()
+        self.addCleanup(env.stop)
 
     def run_cmd(self, fn, **args):
         """-> (stdout, stderr, exit message or None)"""
