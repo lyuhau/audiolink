@@ -111,11 +111,16 @@ def serve(session, srv, local_ops=None, token=None):
     threading.Thread(target=loop, daemon=True).start()
 
 
+CONNECT = 3         # s: a host is on this computer or not (WSL's mirrored networking drops,
+                    # rather than refuses, a connection to a localhost port nobody listens on)
+
+
 def call(op, args=None, port=DEFAULT_PORT, timeout=120):
     try:
-        conn = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        conn = socket.create_connection(("127.0.0.1", port), timeout=min(timeout, CONNECT))
     except OSError:
         raise SystemExit("audiolink host isn't running (start it: audiolink host)")
+    conn.settimeout(timeout)
     try:
         with conn:
             conn.sendall((json.dumps({"op": op, "args": args or {}, "token": read_token()}) + "\n").encode())

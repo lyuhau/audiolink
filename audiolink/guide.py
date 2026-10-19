@@ -109,9 +109,10 @@ def ssh_banner(alias, port):
     """Through the Pi to the ssh server behind it -> (True, banner) or (False, why)."""
     from .client.find import _connect
     try:
-        sock = _connect(SimpleNamespace(pi=alias, port=port))
+        conn = _connect(SimpleNamespace(pi=alias, port=port))      # a PiConn that is the stream now
     except SystemExit as e:
         return False, str(e.code)
+    sock = conn.sock
     try:
         sock.settimeout(15)
         data = b""
@@ -123,7 +124,7 @@ def ssh_banner(alias, port):
     except OSError as e:
         return False, "no answer (%s)" % e
     finally:
-        sock.close()
+        conn.close()
     if data.startswith(b"SSH-"):
         return True, data.split(b"\r")[0].split(b"\n")[0].decode(errors="replace")
     return False, "no ssh server answered" if not data else "something other than ssh answered"
@@ -461,8 +462,9 @@ class Guide:
         if no_state:
             print("%s keeps nothing across restarts (no SD card?): its list lasts until it restarts" % name)
         if not first and entry.get("role") != "owner":
+            from .client.computer import this_computer
             print("This computer isn't an owner of %s, so it can be its host but not change it (Wi-Fi, name). "
-                  "On an owner computer: audiolink invite %s --owner" % (name, socket.gethostname().split(".")[0]))
+                  "On an owner computer: audiolink invite %s --owner" % (name, this_computer()))
         wanted = self.a.name
         if not wanted and created:
             wanted = self.ask.text_default("Name", name).strip().lower()

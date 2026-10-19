@@ -158,6 +158,13 @@ def _write_private(path, text):
     os.replace(tmp, path)
 
 
+def this_computer():
+    """This computer's name on a Pi's list: the short hostname as a Pi name (lowercase,
+    letters, digits and dashes: Yuhaus-MacBook-Air -> yuhaus-macbook-air)."""
+    name = re.sub(r"[^a-z0-9-]+", "-", socket.gethostname().split(".")[0].lower()).strip("-")[:32]
+    return name or "computer"
+
+
 def path(folder=None):
     return os.path.join(str(folder or config_dir()), "key")
 

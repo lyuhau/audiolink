@@ -11,7 +11,7 @@ import threading
 from .. import tls
 from ..ui import detail, done, step
 from . import keyring
-from .computer import Key, key as computer_key
+from .computer import Key, key as computer_key, this_computer
 from .pairing import Busy, NotListed, OldPi, PiConn, busy, impostor, reach, too_old
 
 
@@ -109,7 +109,7 @@ def find(entry, at, turned_away):
 
 def not_listed(name):
     return SystemExit("%s doesn't have this computer on its list. On an owner computer: audiolink invite %s; "
-                      "then audiolink setup here" % (name, socket.gethostname().split(".")[0]))
+                      "then audiolink setup here" % (name, this_computer()))
 
 
 class Remote:

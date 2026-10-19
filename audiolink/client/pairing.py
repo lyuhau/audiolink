@@ -400,7 +400,7 @@ def _listed(conn, key):
 def add_over_network(a, ask, key=None):
     """Redeem an invite to a Pi found on this network (setup without a Pi on USB).
     Returns the keyring entry or None (no Pi here that doesn't have this computer already)."""
-    from .computer import key as computer_key
+    from .computer import key as computer_key, this_computer
     key = key or computer_key()
     known = keyring.load()
     found = candidates(a.at or [])
@@ -430,7 +430,7 @@ def add_over_network(a, ask, key=None):
         print("Found %s: joining with the invite code given" % name)
     else:
         print("Found %s. Get an invite code on an owner computer: audiolink invite %s"
-              % (name, socket.gethostname().split(".")[0]))
+              % (name, this_computer()))
     code = invite_code(typed if typed is not None else ask.text("Invite code: "), name)
     conn, hello = _again(ip, hello["pub"], name)
     try:
@@ -474,5 +474,7 @@ def _joined(result, a):
         fields["last_record"] = rec
     keyring.update(result["pub"], **fields)
     entry.update(fields)
-    print("%s %s (%s)" % ("Added" if created else "Updated", entry["alias"], result.get("role") or "user"))
+    on_list = result.get("as")          # this computer's name on the Pi's list (maybe numbered: laptop-2)
+    print("%s %s (%s%s)" % ("Added" if created else "Updated", entry["alias"], result.get("role") or "user",
+                            ", on its list as %s" % on_list if on_list else ""))
     return entry

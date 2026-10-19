@@ -174,6 +174,9 @@ class Lists(KeyringCase):
         self.code = new_code()
         keyring.upsert(self.code, name="green-rowan")
         keyring.update(keyring.pub_of(self.code), role="owner")
+        p = mock.patch("audiolink.host.control.call", side_effect=SystemExit("audiolink host isn't running"))
+        p.start()                       # not plugged in here (a test patches its own over it)
+        self.addCleanup(p.stop)
 
     def test_invite(self):
         remotes = fake_remotes(self, answers={"invite": {"code": "482177", "expires_in": 300}})
@@ -182,6 +185,27 @@ class Lists(KeyringCase):
         self.assertEqual(remotes[0].calls, [("invite", {"name": "mom", "role": "user"})])
         self.assertIn("Code for mom: 482-177 (one use, 5 min)", out)
         self.assertIn("authorized_keys", out)
+
+    def test_invite_over_usb_when_plugged_in(self):
+        calls = []
+        answers = {"peer": {"connected": True, "link": {"role": "owner"}},
+                   "identity.info": {"pub": keyring.pub_of(self.code)},
+                   "identity.invite": {"code": "482177", "expires_in": 300}}
+
+        def call(op, args=None, port=None):
+            calls.append((op, args))
+            return answers[op]
+        with mock.patch("audiolink.host.control.call", call), \
+                mock.patch("audiolink.client.remote.Remote", side_effect=AssertionError("not over the network")):
+            out, _, msg = self.run_cmd(pis.invite_command, name="laptop", owner=True, pi=None, at=None,
+                                       control_port=None)
+        self.assertIsNone(msg, out)
+        self.assertIn(("identity.invite", {"name": "laptop", "role": "owner"}), calls)
+        answers["peer"]["link"]["role"] = "user"                   # plugged in, but not an owner
+        with mock.patch("audiolink.host.control.call", call):
+            _, _, msg = self.run_cmd(pis.invite_command, name="laptop", owner=True, pi=None, at=None,
+                                     control_port=None)
+        self.assertIn("Only an owner of green-rowan", msg)
 
     def test_invite_needs_an_owner(self):
         fake_remotes(self, role="user")
@@ -204,6 +228,13 @@ class Lists(KeyringCase):
         self.assertIn(("remove", {"name": "mom"}), remotes[0].calls)
         out, _, msg = self.run_cmd(pis.remove_command, name="dad", pi=None, at=None)
         self.assertIn("isn't on any Pi this computer owns", out)
+
+    def test_a_refusal_isnt_unreachable(self):
+        members = [{"name": "macbook", "key": "01" * 32, "role": "owner"}]
+        fake_remotes(self, answers={"members": {"members": members},
+                                    "remove": {"error": "Only one owner left: reset it instead", "code": "last_owner"}})
+        _, _, msg = self.run_cmd(pis.remove_command, name="macbook", pi=None, at=None)
+        self.assertEqual(msg, "green-rowan: Only one owner left: reset it instead")
 
     def test_remove_fails_where_it_cant_reach(self):
         fake_remotes(self, fail="green-rowan is offline")

@@ -16,10 +16,29 @@ from unittest import mock
 from audiolink.__main__ import build_parser
 from audiolink import guide, install
 from audiolink.client import keyring, sshconfig
-from audiolink.discovery.record import code_for, new_identity
 from tests.helpers import FakeClock, needs_modes, needs_symlinks
 from audiolink.host import config as host_config
 from audiolink.host.autostart import Autostart
+
+
+def new_identity():
+    return os.urandom(32)          # a Pi's public key: all these tests need of it
+
+
+code_for = keyring.code_for
+
+
+class Banner(unittest.TestCase):
+    def test_reads_the_banner_off_the_stream(self):
+        import socket as _socket
+        mine, theirs = _socket.socketpair()
+        theirs.sendall(b"SSH-2.0-OpenSSH_9.8\r\n")
+        conn = mock.Mock(sock=mine)                     # connect's PiConn, now the stream
+        with mock.patch("audiolink.client.find._connect", return_value=conn):
+            self.assertEqual(guide.ssh_banner("green-rowan", 2222), (True, "SSH-2.0-OpenSSH_9.8"))
+        conn.close.assert_called_once()
+        theirs.close()
+        mine.close()
 
 
 class FakeRunner:

@@ -64,6 +64,13 @@ class ComputerKey(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_its_name_on_a_list_is_a_pi_name(self):
+        from unittest import mock
+        for host, want in (("Yuhaus-MacBook-Air.local", "yuhaus-macbook-air"), ("HAUHAU-990-PRO", "hauhau-990-pro"),
+                           ("my_box", "my-box"), ("...", "computer")):
+            with mock.patch.object(computer.socket, "gethostname", return_value=host):
+                self.assertEqual(computer.this_computer(), want)
+
     def test_parse_public(self):
         pub = ed25519_public(os.urandom(32))
         self.assertEqual(computer.parse_public(pub.hex()), pub)

@@ -8,7 +8,6 @@ by redeeming an invite from an owner (setup, client/pairing.py).
 import collections
 import os
 import shlex
-import socket
 import subprocess
 import sys
 import time
@@ -44,7 +43,8 @@ def _launcher(argv=None, env=None):
 
 
 def _this_computer():
-    return socket.gethostname().split(".")[0] or "computer"
+    from .computer import this_computer
+    return this_computer()
 
 
 # ---------------------------------------------------------------- pis
@@ -138,13 +138,53 @@ def add_usb_entry(port, alias=None):
 
 
 # ---------------------------------------------------------------- invite, remove
-def _owner_remote(pi, at=()):
+class _OverUsb:
+    """An owner's requests to the Pi plugged in here, over the link (identity.members,
+    identity.invite, identity.remove, identity.rename): they work before it has a network."""
+
+    def __init__(self, name, port):
+        self.name, self.port, self.role = name, port, "owner"
+
+    def call(self, op, args=None):
+        from ..host.control import call
+        return call("identity." + op, args, port=self.port)
+
+    def close(self):
+        pass
+
+
+def _over_usb(e, port=None):
+    """_OverUsb for this Pi if it's plugged in here, else None. Ends the command if it's
+    here but this computer isn't an owner (the network would say the same)."""
+    from ..host.control import DEFAULT_PORT, call
+    port = port or DEFAULT_PORT
+    try:
+        peer = call("peer", port=port)
+        if not peer.get("connected"):
+            return None
+        info = call("identity.info", port=port)
+    except SystemExit:
+        return None
+    if info.get("pub") != keyring.pub_of(e["code"]):
+        return None
+    role = (peer.get("link") or {}).get("role")
+    if role != "owner":
+        raise SystemExit("Only an owner of %s can do that (this computer is %s)"
+                         % (e["alias"], "a %s" % role if role else "not on its list"))
+    return _OverUsb(e["alias"], port)
+
+
+def _owner_remote(pi, at=(), port=None):
     from .remote import Remote
     e = keyring.lookup(pi, known=True)
+    if not at:
+        usb = _over_usb(e, port)
+        if usb:
+            return usb
     r = Remote(e, list(at)).open(quiet=True)
     if r.role != "owner":
         r.close()
-        raise SystemExit("Only an owner of %s can do that (this computer is a %s)" % (e["alias"], r.role))
+        raise SystemExit("Only an owner of %s can do that (this computer is a %s)" % (e["alias"], r.role or "user"))
     return r
 
 
@@ -166,7 +206,7 @@ def invite_command(a):
         raise SystemExit("Names: lowercase letters, digits and dashes, up to 32")
     role = "owner" if a.owner else "user"
     pi = _which_pi(a)
-    r = _owner_remote(pi, getattr(a, "at", None) or [])
+    r = _owner_remote(pi, getattr(a, "at", None) or [], getattr(a, "control_port", None))
     try:
         got = r.call("invite", {"name": name, "role": role})
     finally:
@@ -186,30 +226,32 @@ def remove_command(a):
         owned = [keyring.lookup(a.pi, known=True)]
     if not owned:
         raise SystemExit("This computer owns no Pi (audiolink pis)")
-    removed, failed = [], []
+    removed, refused, unreached = [], [], []
     for e in sorted(owned, key=lambda e: e["alias"]):
         try:
-            r = _owner_remote(e["alias"], getattr(a, "at", None) or [])
+            r = _owner_remote(e["alias"], getattr(a, "at", None) or [], getattr(a, "control_port", None))
         except SystemExit as why:
-            failed.append("%s: %s" % (e["alias"], why.code))
+            unreached.append("%s: %s" % (e["alias"], why.code))
             continue
         try:
             members = r.call("members")["members"]
             if any(m["name"] == a.name for m in members):
                 r.call("remove", {"name": a.name})
                 removed.append(e["alias"])
-        except SystemExit as why:
-            failed.append("%s: %s" % (e["alias"], why.code))
+        except SystemExit as why:                   # the Pi said no (e.g. its last owner)
+            refused.append("%s: %s" % (e["alias"], why.code))
         finally:
             r.close()
     if removed:
         print("%s: removed from %s" % (a.name, ", ".join(removed)))
-    elif not failed:
+    elif not refused and not unreached:
         print("%s isn't on any Pi this computer owns" % a.name)
     if removed:
         print("Its line in your hosts' authorized_keys, if any, is yours to remove")
-    if failed:
-        raise SystemExit("Couldn't reach (nothing changed there):\n  " + "\n  ".join(failed))
+    problems = refused + (["Couldn't reach (nothing changed there):"] + ["  " + u for u in unreached]
+                          if unreached else [])
+    if problems:
+        raise SystemExit("\n".join(problems))
 
 
 def forget_command(a):
