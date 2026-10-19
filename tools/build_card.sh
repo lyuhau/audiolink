@@ -33,8 +33,11 @@ python3 build_pyz.py
 # the card's path from the manifest line it prints, "... (out/card-X.manifest)".
 LOG=$(mktemp)
 trap 'rm -f "$LOG" "$LOG.status"' EXIT
-{ PYTHONUNBUFFERED=1 "$PLATFORM_PYTHON" "$PLATFORM/build_card.py" "$CONFIG" "$@"; echo $? > "$LOG.status"; } | tee "$LOG"
-[ "$(cat "$LOG.status")" = 0 ] || exit 1
+# set -e would end the group before the status is written: the platform's error, then
+# "cat: ...status: No such file", hid what went wrong
+{ status=0; PYTHONUNBUFFERED=1 "$PLATFORM_PYTHON" "$PLATFORM/build_card.py" "$CONFIG" "$@" || status=$?
+  echo $status > "$LOG.status"; } | tee "$LOG"
+[ "$(cat "$LOG.status" 2>/dev/null)" = 0 ] || exit 1
 MANIFEST=$(sed -n 's/.*manifest sha256 .*(\(.*\.manifest\))$/\1/p' "$LOG" | tail -n 1)
 [ -n "$MANIFEST" ] || { echo "can't find the card's manifest in build_card.py's output" >&2; exit 1; }
 SRC=$PLATFORM/${MANIFEST%.manifest}
