@@ -5,7 +5,8 @@ keep working after Downloads is cleaned up:
   Linux    ~/.local/share/audiolink, linked from ~/.local/bin/audiolink
   Windows  %LOCALAPPDATA%\\Programs\\audiolink (add it to PATH; a .pyz gets audiolink.cmd next to it)
            (%LOCALAPPDATA%\\audiolink is the cache folder: earlier versions installed there,
-           and replacing the install deleted the cache. setup moves such a copy out.)
+           and replacing the install deleted the cache. setup leaves such a copy and says so:
+           an autostart task or another Pi's ssh entry may still use it.)
 
 The release folder (PyInstaller) is copied whole; a .pyz is copied, with a small launcher
 script. macOS's quarantine flag is cleared on the copy. Running the installed copy (or
@@ -47,25 +48,14 @@ def _local(home, environ):
 OLD_WINDOWS = ("audiolink.exe", "_internal", "audiolink.pyz", "audiolink.cmd")   # ours, not the cache's
 
 
-def _move_out_old_windows_copy(home, environ, src, notes):
-    """An earlier install in the cache folder: remove its files (only those), unless it's
-    what's running now (Windows can't delete a running .exe; the next setup does)."""
+def _old_windows_copy_note(home, environ, notes):
+    """An earlier install in the cache folder: say so. Not deleted: an autostart task or
+    another Pi's ssh entry may still run it, and a running copy can't be deleted anyway."""
     old = _local(home, environ) / "audiolink"
-    if not (old / "audiolink.exe").exists() and not (old / "audiolink.pyz").exists():
-        return
-    if _same(src, old) or _same(src.parent, old):
-        notes.append("The old copy in %s is running; run the new one (%s) and setup removes the old"
-                     % (old, places("win32", home, environ)[0]))
-        return
-    for name in OLD_WINDOWS:
-        p = old / name
-        if p.is_dir():
-            shutil.rmtree(str(p), ignore_errors=True)
-        elif p.exists():
-            try:
-                p.unlink()
-            except OSError:
-                pass
+    there = [name for name in OLD_WINDOWS if (old / name).exists()]
+    if there:
+        notes.append("An earlier install is still in %s (%s); delete those once nothing uses them"
+                     % (old, ", ".join(there)))
 
 
 def running():
@@ -186,7 +176,7 @@ def install(runner, platform=sys.platform, home=None, environ=None, what=None, p
             _link(bindir / "audiolink", "#!/bin/sh\n%s\nexec %s \"$@\"\n"
                   % (MARK, " ".join(shlex.quote(x) for x in argv)), notes, target)
     if platform == "win32":
-        _move_out_old_windows_copy(Path(home or Path.home()), environ, src, notes)
+        _old_windows_copy_note(Path(home or Path.home()), environ, notes)
     if changed and platform == "darwin":
         runner.run(["xattr", "-dr", "com.apple.quarantine", str(dest)])    # not code-signed yet
     note = _path_note(bindir or dest, environ)
