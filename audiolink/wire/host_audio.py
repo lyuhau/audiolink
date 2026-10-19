@@ -13,6 +13,20 @@ log = logging.getLogger("audiolink")
 DEVICE_HINTS = ("audiopi", "playback inactive", "capture inactive", "uac2")
 
 
+OUT_FRAMES = 256               # macOS: PortAudio's output buffer, written a buffer at a time
+
+
+def host_buffer_frames(fmt, output):
+    """PortAudio's frames per buffer. On macOS its output latency follows it: a whole
+    chunk (10 ms) gave ~53 ms (96 kHz x8), 256 frames ~14 ms, about 40 ms less on every
+    round trip; written a buffer at a time, so the smaller ring doesn't run dry. 128
+    gained little more and dropped frames. Input stays a chunk: smaller lost data, and
+    its latency didn't change. Elsewhere (WASAPI's period, ALSA): a chunk, untested."""
+    if sys.platform == "darwin" and output:
+        return min(fmt.chunk_frames, OUT_FRAMES)
+    return fmt.chunk_frames
+
+
 def find_devices(out_name=None, in_name=None):
     """Pick the gadget's output and input devices, preferring WASAPI on Windows."""
     from . import portaudio
@@ -60,9 +74,9 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
         out_dev, in_dev = find_devices(out_name, in_name)
         fmt = device_format(out_dev, in_dev)
         # Input first: the gadget's capture side only carries data while the host streams.
-        inp = portaudio.Stream(in_dev, False, fmt.rate, fmt.channels, fmt.chunk_frames)
+        inp = portaudio.Stream(in_dev, False, fmt.rate, fmt.channels, host_buffer_frames(fmt, False))
         try:
-            out = portaudio.Stream(out_dev, True, fmt.rate, fmt.channels, fmt.chunk_frames)
+            out = portaudio.Stream(out_dev, True, fmt.rate, fmt.channels, host_buffer_frames(fmt, True))
         except Exception:
             inp.close()
             raise
@@ -90,13 +104,16 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
         # Neither thread blocks inside PortAudio: they wait for room/data here, so they
         # notice state["ok"] going false and exit before the streams are closed (closing
         # or re-initializing under a blocked read corrupts memory).
+        piece = host_buffer_frames(fmt, True)      # frames per write: PortAudio's buffer
+        piece_bytes = piece * fmt.frame_bytes
+
         def player():
             try:
                 while state["ok"]:
-                    if out.available() < fmt.chunk_frames:
-                        time.sleep(0.002)
+                    if out.available() < piece:
+                        time.sleep(0.001)
                         continue
-                    if not out.write(link.pull(fmt.chunk)):
+                    if not out.write(link.pull(piece_bytes)):
                         link.stats["out_underflows"] += 1
             except Exception as e:
                 state["err"] = e

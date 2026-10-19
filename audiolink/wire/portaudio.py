@@ -251,6 +251,8 @@ class Stream:
 
     def read(self, frames):
         """Blocks for `frames` frames. Returns (int16 little-endian bytes, overflowed)."""
+        if len(self.buf) < frames * 4 * self.channels:      # reads may be bigger than its buffer
+            self.buf = ctypes.create_string_buffer(frames * 4 * self.channels)
         err = _pa.Pa_ReadStream(self.handle, self.buf, frames)
         if err not in (0, paInputOverflowed):
             _check(err)

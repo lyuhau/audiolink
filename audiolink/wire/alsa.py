@@ -12,6 +12,7 @@ log = logging.getLogger("audiolink")
 RETRY = 0.5                     # s between restarts
 IDLE_RETRY = 2.0                # at most, for aplay while the host isn't streaming
 WAKE_CHECK = 0.1
+BUFFER_US, PERIOD_US = 20000, 5000      # ALSA's buffer and period (µs): what a byte waits behind
 
 
 class AlsaAudio:
@@ -52,7 +53,7 @@ class AlsaAudio:
     def _args(self):
         f = self.format
         return ["-D", self.device, "-f", "S16_LE", "-r", str(f.rate), "-c", str(f.channels),
-                "-t", "raw", "--buffer-time=40000", "--period-time=10000"]
+                "-t", "raw", "--buffer-time=%d" % BUFFER_US, "--period-time=%d" % PERIOD_US]
 
     def _spawn(self, gen, cmd, **kw):
         with self.lock:
