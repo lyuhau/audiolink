@@ -5,11 +5,8 @@ Reached like `connect`: the local network (--at, last address, mDNS, the setup
 network), then the relay (needs the connect code), then a DHT lookup. PI is a name
 from `audiolink pis`, a connect code, or (for a Pi this machine hasn't added) an address.
 """
-import base64
-import os
 import re
 import socket
-import struct
 import threading
 
 from .. import tls
@@ -17,101 +14,8 @@ from ..discovery.record import parse_code
 from ..services.endpoint import PORT, key_message, proof_for
 from ..ui import detail, done, step
 from . import keyring
+from .computer import Key
 from .pairing import Busy, OldPi, PiConn, busy, impostor, reach, too_old
-
-
-# ---------------------------------------------------------------- debug keys
-def _strings(blob, n):
-    out, i = [], 0
-    for _ in range(n):
-        size = struct.unpack(">I", blob[i:i + 4])[0]
-        out.append(blob[i + 4:i + 4 + size])
-        i += 4 + size
-    return out, blob[i:]
-
-
-def _agent_sign(pub, msg):
-    """Sign with ssh-agent (for passphrase-protected keys). -> signature or None."""
-    path = os.environ.get("SSH_AUTH_SOCK")
-    if not path or not hasattr(socket, "AF_UNIX"):
-        return None
-    blob = struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", 32) + pub
-    body = b"\x0d" + struct.pack(">I", len(blob)) + blob + struct.pack(">I", len(msg)) + msg + b"\0\0\0\0"
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(10)
-            s.connect(path)
-            s.sendall(struct.pack(">I", len(body)) + body)
-            head = s.recv(4)
-            size = struct.unpack(">I", head)[0]
-            reply = b""
-            while len(reply) < size:
-                data = s.recv(size - len(reply))
-                if not data:
-                    return None
-                reply += data
-    except (OSError, struct.error):
-        return None
-    if reply[:1] != b"\x0e":
-        return None
-    (sig_blob,), _ = _strings(reply[1:], 1)
-    (kind, sig), _ = _strings(sig_blob, 2)
-    return sig if kind == b"ssh-ed25519" and len(sig) == 64 else None
-
-
-class Key:
-    """An ed25519 key from an OpenSSH private key file (unencrypted: signed here;
-    passphrase-protected, or a .pub file: signed by ssh-agent)."""
-
-    def __init__(self, path):
-        try:
-            with open(os.path.expanduser(path)) as f:
-                text = f.read()
-        except OSError as e:
-            raise SystemExit("Can't read %s (%s)" % (path, e.strerror))
-        self.path, self.seed = path, None
-        if "BEGIN OPENSSH PRIVATE KEY" in text:
-            self._private(text)
-        else:
-            from ..services.access import parse_key
-            try:
-                self.pub = parse_key(text.splitlines()[0] if text.strip() else "")
-            except ValueError as e:
-                raise SystemExit("%s: %s" % (path, e))
-
-    def _private(self, text):
-        body = "".join(l for l in text.splitlines() if l and not l.startswith("-----"))
-        try:
-            blob = base64.b64decode(body)
-            if not blob.startswith(b"openssh-key-v1\0"):
-                raise ValueError
-            (cipher, _, _), rest = _strings(blob[15:], 3)
-            if struct.unpack(">I", rest[:4])[0] != 1:
-                raise ValueError("one key per file")
-            (pub_blob, priv), _ = _strings(rest[4:], 2)
-            (kind, pub), _ = _strings(pub_blob, 2)
-        except (ValueError, TypeError, struct.error):
-            raise SystemExit("%s: not an OpenSSH private key" % self.path)
-        if kind != b"ssh-ed25519":
-            raise SystemExit("%s: not an ed25519 key (make one: ssh-keygen -t ed25519)" % self.path)
-        self.pub = pub
-        if cipher == b"none":
-            try:
-                (kind2, pub2, secret), _ = _strings(priv[8:], 3)
-            except struct.error:
-                raise SystemExit("%s: damaged private key" % self.path)
-            if kind2 == b"ssh-ed25519" and pub2 == pub and secret and len(secret) == 64:
-                self.seed = secret[:32]
-
-    def sign(self, msg):
-        if self.seed:
-            from ..crypto import ed25519_sign
-            return ed25519_sign(self.seed, msg)
-        sig = _agent_sign(self.pub, msg)
-        if sig is None:
-            raise SystemExit("%s is passphrase-protected: add it to ssh-agent (ssh-add %s)"
-                             % (self.path, re.sub(r"\.pub$", "", self.path)))
-        return sig
 
 
 # ---------------------------------------------------------------- reaching a Pi

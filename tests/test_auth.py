@@ -36,8 +36,8 @@ class AuthMessage(unittest.TestCase):
             auth.auth_message(b"short", self.pi)
 
     def test_signed_through_key(self):
-        """client/remote.py's Key signs it, as the client will."""
-        from audiolink.client.remote import Key
+        """client/computer.py's Key signs it, as the client will."""
+        from audiolink.client.computer import Key
         k = Key.__new__(Key)
         k.seed, k.pub = self.seed, self.key
         sig = k.sign(auth.auth_message(self.nonce, self.pi))
