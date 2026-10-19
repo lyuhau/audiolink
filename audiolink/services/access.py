@@ -1,67 +1,51 @@
-"""Pi side: who may do what over the network, decided in one place.
+"""Pi side: who may do what, decided in one place (docs/protocol.md).
 
-Levels, low to high (each endpoint op names the one it needs):
-  public   anyone (hello, pair)
-  paired   proof with the read secret: using and managing the Pi, reading its logs
-  debug    root: a shell, updates; only while the debug switch allows it
-  host     the USB link (control requests and link streams): everything, never checked
+Roles, from the Pi's list (services/identity.py): a computer proves its key once per
+connection (endpoint `auth`) or link-up (`link.auth`), and from then on has that key's
+role:
+  user     through the Pi to whatever its current host exposes (`open`)
+  owner    everything: managing the Pi, its list, its logs, updates, the shell
+A request that needs no role (hello, auth, pair; over USB the host jobs) is NONE.
 
 Routes, from the connection's addresses (route_of; anything it can't place counts as
-the relay, the most restricted):
-  usb      the host, over the audio link
+the relay, the most restricted). They only narrow (context rules): over the relay, no
+Wi-Fi changes.
   setup    the setup network (open Wi-Fi)
   lan      the Wi-Fi network the Pi is on
   relay    through the relay (from RELAY_SOURCE)
 
-The debug switch (DebugService, "debug.set|status" from the host only) says how debug
-access is proven:
-  off      nobody (the default)
-  paired   the read secret, on any route
-  key      a signature by one of the keys the host gave (KEY_LABEL + op + nonce)
-  none     nothing; LAN only, the setup network only if the host said so, never the relay
-Every mode expires (DEFAULT_FOR, NONE_FOR). The host can ask for the switch to be kept
-across the Pi's restarts (state dir / debug.json); otherwise it's kept in RUN_DIR
-(tmpfs: gone when the Pi restarts, but not when audiolink does, after a network
-update or a crash, so whoever was updating can still check, revert or open a shell).
-A damaged file reads as off.
+Over USB, LinkAccess holds the host's role: the host jobs (audio, link.auth,
+identity.info, identity.claim, `expose` in the HELLO) need none, everything else an
+owner's key, and so do the host's streams to the Pi's proxy and shell.
 """
 import logging
 import os
-import re
-import threading
-import time
-from pathlib import Path
 
-from ..paths import load_json, load_state, save_json, save_state
-from ..session import CLOCK_SANE
+from .. import auth
 from . import Service
 from .setup_ap import AP_ADDR
 
 log = logging.getLogger("audiolink")
 
-PUBLIC, PAIRED, DEBUG = "public", "paired", "debug"
-ROUTES = ("usb", "setup", "lan", "relay")
-MODES = ("off", "paired", "key", "none")
+NONE, USER, OWNER = None, "user", "owner"
+ROLES = (USER, OWNER)
+RANK = {NONE: 0, USER: 1, OWNER: 2}
+ROUTES = ("setup", "lan", "relay")
 RELAY_SOURCE = "127.0.0.2"          # where relayed connections to local services come from
-KEY_LABEL = b"audiolink-debug-v1\0"
-DEFAULT_FOR = 24 * 3600
-NONE_FOR = 3600
-MAX_FOR = 7 * 24 * 3600
-CHECK_EVERY = 5
-RESAVE = 600                        # s between saves of a kept switch's time left
-RUN_DIR = "/run/audiolink"          # tmpfs: survives audiolink restarting, not the Pi
-BOOT_ID = "/proc/sys/kernel/random/boot_id"
+HOST_JOBS = ("link.auth", "identity.info", "identity.claim")    # and audio.*
 
 
-def boot_id():
-    """This boot's id (Linux), or None: monotonic deadlines only mean anything within one."""
-    try:
-        with open(BOOT_ID) as f:
-            return f.read().strip() or None
-    except OSError:
-        return None
+class Refused(Exception):
+    """A request refused for a reason the asker can act on: `code` goes in the reply."""
 
-NOT_PAIRED = ("not_paired", "Not added to this Pi (run: audiolink add)")
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def allows(have, need):
+    """Does role `have` cover what `need` asks for?"""
+    return RANK.get(have, 0) >= RANK.get(need, 0)
 
 
 def route_of(local, remote, wifi_ip=None):
@@ -75,269 +59,86 @@ def route_of(local, remote, wifi_ip=None):
     return "relay"                  # fail closed
 
 
-def decide(need, route, proven, switch, now):
-    """None if allowed, else (code, message).
-    need: PUBLIC | PAIRED | DEBUG; route: one of ROUTES; proven: what the request proved
-    ({"paired", "key"}); switch: {"mode", "setup", "deadline"} (monotonic deadline)."""
-    if route == "usb" or need == PUBLIC:
-        return None
-    if need == PAIRED:
-        return None if "paired" in proven else NOT_PAIRED
-    if need != DEBUG:
-        return ("refused", "Refused")
-    mode = switch.get("mode", "off")
-    if mode == "off" or now >= switch.get("deadline", 0):
-        return ("debug_off", "Debug access is off (on its host: audiolink debug on)")
-    if mode == "paired":
-        return None if "paired" in proven else NOT_PAIRED
-    if mode == "key":
-        return None if "key" in proven else ("debug_key", "Needs a debug key this Pi accepts (--key FILE)")
-    if mode == "none":
-        if route == "lan" or (route == "setup" and switch.get("setup")):
-            return None
-        return ("debug_route", "Debug access without proof isn't open %s" %
-                ("through the relay" if route == "relay" else "on the setup network"))
-    return ("debug_off", "Debug access is off")
-
-
-def narrows(old, new):
-    """Might someone the old switch let in be shut out by the new one? (Then what they
-    opened, network shells, is closed.) A longer time or another key doesn't."""
-    if old.get("mode", "off") == "off":
-        return False
-    if new.get("mode", "off") != old["mode"]:
-        return True
-    return bool(set(old.get("keys", [])) - set(new.get("keys", []))) or \
-        (bool(old.get("setup")) and not new.get("setup"))
-
-
-def routes_for(switch):
-    """The network routes debug access is open on (for status)."""
-    mode = switch.get("mode", "off")
-    if mode in ("paired", "key"):
-        return ["lan", "setup", "relay"]
-    if mode == "none":
-        return ["lan", "setup"] if switch.get("setup") else ["lan"]
-    return []
-
-
-def parse_duration(spec):
-    """'90s', '30m', '2h', '1d' -> seconds. Raises ValueError."""
-    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd])\s*", str(spec).lower())
-    if not m:
-        raise ValueError("durations look like 30m, 2h or 1d")
-    s = float(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
-    if not 0 < s <= MAX_FOR:
-        raise ValueError("between a second and %d days" % (MAX_FOR // 86400))
-    return int(s)
+def not_owner(identity, who="this computer"):
+    """The refusal for a request only an owner may make. who: the asker as the list
+    names it, if it's on the list."""
+    name = identity.pi_name()
+    if not identity.claimed():
+        return Refused("not_owner", "%s has no owner yet: claim it with audiolink setup on the computer "
+                                    "it's plugged into" % name)
+    return Refused("not_owner", "%s isn't an owner of %s: on an owner computer, audiolink invite %s --owner"
+                   % (who, name, "NAME" if who == "this computer" else who))
 
 
 def parse_key(text):
-    """An ed25519 public key: 'ssh-ed25519 AAAA... [comment]' or 64 hex digits -> 32 bytes."""
-    import base64
-    import struct
-    text = text.strip()
-    if re.fullmatch(r"[0-9a-fA-F]{64}", text):
-        return bytes.fromhex(text)
-    parts = text.split()
-    if len(parts) >= 2 and parts[0] == "ssh-ed25519":
-        try:
-            blob = base64.b64decode(parts[1])
-            n = struct.unpack(">I", blob[:4])[0]
-            kind = blob[4:4 + n]
-            m = struct.unpack(">I", blob[4 + n:8 + n])[0]
-            key = blob[8 + n:8 + n + m]
-        except (ValueError, struct.error):
-            raise ValueError("damaged ssh-ed25519 key")
-        if kind == b"ssh-ed25519" and len(key) == 32:
-            return key
-    raise ValueError("not an ed25519 public key (ssh-ed25519 AAAA... or 64 hex digits)")
+    """64 hex digits (or the 32 bytes themselves) -> 32 bytes. Raises ValueError."""
+    if isinstance(text, bytes) and len(text) == 32:
+        return text
+    try:
+        key = bytes.fromhex(str(text))
+    except ValueError:
+        key = b""
+    if len(key) != 32:
+        raise ValueError("a computer key is 64 hex digits")
+    return key
 
 
-class DebugService(Service):
-    """The debug switch. Only the host changes it (link requests)."""
-    name = "debug"
-    caps = ("debug",)
+class LinkAccess(Service):
+    """The USB link's role: link.auth proves the host's key against a nonce fresh at
+    every link-up (sent in the HELLO). The role is looked up on every request, so a key
+    taken off the list loses it at once; a successful identity.claim makes the
+    claimer's key the link's."""
+    name = "link"
+    caps = ("roles",)
 
-    def __init__(self, state_dir=None, run_dir=None):
-        self.path = Path(state_dir) / "debug.json" if state_dir else None
-        self.run_file = Path(run_dir) / "debug.json" if run_dir else None
-        self.lock = threading.Lock()
-        self.listeners = []             # fn(reason) when debug access ends or narrows
-        self.state = {"mode": "off"}
-        self.shells = lambda: 0         # () -> open network shells (services/shell.py)
-        self.saved = time.monotonic()
-        self._load()
+    def __init__(self, identity):
+        self.identity = identity
+        self.nonce = os.urandom(auth.NONCE_BYTES)
+        self.key = None                         # proven on this link-up
+        identity.on_claim.append(self._claimed)
 
-    # ---- for the endpoint and the shell
-    def snapshot(self):
-        with self.lock:
-            return dict(self.state)
+    def role(self):
+        return self.identity.role_of(self.key) if self.key else NONE
 
-    def on_end(self, fn):
-        self.listeners.append(fn)
+    def on_up(self):
+        self.nonce = os.urandom(auth.NONCE_BYTES)
+        self.key = None
 
-    def keys(self):
-        return [bytes.fromhex(k) for k in self.snapshot().get("keys", [])]
+    def on_down(self):
+        self.key = None
 
-    # ---- requests from the host (the link: trusted)
+    def hello(self):
+        return {"nonce": self.nonce.hex()}
+
     def handle(self, op, args):
-        if op == "status":
-            return self.status()
-        if op == "set":
-            return self.set(args)
+        if op == "auth":
+            key = parse_key(args.get("key"))
+            try:
+                sig = bytes.fromhex(str(args.get("sig")))
+            except ValueError:
+                sig = b""
+            if not auth.verify(key, self.nonce, self.identity.public(), sig):
+                log.warning("link: a key proof that doesn't check out (%s...)", key.hex()[:8])
+                raise ValueError("that key's signature doesn't check out (link.auth)")
+            self.key = key
+            role = self.role()
+            log.info("link: host is %s", "%s (%s)" % (self.identity.member(key)["name"], role) if role
+                     else "not on the list (%s...)" % key.hex()[:8])
+            return {"role": role}
         return super().handle(op, args)
 
-    def status(self):
-        s = self.snapshot()
-        mode = s.get("mode", "off")
-        left = max(0, int(s.get("deadline", 0) - time.monotonic())) if mode != "off" else 0
-        return {"mode": mode, "routes": routes_for(s), "expires_in": left, "keys": len(s.get("keys", [])),
-                "setup": bool(s.get("setup")), "persist": bool(s.get("persist")), "shells": self.shells()}
+    def _claimed(self, key):
+        self.key = key
 
-    def set(self, args):
-        mode = args.get("mode", "off")
-        if mode not in MODES:
-            raise ValueError("debug modes: %s" % ", ".join(MODES))
-        if mode == "off":
-            self.off("turned off by the host")
-            return self.status()
-        keys = [parse_key(k).hex() for k in args.get("keys") or []]
-        if mode == "key" and not keys:
-            raise ValueError("key mode needs at least one public key")
-        secs = int(args.get("for") or (NONE_FOR if mode == "none" else DEFAULT_FOR))
-        if not 0 < secs <= MAX_FOR:
-            raise ValueError("between a second and %d days" % (MAX_FOR // 86400))
-        state = {"mode": mode, "keys": keys if mode == "key" else [], "setup": bool(args.get("setup")),
-                 "for": secs, "deadline": time.monotonic() + secs, "persist": bool(args.get("persist"))}
-        with self.lock:
-            was, self.state = self.state, state
-        self._save(state)
-        log.info("debug: on (%s%s) for %ds%s", mode, ", setup network too" if state["setup"] else "",
-                 secs, ", kept across restarts" if state["persist"] else "")
-        if narrows(was, state):
-            for fn in self.listeners:
-                fn("debug access changed")
-        return self.status()
-
-    def off(self, why):
-        with self.lock:
-            was = self.state.get("mode", "off")
-            self.state = {"mode": "off"}
-        self._save(self.state)
-        if was != "off":
-            log.info("debug: off (%s)", why)
-        for fn in self.listeners:
-            fn(why)
-
-    # ---- expiry
-    def run(self):
-        threading.Thread(target=self._loop, name="debug", daemon=True).start()
-
-    def _loop(self):
-        while True:
-            time.sleep(CHECK_EVERY)
-            self.check()
-
-    def check(self):
-        s = self.snapshot()
-        if s.get("mode", "off") == "off":
+    def check(self, op):
+        """Session gate: raises Refused unless the link's role may make this request."""
+        if op in HOST_JOBS or op.startswith("audio."):
             return
-        now = time.monotonic()
-        if now >= s.get("deadline", 0):
-            self.off("expired")
-        elif s.get("persist") and now - self.saved >= RESAVE:
-            self._save(s)               # so a restart without a clock can't start the time over
+        if op == "identity.restore" and not self.identity.claimed():
+            return                              # an unclaimed Pi: as good as claiming
+        if self.role() != OWNER:
+            raise not_owner(self.identity)
 
-    # ---- storage (only with persist; the wall clock may not be known at boot)
-    def _now(self):
-        session = getattr(self, "session", None)
-        return session.now() if session else time.time()
-
-    def _save(self, state):
-        self._save_run(state)
-        if not self.path:
-            return
-        if not state.get("persist"):
-            if not self._stored():
-                return
-            data = {"mode": "off"}
-        else:
-            now = self._now()
-            left = state["deadline"] - time.monotonic()
-            data = {k: state[k] for k in ("mode", "keys", "setup", "for")}
-            data.update(persist=True, left=int(left), until=int(now + left) if now > CLOCK_SANE else None)
-        try:
-            save_state(self.path, data)
-            self.saved = time.monotonic()
-        except (OSError, ValueError) as e:
-            log.warning("debug: couldn't save the switch: %s", e)
-
-    def _save_run(self, state):
-        """A switch that isn't kept on the card is kept in RUN_DIR, until it ends."""
-        if not self.run_file:
-            return
-        boot = boot_id()
-        try:
-            if state.get("mode", "off") != "off" and not state.get("persist") and boot:
-                data = {k: state[k] for k in ("mode", "keys", "setup", "for", "deadline")}
-                save_json(self.run_file, dict(data, boot=boot))
-            else:
-                os.remove(str(self.run_file))
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError) as e:
-            log.warning("debug: couldn't keep the switch in %s: %s", self.run_file.parent, e)
-
-    def _stored(self):
-        try:
-            return (load_state(self.path) or {}).get("mode", "off") != "off"
-        except Exception:
-            return True
-
-    def _load(self):
-        self._load_card()
-        if self.state.get("mode", "off") == "off":
-            self._load_run()
-
-    def _load_run(self):
-        if not self.run_file:
-            return
-        try:
-            d = load_json(self.run_file) or {}
-            mode = d.get("mode", "off")
-            if mode == "off" or mode not in MODES or not d.get("boot") or d["boot"] != boot_id():
-                return
-            secs, deadline = int(d["for"]), float(d["deadline"])
-            left = deadline - time.monotonic()
-            keys = [parse_key(k).hex() for k in d.get("keys") or []]
-            if not 0 < left <= secs <= MAX_FOR or (mode == "key" and not keys):
-                return
-            self.state = {"mode": mode, "keys": keys if mode == "key" else [], "setup": bool(d.get("setup")),
-                          "for": secs, "deadline": deadline, "persist": False}
-            log.info("debug: on (%s) from before audiolink restarted, %ds left", mode, left)
-        except Exception as e:          # damaged: off
-            log.warning("debug: switch in %s unreadable (%s); off", self.run_file.parent, e)
-            self.state = {"mode": "off"}
-
-    def _load_card(self):
-        if not self.path:
-            return
-        try:
-            d = load_state(self.path) or {}
-            mode = d.get("mode", "off")
-            if mode == "off" or mode not in MODES or not d.get("persist"):
-                return
-            secs = int(d["for"])
-            now = time.time()
-            # Clock known: what's left by it; unknown (no NTP yet): at most what was left.
-            left = min(secs, int(d["until"] - now) if d.get("until") and now > CLOCK_SANE else int(d["left"]))
-            keys = [parse_key(k).hex() for k in d.get("keys") or []]
-            if left <= 0 or not 0 < secs <= MAX_FOR or (mode == "key" and not keys):
-                return
-            self.state = {"mode": mode, "keys": keys if mode == "key" else [], "setup": bool(d.get("setup")),
-                          "for": secs, "deadline": time.monotonic() + left, "persist": True}
-            log.info("debug: on (%s) from the saved switch, %ds left", mode, left)
-        except Exception as e:          # damaged: off
-            log.warning("debug: saved switch unreadable (%s); off", e)
-            self.state = {"mode": "off"}
+    def may_open(self):
+        """The host's streams to the Pi's proxy and shell."""
+        return self.role() == OWNER

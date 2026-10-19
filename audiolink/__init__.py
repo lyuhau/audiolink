@@ -5,4 +5,4 @@ PortAudio library, loaded with ctypes on the host side.
 """
 
 __version__ = "0.12.0"
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3

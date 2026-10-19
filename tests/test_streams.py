@@ -9,7 +9,7 @@ import unittest
 
 from unittest import mock
 
-from audiolink.services import setup_ap, streams
+from audiolink.services import streams
 from audiolink.services.streams import WINDOW, Streams
 from audiolink.session import Session
 
@@ -135,12 +135,6 @@ class Listening(Through, unittest.TestCase):
                 return c.recv(10) == b""
             except ConnectionResetError:
                 return True
-
-    def test_not_from_the_setup_network_unless_asked(self):
-        with mock.patch.object(setup_ap, "AP_ADDR", "127.0.0.1"):   # loopback stands in for it
-            self.assertTrue(self.refused())
-            self.pi_streams.setup = True
-            self.assertTrue(self.echoes())
 
     def test_connections_per_listener_are_capped(self):
         with mock.patch.object(streams, "PER_LISTENER", 1):

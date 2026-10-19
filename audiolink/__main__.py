@@ -247,9 +247,10 @@ def build_parser():
         peer = "the Pi" if name == "host" else "the host"
         dflt = None if name == "host" else []       # host: None = the saved setting (host/config.py)
         p.add_argument("--forward", action="append", default=dflt, metavar="LPORT:[HOST:]PORT", type=argtypes.forward,
-                       help="listen on LPORT here%s; each connection goes to HOST:PORT as seen from %s "
-                            "(HOST default: %s itself)" % (" (this computer only)" if name == "host" else "",
-                                                           peer, peer))
+                       help=("listen on LPORT here (this computer only); each connection goes to HOST:PORT as "
+                             "seen from the Pi (HOST default: the Pi itself)") if name == "host" else
+                            ("computers on the Pi's list can open port LPORT (audiolink connect); each "
+                             "connection goes to HOST:PORT as seen from the host (HOST default: the host itself)"))
         p.add_argument("--allow", action="append", default=dflt, metavar="[HOST:]PORT", type=argtypes.allow,
                        help="let %s open connections to HOST:PORT from here (HOST default: 127.0.0.1); "
                             "anything else is refused" % peer)
@@ -287,7 +288,8 @@ def build_parser():
     roles["pi"].add_argument("--expose-ports", default="1024-65535", metavar="LO-HI",
                              help="ports the host may ask the Pi to expose")
     roles["pi"].add_argument("--expose-setup", action="store_true",
-                             help="exposed and forwarded ports take connections from the setup network too")
+                             help="ignored: exposed ports are reached through the endpoint, with a key, on "
+                                  "every network (older card settings may still pass it)")
     for p in sub.choices.values():       # every command: -v shows the technical details
         if not any("--verbose" in act.option_strings for act in p._actions):
             p.add_argument("-v", "--verbose", action="store_true", help="show technical details too")
@@ -387,9 +389,9 @@ def main(argv=None):
 
 
 def run_pi(a, allow, port, gate):
-    """The Pi: identity, Wi-Fi management, the browse-as-the-Pi proxy, discovery, streams; ALSA audio
-    and its format."""
-    from .services.discovery import DiscoveryService
+    """The Pi: identity and its list, Wi-Fi management, the browse-as-the-Pi proxy, the
+    endpoint (streams, invites, remote management), the relay; ALSA audio and its format."""
+    from .services.access import LinkAccess
     from .services.identity import IdentityService
     from .services.pairing import PairingService
     from .services.endpoint import Endpoint
@@ -400,6 +402,7 @@ def run_pi(a, allow, port, gate):
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
     from .services.audio_format import AudioFormatService
+    from .session import CLOCK_SANE
     from .wire.alsa import AlsaAudio
     from .wire.gadget import Gadget
     radio = Radio()                     # the one owner of the Wi-Fi chip
@@ -407,23 +410,43 @@ def run_pi(a, allow, port, gate):
     proxy = ProxyService(on_request=wifi.note_demand)
     presence = Presence(wifi.ip)
     from .services.shell import PORT as SHELL_PORT, NetworkShells, ShellServer
-    streams = Streams("pi", allow=allow + ["%s:%d" % proxy.target, "127.0.0.1:%d" % SHELL_PORT],
-                      expose_ports=a.expose_ports, setup=a.expose_setup)
     identity = IdentityService(a.state_dir)
-    from .services.access import RUN_DIR, DebugService
-    debug = DebugService(a.state_dir, run_dir=RUN_DIR)
-    endpoint = Endpoint(identity, presence=presence, debug=debug)
+    link = LinkAccess(identity)
+    own = ["%s:%d" % proxy.target, "127.0.0.1:%d" % SHELL_PORT]        # the host's, with an owner's key
+    streams = Streams("pi", allow=allow + own, expose_ports=a.expose_ports, owner_only=own, may_open=link.may_open)
+
+    def record():
+        """Where the Pi is now, for a computer that proved its key (and one that just paired)."""
+        conn, now = wifi.connection(), session.now()
+        return {"name": identity.pi_name(), "ts": int(now) if now > CLOCK_SANE else None,
+                "lan": [conn["ip"]] if conn["ip"] else [], "ssid": conn["ssid"], "ports": streams.ports()}
+    endpoint = Endpoint(identity, presence=presence, record=record)
+    streams.serve_endpoint(endpoint)
+    PairingService(identity, endpoint)
     setup_ap = SetupApService(wifi, identity, presence, radio)
-    discovery = DiscoveryService(identity, wifi, streams)
     from .services.button import ResetPins
     from .services.logs import LogsService
     from .services.update import UpdateService
     from .services.relay import RelayAgent
-    relay = RelayAgent(identity, wifi, streams, [] if a.relay == "off" else [a.relay])
+    relay = RelayAgent(identity, wifi, [] if a.relay == "off" else [a.relay])
     update = UpdateService(endpoint=endpoint)
-    session = Session("pi", [streams, wifi, proxy, identity, discovery, PairingService(identity, endpoint, discovery.record_now),
-                             setup_ap, WifiRemoteService(wifi, setup_ap, endpoint, discovery, radio), relay,
-                             LogsService(endpoint=endpoint), update, debug, NetworkShells(endpoint, debug, identity)])
+
+    def revert():
+        update.handle("revert", {"restart": True})     # the pins always restart
+
+    def forget_everything():
+        """A new Pi: new key, empty list, no Wi-Fi networks (the pins, an owner's reset)."""
+        identity.start_over()
+        wifi.forget_all()
+
+    def reset():                                        # an owner's: keeps the code it runs
+        forget_everything()
+        update.restart()
+    identity.serve(endpoint, reset)
+    session = Session("pi", [streams, wifi, proxy, identity, link, setup_ap,
+                             WifiRemoteService(wifi, setup_ap, endpoint, radio), relay,
+                             LogsService(endpoint=endpoint), update, NetworkShells(endpoint)])
+    session.gate = link.check
     audio = AlsaAudio(session.link, a.device)
     audio.start()
     formats = AudioFormatService(audio, Gadget())
@@ -431,22 +454,16 @@ def run_pi(a, allow, port, gate):
     from .services.usbnet import UsbNetWatch
     UsbNetWatch(formats.represent).run()
     for spec in a.forward:
-        streams.forward(*parse_forward(spec))
+        streams.serve(*parse_forward(spec))
     setup_ap.run()
     relay.run()
-    debug.run()
     try:
         ShellServer().run()
     except OSError as e:
         log.warning("shell: can't listen (%s)", e)
 
-    def revert():
-        debug.off("reset pins")
-        update.handle("revert", {"restart": True})     # the pins always restart
-
     def start_over():
-        identity.start_over()
-        wifi.forget_all()
+        forget_everything()
         revert()
     ResetPins(revert, start_over).run()
     return session, streams

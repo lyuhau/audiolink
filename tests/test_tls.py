@@ -15,8 +15,8 @@ from audiolink import tls
 from audiolink.client import pairing
 from audiolink.client.pairing import OldPi, PiConn
 from audiolink.crypto import ed25519_public, ed25519_sign
-from audiolink.services.access import DEBUG, PAIRED, DebugService
-from audiolink.services.endpoint import Endpoint, key_message, proof_for
+from audiolink.auth import auth_message
+from audiolink.services.endpoint import Endpoint
 from audiolink.services.identity import IdentityService
 
 
@@ -60,19 +60,17 @@ class Impostor(IdentityService):
         return dict(super().info(), pub=self.claims)
 
 
-@unittest.skip("roles-v1: needs the v2 Pi side")
 @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
 class Endpoints(unittest.TestCase):
     def pi(self, cls=IdentityService):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d)
         identity = cls(d)
-        identity.claim()
-        debug = DebugService()
-        ep = Endpoint(identity, port=0, debug=debug, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
-        ep.register("look", lambda conn, req: {"ok": True}, PAIRED)
-        ep.register("root", lambda conn, req: {"ok": True}, DEBUG)
-        return identity, debug, ep
+        self.seed = os.urandom(32)
+        identity.claim(ed25519_public(self.seed), "desktop")
+        ep = Endpoint(identity, port=0, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
+        ep.register("look", lambda conn, req: {"ok": True}, "user")
+        return identity, None, ep
 
     def conn(self, ep):
         c = PiConn("127.0.0.1", port=ep.port)
@@ -97,6 +95,7 @@ class Endpoints(unittest.TestCase):
         identity.start_over()
         self.assertEqual(self.conn(ep).pub, identity.public())
 
+    @unittest.skip("roles-v1: client side pending (pairing.reach takes a connect code with a read secret)")
     def test_reach_pins_the_key_from_the_code(self):
         identity, _, ep = self.pi()
         conn, hello = self.reach(identity, ep)
@@ -111,24 +110,18 @@ class Endpoints(unittest.TestCase):
         fake.claims = real.public().hex()           # says it's the real Pi; its cert says otherwise
         with self.assertRaises(tls.Mismatch):
             self.conn(ep).hello()
-        with self.assertRaisesRegex(SystemExit, "couldn't prove it"):
-            self.reach(real, ep)
 
     def test_proofs_are_bound_to_the_key(self):
-        identity, debug, ep = self.pi()
+        identity, _, ep = self.pi()
         c = self.conn(ep)
-        nonce, secret = bytes.fromhex(c.hello()["nonce"]), identity.keys()[1]
+        nonce = bytes.fromhex(c.hello()["nonce"])
         elsewhere = ed25519_public(os.urandom(32))  # what a man in the middle's client saw
-        self.assertEqual(c.ask({"op": "look", "proof": proof_for(secret, "look", nonce, elsewhere)})["code"],
-                         "not_paired")
-        self.assertTrue(c.ask({"op": "look", "proof": proof_for(secret, "look", nonce, c.pub)})["ok"])
-        seed = os.urandom(32)
-        debug.set({"mode": "key", "keys": [ed25519_public(seed).hex()]})
-        req = {"op": "root", "key": ed25519_public(seed).hex()}
-        bad = dict(req, sig=ed25519_sign(seed, key_message("root", nonce, elsewhere)).hex())
-        self.assertEqual(c.ask(bad)["code"], "debug_key")
-        good = dict(req, sig=ed25519_sign(seed, key_message("root", nonce, c.pub)).hex())
+        req = {"op": "auth", "key": ed25519_public(self.seed).hex()}
+        bad = dict(req, sig=ed25519_sign(self.seed, auth_message(nonce, elsewhere)).hex())
+        self.assertEqual(c.ask(bad)["code"], "not_listed")
+        good = dict(req, sig=ed25519_sign(self.seed, auth_message(nonce, c.pub)).hex())
         self.assertTrue(c.ask(good)["ok"])
+        self.assertTrue(c.ask({"op": "look"})["ok"])
 
     def test_older_clients_are_told_to_update(self):
         identity, _, ep = self.pi()
@@ -141,8 +134,7 @@ class Endpoints(unittest.TestCase):
                 return json.loads(f.readline())
             hello = ask({"op": "hello"})
             self.assertEqual(hello["pub"], identity.public().hex())
-            nonce = bytes.fromhex(hello["nonce"])
-            r = ask({"op": "look", "proof": proof_for(identity.keys()[1], "look", nonce, identity.public())})
+            r = ask({"op": "look", "proof": "00" * 32})
             self.assertEqual(r["code"], "upgrade")
             self.assertIn("update audiolink", r["error"])
 

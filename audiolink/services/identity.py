@@ -1,31 +1,38 @@
-"""Pi side: the Pi's own identity, created the first time audiolink runs on it.
+"""Pi side: the Pi's own identity and its list, created the first time audiolink runs on it.
 
 identity.json (in the Pi's state directory):
-  seed, secret   signing key and read secret (the "connect code" is pub + secret)
-  name           advertised name; default adjective-noun from the board serial
-  claimed        False until the first machine adds it ("first to claim owns it")
-  discoverable   publish the discovery record on the DHT
+  seed      the Pi's ed25519 key (relay registration, the TLS certificate)
+  name      advertised name; default adjective-noun from the board serial
+  members   the Pi's list: [{"key": hex32, "name", "role": "user"|"owner", "added"}]
+"Claimed" means an owner is on the list. The first owner is the host that claims the
+Pi over USB (identity.claim, only while there's no owner: physical presence); the rest
+come by invites (services/pairing.py). The last owner can't be removed: the reset pins
+(or `reset`) start over instead.
 
-Requests arrive over the audio link, i.e. from the machine the Pi is physically
-plugged into, so they're trusted. "rotate_secret" is revocation: a new read secret
-(same key, still claimed), so every machine holding the old code has to pair again. The host that added the Pi keeps a copy ("custody")
-and restores it whenever the Pi comes up with a fresh identity (host/identity.py):
-after every reboot if the state directory is in RAM (no SD card), and once when a
-Pi first gets a card. A restore never replaces an established identity on a card.
+An identity.json from before the list (a read secret, "claimed", "discoverable") keeps
+its key and name and comes up unclaimed, to be claimed over USB again.
+
+The host that added the Pi may keep a copy ("custody") and restore it whenever the Pi
+comes up with a fresh identity (host/identity.py): after every reboot if the state
+directory is in RAM (no SD card), and once when a Pi first gets a card. A restore
+never replaces an established identity on a card.
 """
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 from ..crypto import ed25519_public
-from ..discovery.record import code_for, new_identity
 from ..names import NAME_RE, name_for
 from ..paths import is_persistent, load_state, save_state
 from . import Service
+from .access import NONE, OWNER, ROLES, USER, Refused, not_owner, parse_key
 
 log = logging.getLogger("audiolink")
 
+OLD_FIELDS = ("secret", "claimed", "discoverable")
+MAX_NAME = 64
 
 
 def board_serial():
@@ -43,27 +50,64 @@ def board_serial():
         return None
 
 
+def member_name(text):
+    """A computer's name on the list (a hostname, or what an owner typed): trimmed, no
+    control characters. Raises ValueError."""
+    name = " ".join(str(text or "").split())
+    if not name or len(name) > MAX_NAME or not name.isprintable():
+        raise ValueError("a computer's name is 1-%d printable characters" % MAX_NAME)
+    return name
+
+
+def clean_members(members):
+    """Entries as stored, dropping any that aren't well formed (a damaged or foreign copy)."""
+    out, seen = [], set()
+    for m in members if isinstance(members, list) else []:
+        try:
+            key = parse_key(m["key"]).hex()
+            entry = {"key": key, "name": member_name(m["name"]), "role": m["role"], "added": int(m.get("added") or 0)}
+        except (KeyError, TypeError, ValueError):
+            continue
+        if entry["role"] in ROLES and key not in seen:
+            seen.add(key)
+            out.append(entry)
+    return out
+
+
 class IdentityService(Service):
     name = "identity"
-    caps = ("identity", "rotate_secret")
+    caps = ("identity", "members")
 
     def __init__(self, state_dir):
         self.path = Path(state_dir) / "identity.json"
         self.persistent = is_persistent(state_dir)
         self.serial = board_serial() or os.urandom(8).hex()
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()       # listeners may look things up
         self.listeners = []
+        self.on_claim = []                  # fn(key) after a claim (services/access.py LinkAccess)
+        self.inviter = None                 # (name, role) -> {"code", "expires_in"} (services/pairing.py)
         self.data = self._load()
         self.fresh = not self.data          # created this run, nothing has happened to it yet
         if not self.data:
-            self.data = dict(new_identity(), name=name_for(self.serial), claimed=False, discoverable=True)
+            self.data = self._new()
             self._save()
             log.info("identity: new identity, name %s%s", self.data["name"],
                      "" if self.persistent else " (in RAM: lost at reboot unless a host keeps custody)")
 
+    def _new(self):
+        return {"seed": os.urandom(32).hex(), "name": name_for(self.serial), "members": []}
+
     # ---- storage
     def _load(self):
-        return load_state(self.path)
+        data = load_state(self.path)
+        if data and any(k in data for k in OLD_FIELDS):
+            data = {"seed": data["seed"], "name": data["name"], "members": clean_members(data.get("members"))}
+            save_state(self.path, data)
+            log.info("identity: from an older audiolink: kept the key and name %s; no owner until a host "
+                     "claims it over USB", data["name"])
+        elif data:
+            data["members"] = clean_members(data.get("members"))
+        return data
 
     def _save(self):
         save_state(self.path, self.data)
@@ -78,36 +122,35 @@ class IdentityService(Service):
 
     # ---- for other services
     def subscribe(self, fn):
-        """fn() runs whenever the identity, name or flags change."""
+        """fn() runs whenever the key, the name or the list change."""
         self.listeners.append(fn)
 
-    def keys(self):
-        return bytes.fromhex(self.data["seed"]), bytes.fromhex(self.data["secret"])
+    def seed(self):
+        return bytes.fromhex(self.data["seed"])
 
     def pi_name(self):
         return self.data["name"]
 
-    def claimed(self):
-        return self.data["claimed"]
-
-    def discoverable(self):
-        return self.data["discoverable"]
-
-    def code(self):
-        """The connect code (public key + read secret) that paired machines keep."""
-        return code_for(self.data)
-
-    def claim(self):
-        """Mark the Pi as claimed (its first pairing). Returns whether it was unclaimed."""
-        return self.handle("claim", {})["first"]
-
-    def start_over(self):
-        """A new identity under the board's default name, unclaimed (the reset pins):
-        codes given out stop working, and a host's custody copy isn't put back."""
+    def members(self):
         with self.lock:
-            self.data = dict(new_identity(), name=name_for(self.serial), claimed=False, discoverable=True)
-            self._changed()
-        log.info("identity: started over as %s", self.data["name"])
+            return [dict(m) for m in self.data["members"]]
+
+    def member(self, key):
+        """The list's entry for this key (32 bytes), or None."""
+        hexkey = key.hex()
+        with self.lock:
+            return next((dict(m) for m in self.data["members"] if m["key"] == hexkey), None)
+
+    def role_of(self, key):
+        m = self.member(key) if key else None
+        return m["role"] if m else NONE
+
+    def owners(self):
+        with self.lock:
+            return sum(1 for m in self.data["members"] if m["role"] == OWNER)
+
+    def claimed(self):
+        return self.owners() > 0
 
     def public(self):
         seed = self.data["seed"]
@@ -119,8 +162,98 @@ class IdentityService(Service):
     def info(self):
         pub = self.public()
         return {"name": self.data["name"], "serial": self.serial, "pub": pub.hex(), "tag": pub.hex()[:4],
-                "claimed": self.data["claimed"], "discoverable": self.data["discoverable"],
-                "persistent": self.persistent, "fresh": self.fresh}
+                "owners": self.owners(), "persistent": self.persistent, "fresh": self.fresh}
+
+    # ---- the list
+    def claim(self, key, name):
+        """The first owner (the host on USB, while there's none). -> the list."""
+        key, name = parse_key(key), member_name(name)
+        with self.lock:
+            if self.claimed():
+                raise Refused("claimed", "%s has an owner already: on an owner computer, audiolink invite NAME "
+                                         "--owner" % self.data["name"])
+            self.data["members"] = [{"key": key.hex(), "name": name, "role": OWNER, "added": int(time.time())}]
+            self._changed()
+        for fn in self.on_claim:
+            fn(key)
+        log.info("identity: claimed by %s", name)
+        return self.members()
+
+    def add(self, key, name, role):
+        """A computer that redeemed an invite. Already on the list: it takes the invite's
+        name, and the higher of the two roles. A name another computer has gets a number
+        (laptop-2), so names stay unique. -> its entry."""
+        if role not in ROLES:
+            raise ValueError("roles are user and owner")
+        hexkey, name = parse_key(key).hex(), member_name(name)
+        with self.lock:
+            members = self.data["members"]
+            old = next((m for m in members if m["key"] == hexkey), None)
+            taken = {m["name"].lower() for m in members if m["key"] != hexkey}
+            unique, n = name, 1
+            while unique.lower() in taken:
+                n += 1
+                unique = "%s-%d" % (name, n)
+            if old:
+                old.update(name=unique, role=OWNER if OWNER in (old["role"], role) else USER)
+                entry = old
+            else:
+                entry = {"key": hexkey, "name": unique, "role": role, "added": int(time.time())}
+                members.append(entry)
+            self._changed()
+            return dict(entry)
+
+    def find(self, key=None, name=None):
+        """The entry named by key (hex) or name, or None."""
+        with self.lock:
+            for m in self.data["members"]:
+                if (key and m["key"] == str(key).lower()) or (name and m["name"].lower() == str(name).lower()):
+                    return dict(m)
+        return None
+
+    def remove(self, hexkey):
+        """Off the list: takes effect at once (the endpoint closes its connections)."""
+        with self.lock:
+            m = self.find(key=hexkey)
+            if m is None:
+                return None
+            if m["role"] == OWNER and self.owners() == 1:
+                raise Refused("last_owner", "%s is the last owner of %s: add another owner first (audiolink "
+                                            "invite NAME --owner), or reset the Pi" % (m["name"], self.data["name"]))
+            self.data["members"] = [e for e in self.data["members"] if e["key"] != m["key"]]
+            self._changed()
+        log.info("identity: %s (%s) taken off the list", m["name"], m["role"])
+        return m
+
+    def remove_for(self, key, role, args):
+        """remove, by key or name, for a requester with this key and role: an owner
+        removes anyone, anyone else only itself."""
+        target = self.find(key=args.get("key"), name=args.get("name"))
+        if role != OWNER and (target is None or key is None or target["key"] != key.hex()):
+            me = self.member(key) if key else None
+            raise not_owner(self, me["name"] if me else "this computer")
+        if target is None:
+            what = args.get("name") or args.get("key") or "nothing named"
+            raise Refused("not_found", "%s isn't on %s's list" % (what, self.data["name"]))
+        self.remove(target["key"])
+        return {"ok": True}
+
+    def start_over(self):
+        """A new key under the board's default name, and an empty list (the reset pins,
+        `reset`): every computer on the list is off it, and a host's custody copy isn't
+        put back."""
+        with self.lock:
+            self.data = self._new()
+            self._changed()
+        log.info("identity: started over as %s", self.data["name"])
+
+    def rename(self, name):
+        name = str(name or "").strip().lower()
+        if not NAME_RE.match(name):
+            raise ValueError("names are 1-32 lowercase letters, digits and dashes")
+        with self.lock:
+            self.data["name"] = name
+            self._changed()
 
     # ---- session hooks
     def hello(self):
@@ -130,36 +263,55 @@ class IdentityService(Service):
         with self.lock:
             if op == "info":
                 return self.info()
-            if op == "code":
-                return {"code": code_for(self.data)}
             if op == "claim":
-                first = not self.data["claimed"]
-                self.data["claimed"] = True
-                self._changed()
-                return {"first": first}
+                return {"members": self.claim(args.get("key"), args.get("name"))}
+            if op == "members":
+                return {"members": self.members()}
+            if op == "invite":
+                return self.invite(args)
+            if op == "remove":
+                return self.remove_for(None, OWNER, args)       # the link: gated to owners
             if op == "rename":
-                name = args.get("name", "").strip().lower()
-                if not NAME_RE.match(name):
-                    raise ValueError("names are 1-32 lowercase letters, digits and dashes")
-                self.data["name"] = name
-                self._changed()
-                return self.info()
-            if op == "rotate_secret":
-                self.data["secret"] = new_identity()["secret"]
-                self._changed()
-                log.info("identity: new read secret; the old code stops working")
-                return {"code": code_for(self.data)}
-            if op == "set_discoverable":
-                self.data["discoverable"] = bool(args.get("on"))
-                self._changed()
+                self.rename(args.get("name"))
                 return self.info()
             if op == "export":
                 return dict(self.data)
             if op == "restore":
                 if self.persistent and not self.fresh and args.get("seed") != self.data["seed"]:
                     raise ValueError("this Pi keeps its own identity on its SD card; not replacing it")
-                self.data = {k: args[k] for k in ("seed", "secret", "name", "claimed", "discoverable")}
+                parse_key(args.get("seed"))
+                if not NAME_RE.match(str(args.get("name"))):
+                    raise ValueError("not an identity: no name")
+                # A copy from before the list has none: the Pi is then unclaimed, as after an update.
+                self.data = {"seed": args["seed"], "name": args["name"], "members": clean_members(args.get("members"))}
                 self._changed()
                 log.info("identity: restored %s from the host's custody copy", self.data["name"])
                 return self.info()
         raise ValueError("unknown identity operation %r" % op)
+
+    def invite(self, args):
+        role = args.get("role") or USER
+        if role not in ROLES:
+            raise ValueError("roles are user and owner")
+        if self.inviter is None:
+            raise ValueError("this Pi can't make invites")
+        return self.inviter(member_name(args.get("name")), role)
+
+    # ---- endpoint requests (services/endpoint.py)
+    def serve(self, endpoint, reset=None):
+        """members, invite, remove, rename (and reset, if given: () -> None, after the
+        reply has gone)."""
+        endpoint.register("members", lambda conn, req: {"members": self.members()}, OWNER)
+        endpoint.register("invite", lambda conn, req: self.invite(req), OWNER)
+        endpoint.register("remove", lambda conn, req: self.remove_for(conn.key, conn.role, req), USER)
+
+        def rename(conn, req):
+            self.rename(req.get("name"))
+            return {"ok": True}
+        endpoint.register("rename", rename, OWNER)
+        if reset:
+            def do_reset(conn, req):
+                log.warning("identity: reset by %s from %s (%s)", conn.name, conn.addr[0], conn.route)
+                threading.Thread(target=lambda: (time.sleep(1), reset()), daemon=True).start()   # reply first
+                return {"ok": True}
+            endpoint.register("reset", do_reset, OWNER)

@@ -6,9 +6,8 @@ pi/start-audiolink.sh runs it instead. An update that keeps dying soon
 after starting is set aside (.bad) and the built-in copy runs again, so a bad update
 can't take the Pi out of reach. `audiolink update --revert` removes it.
 
-The host the Pi is plugged into can always send one (link requests); over the network
-(endpoint "update", `audiolink update --pi PI`) it takes debug access
-(services/access.py): new code runs as root.
+Owners only, over USB (link requests, from an owner's host: services/access.py) or
+over the network (endpoint "update", `audiolink update --pi PI`): new code runs as root.
 """
 import base64
 import hashlib
@@ -21,7 +20,7 @@ import zipfile
 
 from ..paths import PI_STATE_DIR
 from . import Service
-from .access import DEBUG, PAIRED
+from .access import OWNER
 
 log = logging.getLogger("audiolink")
 
@@ -48,10 +47,8 @@ class UpdateService(Service):
         self.lock = threading.Lock()
         self.expect = None                          # (size, sha256) of the upload under way
         if endpoint:
-            endpoint.register("update", self._remote, DEBUG)
-            # read-only, and it must outlive the restart an update causes: paired is
-            # enough, and so is what the update itself took (a debug key, or none)
-            endpoint.register("update_status", lambda conn, req: {"result": self.status()}, (PAIRED, DEBUG))
+            endpoint.register("update", self._remote, OWNER)
+            endpoint.register("update_status", lambda conn, req: {"result": self.status()}, OWNER)
 
     def _remote(self, conn, req):
         if req.get("action") not in ("begin", "chunk", "finish", "status", "revert"):

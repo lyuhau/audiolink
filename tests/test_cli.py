@@ -461,16 +461,15 @@ class WifiNetwork(unittest.TestCase):
         class Conn:
             route = "lan"
 
-            def open(self, blob):
-                return {"ssid": "Cafe"}             # no security given
-
         ep, radio = Endpoint(), Radio()
         with mock.patch.object(wifi_remote, "cleanup_trial"):
-            wifi_remote.WifiRemoteService(Wifi(), None, ep, None, radio)
+            wifi_remote.WifiRemoteService(Wifi(), None, ep, radio)
         self.assertEqual(ep.ops["change_status"](Conn(), {"ssid": "Cafe"})["security"], "open")
-        self.assertEqual(ep.ops["change_wifi"](Conn(), {"sealed": ""}), {"accepted": True})
+        self.assertEqual(ep.ops["change_wifi"](Conn(), {"ssid": "Cafe"}), {"accepted": True})   # no security given
         args, ent = radio.args[0], radio.args[1]
         self.assertEqual((args["security"], ent["security"]), ("open", "open"))
+        Conn.route = "relay"                    # it would cut the connection the request came on
+        self.assertEqual(ep.ops["change_wifi"](Conn(), {"ssid": "Cafe"})["code"], "via_relay")
 
 
 if __name__ == "__main__":

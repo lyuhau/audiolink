@@ -1,21 +1,21 @@
-"""Pi side: pairing a machine with this Pi over the network (via services/endpoint.py).
+"""Pi side: invites (docs/protocol.md "Invites"), redeemed over the network (via
+services/endpoint.py).
 
-  unclaimed Pi  the first machine to pair claims it ("first to claim owns it")
-  claimed Pi    needs a fresh 6-digit pairing code, issued on request by the host
-                (over USB: "pairing.new_code") or by any already-paired machine
-                (over the network: the authenticated "new_code" request)
-Codes expire after CODE_TTL, work once, and allow MAX_TRIES guesses. Pairing runs
-SPAKE2 with the code, so the code never crosses the network and a recording of the
-exchange can't be used to guess it offline. Wrong codes back off exponentially per
-address (one stranger can't lock everyone out), forgotten after DECAY s without one.
-A claimed Pi runs the exchange whether or not a code is active (with none, against a
-random one), so asking doesn't tell a stranger when there's a code to guess.
+An owner asks for an invite (endpoint "invite", or identity.invite over USB): a
+one-use 6-digit code for {name, role}. Codes expire after CODE_TTL, work once, allow
+MAX_TRIES guesses, and a new one replaces the last. Redeeming runs SPAKE2 with the
+code, so the code never crosses the network and a recording of the exchange can't be
+used to guess it offline; the redeemer's key and the Pi's answer travel sealed with
+the exchange's key. Wrong codes back off exponentially per address (one stranger can't
+lock everyone out), forgotten after DECAY s without one. The exchange runs whether or
+not a code is active (with none, against a random one), so asking doesn't tell a
+stranger when there's a code to guess. A Pi with no owner refuses: claiming is over
+USB only (identity.claim).
 
-Endpoint requests:
-  {"op":"pair","msg":X,"client":id} -> {"msg":Y}; {"confirm":cA} -> {"confirm":cB,"payload":sealed}
-      payload: {"code","name","record"}; record: where the Pi is now, as its DHT record would
-      say (services/discovery.py), absent while it can't tell the time
-  {"op":"new_code","proof":...}     -> {"sealed": {"code","expires_in"}}      (auth)
+  {"op":"pair","msg":X,"client":hostname} -> {"msg":Y}
+  {"confirm":cA, "key": seal(ke, {"key"})} -> {"confirm":cB, "payload": seal(ke, {"name","role","pub","record"})}
+payload: the Pi's name and key, the role the computer now has, and where the Pi is
+(record, as on every auth).
 """
 import hmac
 import json
@@ -24,9 +24,8 @@ import secrets
 import threading
 import time
 
-from ..crypto import Spake2, seal
-from . import Service
-from .access import PAIRED
+from ..crypto import Spake2, open_sealed, seal
+from .access import NONE, ROLES
 
 log = logging.getLogger("audiolink")
 
@@ -37,25 +36,27 @@ DECAY = 600                     # s without a wrong code before an address start
 ID_CLIENT, ID_PI = b"audiolink client", b"audiolink pi"
 
 
-class PairingService(Service):
-    name = "pairing"
-    caps = ("pairing",)
+class PairingService:
+    """Not a link service: invites over USB are identity.invite (services/identity.py)."""
 
-    def __init__(self, identity, endpoint, where=None):
+    def __init__(self, identity, endpoint):
         self.identity = identity
-        self.where = where              # -> the Pi's record as of now, or None
+        self.record = endpoint.record   # -> where the Pi is now
         self.lock = threading.Lock()
-        self.code = None                # {"code", "expires", "tries"}
+        self.code = None                # {"code", "name", "role", "expires", "tries"}
         self.failures = {}              # address -> {"count", "until", "last"}
-        endpoint.register("pair", self._pair)
-        endpoint.register("new_code", self._new_code_remote, PAIRED)
+        identity.inviter = self.invite
+        endpoint.register("pair", self._pair, NONE)
 
     # ---- codes
-    def new_code(self):
+    def invite(self, name, role):
+        if role not in ROLES:
+            raise ValueError("roles are user and owner")
         with self.lock:
-            self.code = {"code": "%06d" % secrets.randbelow(10 ** 6),
+            self.code = {"code": "%06d" % secrets.randbelow(10 ** 6), "name": name, "role": role,
                          "expires": time.monotonic() + CODE_TTL, "tries": MAX_TRIES}
-            return {"code": self.code["code"], "expires_in": CODE_TTL}
+        log.info("pairing: an invite for %s (%s)", name, role)
+        return {"code": self.code["code"], "expires_in": CODE_TTL}
 
     def _active_code(self):
         c = self.code
@@ -64,27 +65,14 @@ class PairingService(Service):
         self.code = None
         return None
 
-    # ---- requests from the host over USB (trusted)
-    def handle(self, op, args):
-        if op == "new_code":
-            if not self.identity.claimed():
-                return {"code": None, "unclaimed": True}
-            return self.new_code()
-        if op == "status":
-            with self.lock:
-                c = self._active_code()
-                return {"active": bool(c), "expires_in": int(c["expires"] - time.monotonic()) if c else 0,
-                        "tries_left": c["tries"] if c else 0, "claimed": self.identity.claimed()}
-        raise ValueError("unknown pairing operation %r" % op)
-
     # ---- endpoint requests
-    def _new_code_remote(self, conn, req):
-        issued = self.new_code()
-        log.info("pairing: code issued to a paired machine at %s", conn.addr[0])
-        return {"sealed": conn.seal(issued)}
-
     def _pair(self, conn, req):
         ip = conn.addr[0]
+        pi = self.identity.pi_name()
+        if not self.identity.claimed():
+            conn.send({"error": "%s has no owner yet: plug it into a computer and run audiolink setup there"
+                                % pi, "code": "claim_usb"})
+            raise StopIteration
         with self.lock:
             now = time.monotonic()
             self.failures = {k: f for k, f in self.failures.items() if now - f["last"] < DECAY}
@@ -92,21 +80,20 @@ class PairingService(Service):
             if failed and failed["until"] > now:
                 conn.send({"error": "Too many wrong codes; retry in %ds" % -(-(failed["until"] - now) // 1)})
                 raise StopIteration
-            claimed = self.identity.claimed()
-            c = self._active_code() if claimed else None
-            password = c["code"] if c else (secrets.token_hex(16) if claimed else "")
+            c = self._active_code()
+            password = c["code"] if c else secrets.token_hex(16)
         b = Spake2("B", password, ID_CLIENT, ID_PI)
         try:
-            key, ours, theirs = b.finish(bytes.fromhex(req["msg"]))
+            ke, ours, theirs = b.finish(bytes.fromhex(req["msg"]))
         except (KeyError, TypeError, ValueError):
             conn.send({"error": "Bad request"})
             raise StopIteration
         conn.send({"msg": b.msg.hex()})
+        answer = conn.recv()
         try:
-            confirm = bytes.fromhex(str(conn.recv().get("confirm", "")))
-        except AttributeError:
+            confirm = bytes.fromhex(str(answer.get("confirm", "")))
+        except (AttributeError, ValueError):
             confirm = b""
-        name = self.identity.pi_name()
         with self.lock:
             if not hmac.compare_digest(confirm, theirs):
                 now = time.monotonic()
@@ -119,23 +106,25 @@ class PairingService(Service):
                 if c and c["tries"] > 0:
                     error = "Wrong code (%d %s left)" % (c["tries"], "try" if c["tries"] == 1 else "tries")
                 elif c:
-                    error = "Wrong code, and that was its last try; get a new one: audiolink pairing code %s" % name
+                    error = "Wrong code, and that was its last try; ask an owner of %s for a new invite" % pi
                 else:
-                    error = "That code has expired or been used up; get a new one: audiolink pairing code %s" % name
+                    error = "That code has expired or been used up; ask an owner of %s for a new invite" % pi
                 conn.send({"error": error})
                 raise StopIteration
             self.failures.pop(ip, None)
-            if c:
+            if self.code is c:
                 self.code = None        # single use
+        try:
+            sealed = open_sealed(ke, bytes.fromhex(str(answer.get("key", ""))))
+            key = bytes.fromhex(json.loads(sealed)["key"])
+            entry = self.identity.add(key, c["name"], c["role"])
+        except (TypeError, ValueError, KeyError):
+            conn.send({"error": "Bad request: no key to put on the list (is audiolink up to date here?)"})
+            raise StopIteration
         conn.prove()                    # someone legitimate is here (services/presence.py)
-        first = not claimed
-        if first:
-            self.identity.claim()
-        payload = {"code": self.identity.code(), "name": name}
-        rec = self.where() if self.where else None
-        if rec:
-            payload["record"] = rec     # the new machine knows its network and ports at once
-        conn.send({"confirm": ours.hex(), "payload": seal(key, json.dumps(payload).encode()).hex()})
-        log.info("pairing: %s paired from %s%s", req.get("client", "a machine"), conn.addr[0],
-                 " (first: claimed)" if first else "")
+        payload = {"name": pi, "role": entry["role"], "as": entry["name"], "pub": self.identity.public().hex(),
+                   "record": self.record()}
+        conn.send({"confirm": ours.hex(), "payload": seal(ke, json.dumps(payload).encode()).hex()})
+        log.info("pairing: %s (%s) added from %s (%s), as %s", req.get("client", "a computer"), entry["role"],
+                 conn.addr[0], conn.route, entry["name"])
         raise StopIteration

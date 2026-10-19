@@ -6,10 +6,11 @@ The session owns what every feature shares:
            clock, so it adopts the host's "time" (session.now()).
   liveness the peer is considered gone after PEER_TIMEOUT seconds of silence; the link
            then restarts with a new session id so both sides resync when it returns
-  CTRL     JSON request {"op", "args"}, reply {"ok", "result"|"error"} (stream id field =
-           request id), or one-way event {"event", "data"} (stream id 0). Fragmented: first
-           byte 1 = more follows, 0 = last. Requests "<area>.<op>" go to the service named
-           <area>; events go to every service.
+  CTRL     JSON request {"op", "args"}, reply {"ok", "result"|"error"[, "code"]} (stream id
+           field = request id), or one-way event {"event", "data"} (stream id 0). Fragmented:
+           first byte 1 = more follows, 0 = last. Requests "<area>.<op>" go to the service
+           named <area>, once the gate (the Pi's: services/access.py LinkAccess) lets them;
+           events go to every service. A refusal's "code" says why (e.g. not_owner).
 Everything else (streams, Wi-Fi, proxy, ...) is a Service (see services/__init__.py).
 """
 import itertools
@@ -40,6 +41,7 @@ class Session:
         self.req_ids = itertools.count(1)
         self.ctrl_frags = {}                            # id -> bytearray being reassembled
         self._warned_version = None
+        self.gate = None                                # op -> None, or raises (code: in the reply)
         self.link = Link(self.on_message, self.on_datagram, self.on_up)
         for svc in services:
             self.add(svc)
@@ -130,7 +132,9 @@ class Session:
             raise TimeoutError("Pi didn't answer (%s)" % op)
         reply = self.requests.pop(rid)[1]
         if not reply.get("ok"):
-            raise RuntimeError(reply.get("error", "request failed"))
+            e = RuntimeError(reply.get("error", "request failed"))
+            e.code = reply.get("code")
+            raise e
         return reply.get("result")
 
     def send_event(self, name, data=None):
@@ -164,10 +168,14 @@ class Session:
         try:
             if svc is None:
                 raise ValueError("%s does not support %r" % (self.role, msg["op"]))
+            if self.gate:
+                self.gate(msg["op"])
             reply = {"ok": True, "result": svc.handle(op, msg.get("args", {}))}
         except Exception as e:
             log.warning("control %s failed: %s", msg["op"], e)
             reply = {"ok": False, "error": str(e)}
+            if getattr(e, "code", None):
+                reply["code"] = e.code
         try:
             self._send_ctrl(rid, reply)
         except (TypeError, ValueError) as e:        # unencodable result: still answer

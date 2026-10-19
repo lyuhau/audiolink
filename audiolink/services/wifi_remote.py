@@ -1,7 +1,7 @@
 """Pi side: changing the Pi's Wi-Fi from the network.
 
-A paired machine asks the Pi to join a network (endpoint "change_wifi", authenticated,
-details sealed with the read secret). This is about the network only: the Pi saves a
+An owner asks the Pi to join a network (endpoint "change_wifi"; the password travels
+inside the endpoint's TLS). This is about the network only: the Pi saves a
 network as soon as its password is proven, and switching to it makes it the preferred
 one. Whether clients can still reach the Pi afterwards isn't something the Pi can
 check, and it doesn't wait to find out: if nobody connects, it opens its setup network
@@ -28,7 +28,7 @@ import threading
 import time
 
 from . import Service
-from .access import PAIRED
+from .access import OWNER
 from .setup_ap import channel_of
 from .wifi import credentials
 from .wifi_trial import cleanup as cleanup_trial, trial
@@ -42,14 +42,14 @@ MAX_TRIES = 3
 class WifiRemoteService(Service):
     """Not reached over the link (no control requests): only through the endpoint."""
 
-    def __init__(self, wifi, setup_ap, endpoint, discovery, radio):
-        self.wifi, self.setup_ap, self.discovery, self.radio = wifi, setup_ap, discovery, radio
+    def __init__(self, wifi, setup_ap, endpoint, radio):
+        self.wifi, self.setup_ap, self.radio = wifi, setup_ap, radio
         self.lock = threading.Lock()
         self.switching = None               # target network while a change is in progress
         cleanup_trial()                     # a restarted daemon: a trial left half done
-        endpoint.register("change_wifi", self._change_wifi, PAIRED)
-        endpoint.register("change_status", self._change_status, PAIRED)
-        endpoint.register("wifi_status", self._status, PAIRED)
+        endpoint.register("change_wifi", self._change_wifi, OWNER)
+        endpoint.register("change_status", self._change_status, OWNER)
+        endpoint.register("wifi_status", self._status, OWNER)
 
     def _seen(self, ssid):
         """The network in the last scan (if recent), or None."""
@@ -74,7 +74,7 @@ class WifiRemoteService(Service):
         if conn.route == "relay":           # it would cut the connection the request came on
             return {"error": "Can't change Wi-Fi through the relay; use USB, the same network as the Pi, "
                              "or its setup network", "code": "via_relay"}
-        p = conn.open(req["sealed"])
+        p = req
         ssid = (p.get("ssid") or "").strip()
         if not ssid:
             return {"error": "No network name"}
@@ -168,8 +168,6 @@ class WifiRemoteService(Service):
         if r is not None:
             ssid = r.get("ssid") or self.switching
             log.info("wifi change: %s", "on %r" % ssid if r["joined"] else "couldn't join %r: %s" % (ssid, r["reason"]))
-            if r["joined"]:
-                self.discovery.republish()      # so clients can find it on the DHT
         self.setup_ap.settled()
         with self.lock:
             self.switching = None

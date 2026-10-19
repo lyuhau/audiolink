@@ -1,80 +1,19 @@
-"""services/access.py (levels x routes x debug modes) and the endpoint's refusals."""
+"""services/access.py: routes, roles, and the USB link's role (link.auth, the CTRL gate)."""
 import os
 import shutil
-import socket
 import tempfile
 import threading
+import time
 import unittest
-from unittest import mock
 
-from audiolink import tls
-from audiolink.client import pairing
-from audiolink.client.pairing import Busy, PiConn
+from audiolink.auth import auth_message
 from audiolink.crypto import ed25519_public, ed25519_sign
-from audiolink.paths import save_state
-from audiolink.services import access
-from audiolink.services.access import (DEBUG, PAIRED, PUBLIC, DebugService, decide, parse_duration,
-                                       parse_key, route_of)
-from audiolink.services import endpoint
-from audiolink.services.endpoint import Endpoint, key_message, proof_for
+from audiolink.services import Service
+from audiolink.services.access import OWNER, USER, LinkAccess, Refused, allows, route_of
 from audiolink.services.identity import IdentityService
+from audiolink.session import Session
 
-from .helpers import FakeClock, needs_tls, patch_time, wait
-
-NOW = 1000.0
-LIVE, EXPIRED = NOW + 60, NOW - 1
-NETWORK = ("setup", "lan", "relay")
-NO = None                                   # refused whatever is proven
-
-# Debug level: mode -> {route: the proof it takes ("" = none needed), or NO}.
-DEBUG_TABLE = {
-    "off":        {"setup": NO, "lan": NO, "relay": NO},
-    "paired":     {"setup": "paired", "lan": "paired", "relay": "paired"},
-    "key":        {"setup": "key", "lan": "key", "relay": "key"},
-    "none":       {"setup": NO, "lan": "", "relay": NO},
-    "none+setup": {"setup": "", "lan": "", "relay": NO},
-}
-PROOFS = (frozenset(), frozenset(["paired"]), frozenset(["key"]), frozenset(["paired", "key"]))
-
-
-def switch(mode, deadline=LIVE):
-    m, _, flag = mode.partition("+")
-    return {"mode": m, "setup": flag == "setup", "deadline": deadline}
-
-
-class Decide(unittest.TestCase):
-    def test_every_cell(self):
-        for mode, routes in DEBUG_TABLE.items():
-            for route in NETWORK:
-                for proven in PROOFS:
-                    for level in (PUBLIC, PAIRED, DEBUG):
-                        if level == PUBLIC:
-                            want = True
-                        elif level == PAIRED:
-                            want = "paired" in proven
-                        else:
-                            need = routes[route]
-                            want = need is not NO and (need == "" or need in proven)
-                        got = decide(level, route, proven, switch(mode), NOW)
-                        self.assertEqual(got is None, want, (level, mode, route, sorted(proven), got))
-
-    def test_usb_is_never_refused(self):
-        for mode in DEBUG_TABLE:
-            for level in (PUBLIC, PAIRED, DEBUG):
-                self.assertIsNone(decide(level, "usb", set(), switch(mode), NOW))
-
-    def test_every_mode_expires(self):
-        for mode in DEBUG_TABLE:
-            for route in NETWORK:
-                got = decide(DEBUG, route, {"paired", "key"}, switch(mode, EXPIRED), NOW)
-                self.assertEqual(got[0], "debug_off", (mode, route))
-
-    def test_paired_level_ignores_the_switch(self):
-        self.assertIsNone(decide(PAIRED, "relay", {"paired"}, switch("off", EXPIRED), NOW))
-
-    def test_none_is_refused_on_the_relay_and_off_setup_without_the_flag(self):
-        self.assertEqual(decide(DEBUG, "relay", set(), switch("none+setup"), NOW)[0], "debug_route")
-        self.assertEqual(decide(DEBUG, "setup", set(), switch("none"), NOW)[0], "debug_route")
+from .helpers import wait
 
 
 class Routes(unittest.TestCase):
@@ -93,289 +32,137 @@ class Routes(unittest.TestCase):
         self.assertEqual(route_of("192.168.4.1", "127.0.0.2", None), "relay")
 
 
-class Parsing(unittest.TestCase):
-    def test_durations(self):
-        self.assertEqual(parse_duration("30m"), 1800)
-        self.assertEqual(parse_duration("2h"), 7200)
-        self.assertEqual(parse_duration("1d"), 86400)
-        for bad in ("", "5", "0m", "30 minutes", "9d"):
-            with self.assertRaises(ValueError, msg=bad):
-                parse_duration(bad)
-
-    def test_keys(self):
-        import base64
-        import struct
-        pub = ed25519_public(b"\1" * 32)
-        blob = struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", 32) + pub
-        self.assertEqual(parse_key("ssh-ed25519 %s me@there" % base64.b64encode(blob).decode()), pub)
-        self.assertEqual(parse_key(pub.hex()), pub)
-        for bad in ("ssh-rsa AAAAB3Nza", "abc", "ssh-ed25519 AAAA"):
-            with self.assertRaises(ValueError, msg=bad):
-                parse_key(bad)
+class Roles(unittest.TestCase):
+    def test_owner_covers_user(self):
+        self.assertTrue(allows(OWNER, USER))
+        self.assertTrue(allows(USER, None))
+        self.assertFalse(allows(USER, OWNER))
+        self.assertFalse(allows(None, USER))
 
 
-class Switch(unittest.TestCase):
+def sign(seed, nonce, pub):
+    return {"key": ed25519_public(seed).hex(), "sig": ed25519_sign(seed, auth_message(nonce, pub)).hex()}
+
+
+class Link(unittest.TestCase):
+    """LinkAccess on its own: what the host's key may do over USB."""
+
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
-        self.clock = FakeClock()
-        p = patch_time(access, self.clock)
-        p.start()
-        self.addCleanup(p.stop)
+        self.identity = IdentityService(self.dir)
+        self.link = LinkAccess(self.identity)
+        self.link.on_up()
+        self.host, self.other = os.urandom(32), os.urandom(32)
 
-    def test_defaults_and_expiry_end_access(self):
-        d = DebugService(self.dir)
-        ended = []
-        d.on_end(ended.append)
-        self.assertEqual(d.set({"mode": "paired"})["expires_in"], 24 * 3600)
-        self.assertEqual(d.set({"mode": "none"})["expires_in"], 3600)
-        self.assertEqual(d.status()["routes"], ["lan"])
-        self.clock.advance(3599)
-        d.check()
-        self.assertEqual(d.status()["mode"], "none")
-        self.clock.advance(1)
-        d.check()
-        self.assertEqual(d.status()["mode"], "off")
-        self.assertEqual(ended, ["debug access changed", "expired"])     # paired -> none, then time
+    def auth(self, seed, nonce=None):
+        return self.link.handle("auth", sign(seed, nonce or self.link.nonce, self.identity.public()))
 
-    def test_key_mode_needs_a_key(self):
+    def test_host_jobs_need_no_key(self):
+        for op in ("audio.status", "link.auth", "identity.info", "identity.claim"):
+            self.link.check(op)
+        for op in ("wifi.scan", "identity.rename", "update.begin", "identity.export", "relay.status"):
+            with self.assertRaises(Refused) as e:
+                self.link.check(op)
+            self.assertEqual(e.exception.code, "not_owner")
+            self.assertIn("has no owner yet", str(e.exception))
+
+    def test_claim_makes_the_link_an_owner_at_once(self):
+        self.identity.handle("claim", {"key": ed25519_public(self.host).hex(), "name": "desktop"})
+        self.assertEqual(self.link.role(), OWNER)
+        self.link.check("wifi.scan")
+
+    def test_auth_gives_the_keys_role(self):
+        self.identity.claim(ed25519_public(self.other), "laptop")
+        self.link.on_up()                                   # another host, not the claimer
+        self.assertEqual(self.auth(self.host), {"role": None})
+        with self.assertRaises(Refused) as e:
+            self.link.check("wifi.scan")
+        self.assertEqual(str(e.exception), "this computer isn't an owner of %s: on an owner computer, "
+                                           "audiolink invite NAME --owner" % self.identity.pi_name())
+        self.identity.add(ed25519_public(self.host), "desktop", USER)
+        self.assertEqual(self.link.role(), USER)            # looked up live
+        self.identity.add(ed25519_public(self.host), "desktop", OWNER)
+        self.link.check("wifi.scan")
+        self.assertTrue(self.link.may_open())
+        self.identity.remove(ed25519_public(self.host).hex())
+        self.assertFalse(self.link.may_open())
+
+    def test_a_proof_for_another_link_up_or_pi_is_refused(self):
+        self.identity.claim(ed25519_public(self.host), "desktop")
+        old = self.link.nonce
+        self.link.on_up()                                   # the link came up again: a new nonce
         with self.assertRaises(ValueError):
-            DebugService().set({"mode": "key"})
+            self.auth(self.host, nonce=old)
+        with self.assertRaises(ValueError):
+            self.link.handle("auth", sign(self.host, self.link.nonce, ed25519_public(os.urandom(32))))
+        self.assertEqual(self.auth(self.host), {"role": OWNER})
+        self.link.on_down()
+        self.assertIsNone(self.link.role())                 # proved again at the next link-up
 
-    def test_ram_unless_persist(self):
-        DebugService(self.dir).set({"mode": "paired"})
-        self.assertEqual(DebugService(self.dir).status()["mode"], "off")
-        DebugService(self.dir).set({"mode": "paired", "for": 7200, "persist": True})
-        self.clock.advance(600)
-        again = DebugService(self.dir).status()
-        self.assertEqual(again["mode"], "paired")
-        self.assertLessEqual(again["expires_in"], 7200)
-        DebugService(self.dir).set({"mode": "none"})        # not kept: replaces the kept one
-        self.assertEqual(DebugService(self.dir).status()["mode"], "off")
-
-    def test_off_clears_a_kept_switch(self):
-        DebugService(self.dir).set({"mode": "paired", "persist": True})
-        DebugService(self.dir).off("reset pins")
-        self.assertEqual(DebugService(self.dir).status()["mode"], "off")
-
-    def test_damaged_file_reads_as_off(self):
-        save_state(os.path.join(self.dir, "debug.json"), {"mode": "key", "persist": True, "for": "x"})
-        self.assertEqual(DebugService(self.dir).status()["mode"], "off")
-        save_state(os.path.join(self.dir, "debug.json"), {"mode": "key", "persist": True, "for": 60,
-                                                           "left": 60, "keys": []})
-        self.assertEqual(DebugService(self.dir).status()["mode"], "off")
-
-    def kept(self, boot="boot-1"):
-        """A DebugService as audiolink starts it on the Pi, in this boot."""
-        run = os.path.join(self.dir, "run")
-        with mock.patch.object(access, "boot_id", lambda: boot):
-            return DebugService(self.dir, run_dir=run)
-
-    def test_kept_across_audiolink_restarting(self):
-        with mock.patch.object(access, "boot_id", lambda: "boot-1"):
-            self.kept().set({"mode": "key", "keys": ["11" * 32], "for": 3600})
-        self.clock.advance(600)
-        again = self.kept().status()
-        self.assertEqual((again["mode"], again["keys"], again["expires_in"]), ("key", 1, 3000))
-        self.assertEqual(self.kept(boot="boot-2").status()["mode"], "off")     # the Pi restarted
-        self.clock.advance(3000)
-        self.assertEqual(self.kept().status()["mode"], "off")                  # the time still runs out
-
-    def test_off_and_kept_on_the_card_leave_nothing_in_run(self):
-        with mock.patch.object(access, "boot_id", lambda: "boot-1"):
-            d = self.kept()
-            d.set({"mode": "none"})
-            d.off("test")
-            self.assertEqual(self.kept().status()["mode"], "off")
-            d.set({"mode": "none"})
-            d.set({"mode": "paired", "persist": True})
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "run", "debug.json")))
-        self.assertEqual(self.kept().status()["mode"], "paired")              # from the card
+    def test_restore_on_an_unclaimed_pi_only(self):
+        self.link.check("identity.restore")
+        self.identity.claim(ed25519_public(self.other), "laptop")
+        self.link.on_up()                                   # another host, not the claimer
+        with self.assertRaises(Refused):
+            self.link.check("identity.restore")
 
 
-class Client(PiConn):
-    """A client of the endpoint over TLS (client/pairing.py)."""
+class Echo(Service):
+    name = "echo"
 
-    def __init__(self, port):
-        super().__init__("127.0.0.1", port=port)
-        self.hello = super().hello()
-        self.nonce = bytes.fromhex(self.hello["nonce"])
+    def handle(self, op, args):
+        return args
 
 
+class OverTheLink(unittest.TestCase):
+    """The gate in a session: refusals come back with their code."""
 
-@needs_tls
-@unittest.skip("roles-v1: needs the v2 Pi side")
-class EndpointAccess(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
         self.identity = IdentityService(self.dir)
-        self.identity.claim()
-        self.secret = self.identity.keys()[1]
-        self.debug = DebugService()
-        self.wifi_ip = "127.0.0.1"                  # loopback stands in for the LAN; None: unplaceable
-        self.ep = Endpoint(self.identity, port=0, debug=self.debug, wifi_ip=lambda: self.wifi_ip,
-                           bind="127.0.0.1")
-        self.ep.register("look", lambda conn, req: {"ok": True, "route": conn.route}, PAIRED)
-        self.ep.register("root", lambda conn, req: {"ok": True}, DEBUG)
+        self.link = LinkAccess(self.identity)
+        self.pi = Session("pi", [self.identity, self.link, Echo()])
+        self.pi.gate = self.link.check
+        self.host = Session("host", [])
+        self.running = True
+        threading.Thread(target=self._pump, daemon=True).start()
+        self.addCleanup(setattr, self, "running", False)
+        self.assertTrue(wait(lambda: self.host.peer_alive and self.host.peer_info))
 
-    def client(self):
-        c = Client(self.ep.port)
-        self.addCleanup(c.close)
-        return c
+    def _pump(self):
+        while self.running:
+            self.pi.link.feed(self.host.link.pull(8192))
+            self.host.link.feed(self.pi.link.pull(8192))
+            time.sleep(0.0005)
 
-    def test_paired_needs_the_proof(self):
-        c = self.client()
-        self.assertEqual(c.ask({"op": "look"})["code"], "not_paired")
-        self.assertEqual(c.ask({"op": "look", "proof": proof_for(b"x" * 16, "look", c.nonce, c.pub)})["code"],
-                         "not_paired")
-        self.assertEqual(c.ask({"op": "look", "proof": proof_for(self.secret, "look", c.nonce, c.pub)})["route"], "lan")
+    def test_hello_carries_a_nonce_and_the_owner_count(self):
+        info = self.host.peer_info
+        self.assertEqual(len(bytes.fromhex(info["nonce"])), 16)
+        self.assertEqual(info["identity"]["owners"], 0)
+        self.assertNotIn("claimed", info["identity"])
 
-    def test_proof_is_per_op(self):
-        c = self.client()
-        r = c.ask({"op": "root", "proof": proof_for(self.secret, "look", c.nonce, c.pub)})
-        self.assertEqual(r["code"], "debug_off")
-        self.debug.set({"mode": "paired"})
-        self.assertEqual(c.ask({"op": "root", "proof": proof_for(self.secret, "look", c.nonce, c.pub)})["code"],
-                         "not_paired")
-        self.assertTrue(c.ask({"op": "root", "proof": proof_for(self.secret, "root", c.nonce, c.pub)})["ok"])
-
-    def test_key_mode(self):
+    def test_refused_until_claimed(self):
+        with self.assertRaises(RuntimeError) as e:
+            self.host.request("echo.x", {"a": 1})
+        self.assertEqual(e.exception.code, "not_owner")
         seed = os.urandom(32)
-        pub = ed25519_public(seed)
-        self.debug.set({"mode": "key", "keys": [pub.hex()]})
-        c = self.client()
-        self.assertEqual(c.ask({"op": "root", "proof": proof_for(self.secret, "root", c.nonce, c.pub)})["code"],
-                         "debug_key")
-        other = os.urandom(32)
-        bad = {"op": "root", "key": ed25519_public(other).hex(),
-               "sig": ed25519_sign(other, key_message("root", c.nonce, c.pub)).hex()}
-        self.assertEqual(c.ask(bad)["code"], "debug_key")
-        good = {"op": "root", "key": pub.hex(), "sig": ed25519_sign(seed, key_message("root", c.nonce, c.pub)).hex()}
-        self.assertTrue(c.ask(good)["ok"])
-        self.assertTrue(c.ask(good)["ok"])                  # again on the same connection
-        replayed = self.client()
-        self.assertEqual(replayed.ask(good)["code"], "debug_key")     # another connection, another nonce
-        self.debug.set({"mode": "key", "keys": [ed25519_public(other).hex()]})
-        self.assertEqual(c.ask(good)["code"], "debug_key")  # a key taken off the list, even if checked before
+        members = self.host.request("identity.claim", {"key": ed25519_public(seed).hex(), "name": "desktop"})
+        self.assertEqual([m["role"] for m in members["members"]], [OWNER])
+        self.assertEqual(self.host.request("echo.x", {"a": 1}), {"a": 1})
+        with self.assertRaises(RuntimeError) as e:
+            self.host.request("identity.claim", {"key": ed25519_public(os.urandom(32)).hex(), "name": "x"})
+        self.assertEqual(e.exception.code, "claimed")
 
-    def test_none_on_the_lan_but_not_unplaceable(self):
-        self.debug.set({"mode": "none", "setup": True})
-        self.assertTrue(self.client().ask({"op": "root"})["ok"])
-        self.wifi_ip = None                                 # can't tell the route: the relay's rules
-        self.assertEqual(self.client().ask({"op": "root"})["code"], "debug_route")
-
-    def test_off_after_on(self):
-        self.debug.set({"mode": "none"})
-        c = self.client()
-        self.assertTrue(c.ask({"op": "root"})["ok"])
-        self.debug.off("test")
-        self.assertEqual(c.ask({"op": "root"})["code"], "debug_off")
-
-    def test_unclaimed_pi_has_no_paired_machines(self):
-        self.identity.start_over()
-        c = self.client()
-        self.assertEqual(c.ask({"op": "look", "proof": proof_for(self.identity.keys()[1], "look", c.nonce, c.pub)})
-                         ["code"], "not_paired")
+    def test_link_auth(self):
+        seed = os.urandom(32)
+        self.identity.claim(ed25519_public(seed), "desktop")
+        nonce = bytes.fromhex(self.host.peer_info["nonce"])
+        pub = bytes.fromhex(self.host.peer_info["identity"]["pub"])
+        self.assertEqual(self.host.request("link.auth", sign(seed, nonce, pub)), {"role": OWNER})
+        self.assertEqual(self.host.request("identity.members")["members"][0]["name"], "desktop")
 
 
-class FakePresence:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.held, self.touched = set(), 0
-
-    def hold(self, ends):
-        with self.lock:
-            self.held.add(ends)
-
-    def release(self, ends):
-        with self.lock:
-            self.held.discard(ends)
-
-    def touch(self, sock):
-        with self.lock:
-            self.touched += 1
-
-
-@unittest.skip("roles-v1: needs the v2 Pi side")
-@unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
-class Strangers(unittest.TestCase):
-    """Connections that prove nothing can't lock others out or keep the Pi 'in use'."""
-
-    def setUp(self):
-        self.dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.dir)
-        self.identity = IdentityService(self.dir)
-        self.identity.claim()
-        self.secret = self.identity.keys()[1]
-        self.presence = FakePresence()
-        self.ep = Endpoint(self.identity, port=0, presence=self.presence, debug=DebugService(),
-                           wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1", exempt=())
-        self.ep.register("look", lambda conn, req: {"ok": True}, PAIRED)
-
-    def client(self):
-        c = Client(self.ep.port)
-        self.addCleanup(c.close)
-        return c
-
-    def look(self, c):
-        return c.ask({"op": "look", "proof": proof_for(self.secret, "look", c.nonce, c.pub)})
-
-    def test_one_address_holds_two_unproven(self):
-        a, b = self.client(), self.client()
-        with self.assertRaises(Busy):
-            self.client()
-        with self.assertRaises(SystemExit) as e:
-            busy_entry = {"alias": "pi", "code": self.identity.code()}
-            with mock.patch.object(pairing, "browse", lambda t: []), \
-                    mock.patch.object(pairing, "SETUP_ADDR", "127.0.0.1"), \
-                    mock.patch.object(pairing, "PiConn",
-                                      lambda ip, timeout: PiConn(ip, port=self.ep.port, timeout=timeout)):
-                turned_away = []
-                self.assertEqual(pairing.reach(busy_entry, busy=turned_away), (None, None))
-                raise pairing.busy("pi")
-        self.assertEqual(turned_away, ["127.0.0.1"])
-        self.assertIn("didn't answer (busy?)", str(e.exception))
-        self.assertTrue(self.look(a)["ok"])                 # proven: no longer counts
-        self.assertTrue(self.look(self.client())["ok"])
-        b.close()
-        self.assertTrue(wait(lambda: self.ep.unproven == {}))
-        self.assertEqual(self.ep.active, 2)
-
-    def test_unproven_connections_are_dropped(self):
-        with mock.patch.object(endpoint, "PROVE_WITHIN", 0.5):
-            idle, proven = self.client(), self.client()
-            self.assertTrue(self.look(proven)["ok"])
-            self.assertEqual(idle.f.readline(), b"")         # dropped
-            raw = socket.create_connection(("127.0.0.1", self.ep.port))   # not even TLS
-            self.addCleanup(raw.close)
-            raw.settimeout(5)
-            self.assertEqual(raw.recv(10), b"")
-            self.assertTrue(self.look(proven)["ok"])          # proven: only the idle limit applies
-
-    def test_one_hello_per_connection(self):
-        c = self.client()
-        with self.assertRaises(ConnectionError):
-            PiConn.hello(c)
-
-    def test_only_proven_connections_count_as_present(self):
-        c = self.client()
-        self.assertTrue(wait(lambda: len(self.presence.held) == 1))
-        self.assertEqual(self.presence.touched, 0)
-        self.look(c)
-        self.assertEqual(self.presence.held, set())
-        self.assertEqual(self.presence.touched, 1)
-        stranger = self.client()
-        stranger.close()
-        self.assertTrue(wait(lambda: self.ep.active == 1))
-        self.assertEqual((self.presence.held, self.presence.touched), (set(), 1))
-
-
-class RunsForReal(unittest.TestCase):
-    def test_run_is_still_a_method_with_a_run_dir(self):
-        """The /run copy of the switch once shadowed run() (the Pi crash-looped)."""
-        import tempfile
-        from audiolink.services.access import DebugService
-        d = tempfile.mkdtemp()
-        svc = DebugService(state_dir=d, run_dir=d) if "state_dir" in DebugService.__init__.__code__.co_varnames else DebugService(run_dir=d)
-        self.assertTrue(callable(svc.run))
+if __name__ == "__main__":
+    unittest.main()

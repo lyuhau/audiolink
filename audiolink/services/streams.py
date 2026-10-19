@@ -2,13 +2,19 @@
 
 Either side can:
   forward  listen on a local TCP port; each connection asks the peer to connect
-           to a target host:port and relays bytes both ways.
+           to a target host:port and relays bytes both ways (the host, on 127.0.0.1).
   allow    accept the peer's OPEN requests, but only for listed targets.
 The host can also:
-  expose   ask the Pi to listen on a port and bring connections back to a host
-           target; sent in the HELLO, so the Pi re-applies it on every link-up, and
-           answers with an "exposed" event: {"ok": [[pi_port, host, port]],
-           "refused": [[pi_port, why]]} (cap "expose_report").
+  expose   ask the Pi to offer a port that brings connections back to a host target;
+           sent in the HELLO, so the Pi re-applies it on every link-up, and answers
+           with an "exposed" event: {"ok": [[pi_port, host, port]], "refused":
+           [[pi_port, why]]} (cap "expose_report").
+The Pi listens on no port for them (docs/protocol.md "Streams"): a computer on its list
+asks its endpoint to `open` an exposed port (or a static `audiolink pi --forward`),
+over TLS on the LAN, the setup network or the relay alike, and that connection becomes
+the stream (Streams.serve_endpoint). At most NET_STREAMS at once, apart from the
+endpoint's request slots, with no idle limit (an ssh session idles for minutes). The
+host's own streams to the Pi's proxy and shell take an owner's key (owner_only).
 
 Messages (all reliable, in order):
   OPEN    "host:port" for a new stream id
@@ -24,12 +30,10 @@ DATA for a stream the receiver has already finished is credited and dropped.
 Relayed sockets use TCP keepalive, so a client that vanished without closing (a laptop
 lid shut mid-ssh) is dropped, and stops counting as connected (services/presence.py).
 
-The Pi's listeners don't take connections that arrive on its setup network (open
-Wi-Fi: anyone nearby) unless it was started with --expose-setup; whatever is behind
-them sees every connection come from the host itself (127.0.0.1), so its own address
-rules can't tell. Each listener carries PER_LISTENER connections at once.
+Whatever is behind an exposed port sees every connection come from the host itself
+(127.0.0.1), so its own address rules can't tell clients apart: its own login has to.
+Each listener carries PER_LISTENER connections at once.
 """
-import errno
 import logging
 import queue
 import socket
@@ -40,6 +44,7 @@ import time
 from ..net import reuse_addr
 from ..wire.protocol import T_CLOSE, T_CREDIT, T_DATA, T_OPEN
 from . import Service
+from .access import USER
 
 log = logging.getLogger("audiolink")
 
@@ -47,6 +52,7 @@ WINDOW = 512 * 1024             # bytes in flight per stream (about the link's b
 CREDIT_EVERY = WINDOW // 4
 CREDIT = struct.Struct(">I")
 PER_LISTENER = 32               # connections at once through one listening port
+NET_STREAMS = 16                # pi: streams opened through the endpoint at once
 
 
 def tune(sock):
@@ -107,24 +113,40 @@ class Streams(Service):
     caps = ("streams", "expose", "stream_credit", "expose_report")
     msg_types = (T_OPEN, T_DATA, T_CLOSE, T_CREDIT)
 
-    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", setup=False):
+    def __init__(self, role, allow=(), expose=(), expose_ports="1024-65535", owner_only=(), may_open=None):
         self.role = role
         # Every stream opening and closing: the Pi's log keeps them; on the host they're -v detail.
         self.chatty = log.info if role == "pi" else log.debug
-        self.setup = setup                              # pi: listeners take setup network connections
         self.expose = list(expose)                      # host: [(pi_port, (host, port))]
         self.allow = {parse_target(a) for a in allow} | {t for _, t in self.expose}
+        self.owner_only = {parse_target(a) for a in owner_only}     # pi: allowed to an owner's host only
+        self.may_open = may_open or (lambda: True)      # pi: () -> is the host's key an owner's?
         self.expose_range = parse_range(expose_ports)   # pi: ports a host may expose
         self.streams = {}
-        self.listeners = {}                             # port -> (socket, target, exposed)
+        self.listeners = {}                             # port -> (socket, target): forward()
+        self.static = {}                                # pi: port -> target (audiolink pi --forward)
+        self.exposed = {}                               # pi: port -> target (the host's expose)
         self.lock = threading.Lock()
-        self.llock = threading.RLock()                  # guards listeners
+        self.llock = threading.RLock()                  # guards listeners, static, exposed
         self.next_sid = 1 if role == "pi" else 2        # odd/even: no id clashes
+        self.net_slots = threading.BoundedSemaphore(NET_STREAMS)
 
     def ports(self):
-        """Local ports currently listening (static forwards and exposes)."""
+        """The Pi's ports a client can open (static forwards and exposes); the host's
+        listening ones."""
         with self.llock:
-            return sorted(self.listeners)
+            return sorted(set(self.listeners) | set(self.static) | set(self.exposed))
+
+    def target_for(self, port):
+        """pi: the host target behind this port, or None."""
+        with self.llock:
+            return self.static.get(port) or self.exposed.get(port)
+
+    def serve(self, port, target):
+        """pi: a static forward (audiolink pi --forward): `open` port reaches the host's target."""
+        with self.llock:
+            self.static[port] = target
+        log.info("forwarding :%d -> host %s:%d (through the endpoint)", port, *target)
 
     # ---- session hooks
     def hello(self):
@@ -198,26 +220,21 @@ class Streams(Service):
         for port, host, tport in wanted:
             if not lo <= port <= hi:
                 refused.append([port, "outside the ports it allows (%d-%d)" % (lo, hi)])
-            elif port in self.listeners and not self.listeners[port][2]:
+            elif port in self.static:
                 refused.append([port, "it's already a static --forward there"])
             else:
                 want[port] = (host, tport)
-        for port, (srv, target, exposed) in list(self.listeners.items()):
-            if exposed and want.get(port) != target:
-                self._unlisten(port)
-        for port, target in list(want.items()):
-            if port not in self.listeners:
-                try:
-                    self.forward(port, target, exposed=True)
-                except OSError as e:
-                    del want[port]
-                    refused.append([port, "in use on the Pi" if e.errno == errno.EADDRINUSE else str(e)])
+        for port in set(self.exposed) | set(want):
+            if self.exposed.get(port) != want.get(port):
+                self.chatty("%s :%d%s", "exposing" if port in want else "stopped exposing", port,
+                            " -> host %s:%d" % want[port] if port in want else "")
+        self.exposed = want
         for port, why in refused:
             log.warning("host asked to expose port %d: refused, %s", port, why)
         return {"ok": [[p, h, tp] for p, (h, tp) in sorted(want.items())], "refused": refused}
 
     def _unlisten(self, port):
-        srv, target, exposed = self.listeners.pop(port)
+        srv, target = self.listeners.pop(port)
         srv.close()
         log.info("stopped listening on :%d", port)
 
@@ -227,6 +244,12 @@ class Streams(Service):
         link = self.session.link
         if target not in self.allow:
             log.warning("stream %d: %s:%d not allowed (use --allow or --expose)", st.sid, host, port)
+            self._forget(st)
+            link.send(T_CLOSE, st.sid)
+            return
+        if target in self.owner_only and not self.may_open():
+            log.warning("stream %d: the host asked for %s:%d, which takes an owner's key: refused "
+                        "(this computer isn't an owner of the Pi)", st.sid, host, port)
             self._forget(st)
             link.send(T_CLOSE, st.sid)
             return
@@ -313,19 +336,12 @@ class Streams(Service):
     # ---- forward: accept local TCP connections and open streams on the peer
     def _refuse(self, sock, mine):
         """Why a listener turns this connection away, or None. mine: its streams."""
-        if self.role == "pi" and not self.setup:
-            from .setup_ap import AP_ADDR
-            try:
-                if sock.getsockname()[0] == AP_ADDR:
-                    return "it came over the setup network (--expose-setup lets it)"
-            except OSError:
-                return "gone"
         mine[:] = [st for st in mine if not self._over(st)]
         if len(mine) >= PER_LISTENER:
             return "%d connections already" % len(mine)
         return None
 
-    def forward(self, lport, target, bind="0.0.0.0", exposed=False):
+    def forward(self, lport, target, bind="0.0.0.0"):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         reuse_addr(srv)
         try:
@@ -335,8 +351,8 @@ class Streams(Service):
             srv.close()
             raise
         with self.llock:
-            self.listeners[lport] = (srv, target, exposed)
-        self.chatty("%s %s:%d -> peer %s:%d", "exposing" if exposed else "forwarding", bind, lport, *target)
+            self.listeners[lport] = (srv, target)
+        self.chatty("forwarding %s:%d -> peer %s:%d", bind, lport, *target)
 
         def accept_loop():
             mine = []                                       # this listener's streams
@@ -379,3 +395,65 @@ class Streams(Service):
                 mine.append(st)
 
         threading.Thread(target=accept_loop, daemon=True).start()
+
+    # ---- pi: streams through the endpoint (services/endpoint.py "open")
+    def serve_endpoint(self, endpoint):
+        endpoint.register("open", self._open, USER)
+
+    def _open(self, conn, req):
+        from .endpoint import Takeover
+        port = req.get("port")
+        pi = conn.identity.pi_name()
+        target = self.target_for(port) if isinstance(port, int) else None
+        if target is None:
+            return {"error": "Port %s isn't exposed on %s" % (port, pi), "code": "not_exposed"}
+        if not self.session.peer_alive:
+            return {"error": "%s isn't plugged into a computer right now (port %d)" % (pi, port),
+                    "code": "not_exposed"}
+        if not self.net_slots.acquire(blocking=False):
+            return {"error": "%s has %d streams open already; retry soon" % (pi, NET_STREAMS), "code": "busy"}
+        try:
+            conn.send({"ok": True})
+        except OSError:
+            self.net_slots.release()
+            raise
+
+        def run():
+            try:
+                self._through(conn, port, target)
+            finally:
+                self.net_slots.release()
+        raise Takeover(run)
+
+    def _through(self, conn, port, target):
+        """The connection, now a stream: its TLS is driven by one thread (splice), the
+        link's pumps work on a plain socket pair."""
+        from ..relay.wire import splice
+        ours, theirs = socket.socketpair()
+        try:
+            tune(conn.sock)
+        except OSError:
+            pass
+        with self.lock:
+            sid = self._new_sid()
+            st = Stream(sid, ours)
+            self.streams[sid] = st
+        self.chatty("stream %d: %s (%s, %s) :%d -> host %s:%d", sid, conn.name, conn.route, conn.addr[0], port, *target)
+        self.session.link.send(T_OPEN, sid, ("%s:%d" % target).encode())
+        try:
+            threading.Thread(target=self._reader, args=(st,), daemon=True).start()
+            threading.Thread(target=self._writer, args=(st,), daemon=True).start()
+        except RuntimeError as e:                   # out of threads
+            log.warning("stream %d: %s", sid, e)
+            self._forget(st)
+            self._kill(st)
+            self.session.link.send(T_CLOSE, sid)
+            shut(theirs)
+            return
+        pending = conn.leftover()
+        try:
+            if pending:
+                theirs.sendall(pending)
+        except OSError:
+            pass
+        splice(conn.sock, theirs)

@@ -2,33 +2,31 @@
 
 While the Pi is online it keeps one connection to its relay, registered under its
 public key. When a client asks for it, the relay passes on an "open"; the Pi dials a
-data connection, checks the client's proof (relay/tunnel.py), and joins it to the
-local port asked for. Only the endpoint, ssh and the ports forwarded from the host
-are reachable; never the proxy (it would put the Pi's network in reach) or the shell
-(network shells go through the endpoint's access check).
+data connection and joins it to its own endpoint (services/endpoint.py), where the
+client does what it does on the LAN: TLS pinned to the Pi's key, hello, auth, then its
+requests or `open` for a stream. Nothing else on the Pi is reachable this way.
 
-Connections to local services come from RELAY_SOURCE (127.0.0.2), so the kernel's table
+Connections to the endpoint come from RELAY_SOURCE (127.0.0.2), so the kernel's table
 shows which ones came through the relay: presence counts them as clients, and the
-endpoint treats them like Wi-Fi clients (they can use the Pi but not move it to
-another network).
+endpoint knows their route (no Wi-Fi changes through the relay: they'd cut the
+connection they came on).
 
 Opens cost the Pi a connection and a TLS handshake before it knows who's asking, so
-they're limited: per client address (the relay names it), and those from addresses
-that haven't proven themselves lately share OPENS_PER_MIN, so a stranger who knows
-the Pi's public key can't use up what its owners need.
+they're limited: per client address (the relay names it), and all of them together
+(OPENS_PER_MIN), besides SESSIONS at once.
 
 Relay state is its own fact ("relay": up/down), never the Pi's internet state: a
 relay outage mustn't look like the Pi going offline.
 """
 import logging
 import random
+import socket
 import sys
 import threading
 import time
 
 from ..crypto import ed25519_sign
 from ..relay import DEFAULT, parse_relay
-from ..relay.tunnel import serve
 from ..relay.wire import VERSION, REGISTER, Control, Refused, answer, close, dial, send_line, splice
 from . import Service
 from .access import RELAY_SOURCE
@@ -41,26 +39,25 @@ IDLE = 75                   # s without a pong before it counts as dead
 BACKOFF = (5, 300)          # s, first and longest wait between tries (randomised)
 STEADY = 60                 # s up before the wait resets
 SESSIONS = 8                # relayed connections at once
-OPENS_PER_MIN = 20          # opens answered per minute from addresses not known to be paired
+OPENS_PER_MIN = 60          # opens answered per minute, all clients together
 PER_CLIENT_PER_MIN = 30     # opens answered per minute from one address
-KNOWN_FOR = 24 * 3600       # s an address that proved itself is known
 MAX_TRACKED = 1000          # addresses remembered at most
-ENDPOINT_PORT, SSH_PORT, PROXY_PORT, SHELL_PORT = 47900, 22, 3128, 47901
+ENDPOINT_PORT = 47900       # services/endpoint.py PORT
 
 
 class RelayAgent(Service):
     name = "relay"
 
-    def __init__(self, identity, wifi, streams, relays=(DEFAULT,)):
-        self.identity, self.wifi, self.streams = identity, wifi, streams
+    def __init__(self, identity, wifi, relays=(DEFAULT,), endpoint_port=ENDPOINT_PORT):
+        self.identity, self.wifi = identity, wifi
         self.relays = list(relays)
+        self.endpoint_port = endpoint_port
         self.lock = threading.Lock()
         self.state = {"relay": "off" if not self.relays else "connecting", "since": time.time()}
         self.sessions = threading.BoundedSemaphore(SESSIONS)
         self.active = 0
-        self.opens = []                 # times of recent opens from unknown addresses
+        self.opens = []                 # times of recent opens
         self.by_client = {}             # address -> times of its recent opens
-        self.known = {}                 # address -> when it last proved itself
         self.ctl = None
 
     def handle(self, op, args):
@@ -111,7 +108,7 @@ class RelayAgent(Service):
     def _session(self, spec, ip):
         """One control connection, until it ends. -> why it ended."""
         addr, pin = parse_relay(spec)
-        seed, _ = self.identity.keys()
+        seed = self.identity.seed()
         pub = self.identity.public()
         try:
             sock = dial(addr, pin)
@@ -150,11 +147,6 @@ class RelayAgent(Service):
         return why
 
     # ---- relayed connections
-    def allowed(self, port):
-        if port in (PROXY_PORT, SHELL_PORT):
-            return False
-        return port in (ENDPOINT_PORT, SSH_PORT) or port in self.streams.ports()
-
     def _rate_ok(self, client):
         """May an open from this client address (None: the relay didn't say) go ahead?"""
         now = time.monotonic()
@@ -165,24 +157,11 @@ class RelayAgent(Service):
                 if len(times) >= PER_CLIENT_PER_MIN or (not times and len(self.by_client) >= MAX_TRACKED):
                     return False
                 self.by_client[client] = times + [now]
-                if now - self.known.get(client, now - KNOWN_FOR) < KNOWN_FOR:
-                    return True
             self.opens = [t for t in self.opens if now - t < 60]
             if len(self.opens) >= OPENS_PER_MIN:
                 return False
             self.opens.append(now)
             return True
-
-    def _proved(self, client):
-        if not client:
-            return
-        now = time.monotonic()
-        with self.lock:
-            if client not in self.known and len(self.known) >= MAX_TRACKED:
-                self.known = {k: t for k, t in self.known.items() if now - t < KNOWN_FOR}
-                if len(self.known) >= MAX_TRACKED:
-                    del self.known[min(self.known, key=self.known.get)]
-            self.known[client] = now
 
     def _open(self, addr, pin, wid, client=None):
         if not self._rate_ok(client) or not self.sessions.acquire(blocking=False):
@@ -192,17 +171,13 @@ class RelayAgent(Service):
             try:
                 send_line(data, {"v": VERSION, "role": "data", "id": wid})
                 answer(data)
-                _, secret = self.identity.keys()
-                got = serve(data, self.identity.public(), secret, self.allowed, SOURCE)
+                target = socket.create_connection(("127.0.0.1", self.endpoint_port), timeout=5,
+                                                  source_address=(SOURCE, 0) if SOURCE else None)
             except (Refused, OSError, ValueError):
                 close(data)
                 return
-            if not got:
-                close(data)
-                return
-            self._proved(client)
-            port, target = got
             data.settimeout(None)
+            target.settimeout(None)
             with self.lock:
                 self.active += 1
             try:

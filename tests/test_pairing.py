@@ -2,6 +2,8 @@
 import argparse
 import contextlib
 import io
+import json
+import os
 import shutil
 import tempfile
 import time
@@ -13,10 +15,9 @@ from audiolink import tls
 from audiolink.client import keyring, pairing
 from audiolink.client.pairing import PiConn
 from audiolink.services import endpoint
-from audiolink.services.access import PAIRED
 from audiolink.services.endpoint import Endpoint
 from audiolink.services.identity import IdentityService
-from audiolink.crypto import Spake2
+from audiolink.crypto import Spake2, ed25519_public, open_sealed, seal
 from audiolink.services import pairing as services_pairing
 from audiolink.services.pairing import ID_CLIENT, ID_PI, PairingService
 
@@ -97,7 +98,7 @@ class AddOverNetwork(unittest.TestCase):
         self.identity.claim()
         self.ep = Endpoint(self.identity, port=0, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
         self.svc = PairingService(self.identity, self.ep)
-        self.ep.register("change_status", lambda conn, req: {"saved": []}, PAIRED)
+        self.ep.register("change_status", lambda conn, req: {"saved": []})
         port = self.ep.port
 
         def candidates(at):
@@ -180,27 +181,39 @@ class AddOverNetwork(unittest.TestCase):
 
 
 class FakeConn:
-    """The Pi's view of one pairing attempt; plays the client's part with `code`."""
+    """The Pi's view of one pairing attempt; plays the client's part with `code`, and
+    offers the key of `seed`."""
+    route = "lan"
 
-    def __init__(self, ip, code):
+    def __init__(self, ip, code, seed=None):
         self.addr = (ip, 5000)
         self.spake = Spake2("A", code or "", ID_CLIENT, ID_PI)
-        self.sent, self.proven = [], False
+        self.seed = seed or os.urandom(32)
+        self.sent, self.proven, self.key_blob = [], False, None
 
     def send(self, obj):
         self.sent.append(obj)
 
     def recv(self):
-        _, ours, _ = self.spake.finish(bytes.fromhex(self.sent[-1]["msg"]))
-        return {"confirm": ours.hex()}
+        self.ke, ours, _ = self.spake.finish(bytes.fromhex(self.sent[-1]["msg"]))
+        blob = self.key_blob or seal(self.ke, json.dumps({"key": ed25519_public(self.seed).hex()}).encode()).hex()
+        return {"confirm": ours.hex(), "key": blob}
+
+    def payload(self):
+        return json.loads(open_sealed(self.ke, bytes.fromhex(self.sent[-1]["payload"])))
 
     def prove(self):
         self.proven = True
 
 
 class FakeEndpoint:
+    RECORD = {"name": "pi", "ts": None, "lan": [], "ssid": None, "ports": []}
+
     def register(self, *args):
         pass
+
+    def record(self):
+        return self.RECORD
 
 
 class Guessing(unittest.TestCase):
@@ -208,7 +221,7 @@ class Guessing(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
         self.identity = IdentityService(self.dir)
-        self.identity.claim()
+        self.identity.claim(ed25519_public(os.urandom(32)), "desktop")
         self.svc = PairingService(self.identity, FakeEndpoint())
         self.clock = FakeClock()
         patch = patch_time(services_pairing, self.clock)
@@ -222,7 +235,7 @@ class Guessing(unittest.TestCase):
         return conn
 
     def test_wrong_codes_hold_back_that_address_only(self):
-        code = self.svc.new_code()["code"]
+        code = self.svc.invite("laptop", "user")["code"]
         self.assertEqual(self.attempt("10.0.0.9", "000000").sent[-1]["error"], "Wrong code (2 tries left)")
         self.assertIn("Too many wrong codes", self.attempt("10.0.0.9", code).sent[-1]["error"])
         ok = self.attempt("10.0.0.2", code)
@@ -230,7 +243,7 @@ class Guessing(unittest.TestCase):
         self.assertTrue(ok.proven)
 
     def test_backoff_grows_then_is_forgotten(self):
-        self.svc.new_code()
+        self.svc.invite("laptop", "user")
         for _ in range(3):
             self.attempt("10.0.0.9", "000000")
             self.clock.advance(services_pairing.MAX_BACKOFF)
@@ -242,14 +255,15 @@ class Guessing(unittest.TestCase):
     def test_asking_doesnt_tell_whether_a_code_is_active(self):
         none = self.attempt("10.0.0.9", "123456")
         self.clock.advance(services_pairing.MAX_BACKOFF)
-        self.svc.new_code()
+        self.svc.invite("laptop", "user")
         some = self.attempt("10.0.0.9", "123456")
         self.assertEqual(set(none.sent[0]), {"msg"})
         self.assertEqual(set(some.sent[0]), {"msg"})
-        self.assertIn("expired or been used up; get a new one: audiolink pairing code", none.sent[-1]["error"])
+        self.assertIn("expired or been used up; ask an owner of %s for a new invite" % self.identity.pi_name(),
+                      none.sent[-1]["error"])
 
     def test_last_try(self):
-        self.svc.new_code()
+        self.svc.invite("laptop", "user")
         for left in (2, 1):
             self.attempt("10.0.0.%d" % left, "000000")
         self.assertEqual(self.svc.code["tries"], 1)
@@ -332,21 +346,45 @@ class Replies(unittest.TestCase):
                 pairing.invite_code(bad, "pi")
 
 
-class RecordNow(unittest.TestCase):
-    def test_where_the_pi_is_once_it_knows_the_time(self):
-        from types import SimpleNamespace
-        from audiolink.services.discovery import DiscoveryService
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d)
-        wifi = SimpleNamespace(connection=lambda: {"ip": "10.0.0.5", "ssid": "HomeWifi", "internet": "offline"})
-        svc = DiscoveryService(IdentityService(d), wifi, SimpleNamespace(ports=lambda: [2222]))
-        self.assertIsNone(svc.record_now())                     # not attached yet
-        now = [5]
-        svc.attach(SimpleNamespace(now=lambda: now[0]))
-        self.assertIsNone(svc.record_now())                     # the time isn't known
-        now[0] = 1800000000
-        rec = svc.record_now()
-        self.assertEqual((rec["ssid"], rec["lan"], rec["ports"], rec["ts"]), ("HomeWifi", ["10.0.0.5"], [2222], now[0]))
+class Redeeming(unittest.TestCase):
+    """What a computer that redeems an invite gets, and what the Pi keeps."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.identity = IdentityService(self.dir)
+        self.svc = PairingService(self.identity, FakeEndpoint())
+
+    def attempt(self, code, seed=None):
+        conn = FakeConn("10.0.0.2", code, seed)
+        with self.assertRaises(StopIteration):
+            self.svc._pair(conn, {"op": "pair", "msg": conn.spake.msg.hex(), "client": "laptop.local"})
+        return conn
+
+    def test_a_pi_with_no_owner_refuses(self):
+        conn = self.attempt("")
+        self.assertEqual(conn.sent[-1]["code"], "claim_usb")
+        self.assertEqual(len(conn.sent), 1)
+
+    def test_the_key_goes_on_the_list_with_the_invites_name_and_role(self):
+        self.identity.claim(ed25519_public(os.urandom(32)), "desktop")
+        code = self.svc.invite("laptop", "owner")["code"]
+        conn = self.attempt(code)
+        payload = conn.payload()
+        self.assertEqual(payload, {"name": self.identity.pi_name(), "role": "owner", "as": "laptop",
+                                   "pub": self.identity.public().hex(), "record": FakeEndpoint.RECORD})
+        self.assertEqual(self.identity.role_of(ed25519_public(conn.seed)), "owner")
+        self.assertTrue(conn.proven)
+        self.assertIn("expired or been used up", self.attempt(code).sent[-1]["error"])     # one use
+
+    def test_no_key_no_entry(self):
+        self.identity.claim(ed25519_public(os.urandom(32)), "desktop")
+        conn = FakeConn("10.0.0.2", self.svc.invite("mom", "user")["code"])
+        conn.key_blob = "00"
+        with self.assertRaises(StopIteration):
+            self.svc._pair(conn, {"op": "pair", "msg": conn.spake.msg.hex()})
+        self.assertIn("no key", conn.sent[-1]["error"])
+        self.assertEqual(len(self.identity.members()), 1)
 
 
 if __name__ == "__main__":

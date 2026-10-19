@@ -4,6 +4,7 @@ import shutil
 import socket
 import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -14,7 +15,7 @@ from audiolink.relay import wire
 from audiolink.relay.server import Relay, ask_status
 from audiolink.relay.wire import REGISTER, VERSION, Control, Refused, answer, read_line, send_line
 
-from tests.helpers import wait
+from tests.helpers import EndpointClient, needs_tls, wait
 
 
 def make_cert(d):
@@ -293,13 +294,13 @@ if __name__ == "__main__":
 
 class FakeIdentity:
     def __init__(self):
-        self.seed, self.secret = os.urandom(32), os.urandom(16)
+        self._seed = os.urandom(32)
 
-    def keys(self):
-        return self.seed, self.secret
+    def seed(self):
+        return self._seed
 
     def public(self):
-        return ed25519_public(self.seed)
+        return ed25519_public(self._seed)
 
 
 class FakeWifi:
@@ -312,26 +313,20 @@ class FakeWifi:
     parked = False              # a property on WifiService
 
 
-class FakeStreams:
-    def __init__(self, ports):
-        self.open = ports
-
-    def ports(self):
-        return list(self.open)
-
-
 class Echo:
     def __init__(self):
         self.srv = socket.create_server(("127.0.0.1", 0))
         self.port = self.srv.getsockname()[1]
+        self.peers = []
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
         while True:
             try:
-                c, _ = self.srv.accept()
+                c, addr = self.srv.accept()
             except OSError:
                 return
+            self.peers.append(addr)
             threading.Thread(target=self._echo, args=(c,), daemon=True).start()
 
     def _echo(self, c):
@@ -343,10 +338,10 @@ class Echo:
                 c.sendall(data)
 
 
-@unittest.skip("roles-v1: needs the v2 Pi side")
 @unittest.skipUnless(shutil.which("openssl"), "needs openssl to make a test certificate")
 class ThroughTheRelay(unittest.TestCase):
-    """Relay, Pi agent and client in one process."""
+    """Relay and Pi agent in one process, with a bare client: the relay's data
+    connection reaches the Pi's endpoint (here an echo server standing in for it)."""
 
     @classmethod
     def setUpClass(cls):
@@ -359,31 +354,33 @@ class ThroughTheRelay(unittest.TestCase):
         shutil.rmtree(cls.dir, ignore_errors=True)
 
     def setUp(self):
-        from unittest import mock
         from audiolink.services.relay import RelayAgent
         self.relay = Relay(wire.server_context(self.cert, self.key), open_wait=2)
         self.srv = self.relay.listen("127.0.0.1", 0)
         self.addCleanup(self.srv.close)
         threading.Thread(target=self.relay.serve, args=(self.srv,), daemon=True).start()
-        self.spec = "127.0.0.1:%d#%s" % (self.srv.getsockname()[1], self.pin)
-        patch = mock.patch("audiolink.relay.client.DEFAULT", self.spec)    # never the real relay
-        patch.start()
-        self.addCleanup(patch.stop)
+        self.addr = ("127.0.0.1", self.srv.getsockname()[1])
+        self.spec = "%s:%d#%s" % (self.addr + (self.pin,))
         self.echo = Echo()
         self.addCleanup(self.echo.srv.close)
         self.id, self.wifi = FakeIdentity(), FakeWifi()
-        self.agent = RelayAgent(self.id, self.wifi, FakeStreams([self.echo.port]), [self.spec])
+        self.agent = RelayAgent(self.id, self.wifi, [self.spec], endpoint_port=self.echo.port)
 
-    def connect(self, port, secret=None):
-        from audiolink.relay.client import connect
-        sock = connect(self.id.public(), secret or self.id.secret, port)
+    def connect(self):
+        """What a client does: ask the relay for the Pi; the socket then reaches the Pi."""
+        sock = wire.dial(self.addr, self.pin)
         self.addCleanup(sock.close)
+        send_line(sock, {"v": VERSION, "role": "client", "pub": self.id.public().hex()})
+        answer(sock)
         return sock
 
-    def test_reaches_a_forwarded_port(self):
+    def up(self):
         self.agent.run()
-        wait(lambda: self.agent.status()["relay"] == "up")
-        sock = self.connect(self.echo.port)
+        self.assertTrue(wait(lambda: self.agent.status()["relay"] == "up"))
+
+    def test_reaches_the_endpoint(self):
+        self.up()
+        sock = self.connect()
         for size in (1, 5000, 70000):
             piece = os.urandom(size)
             sock.sendall(piece)
@@ -391,22 +388,9 @@ class ThroughTheRelay(unittest.TestCase):
             while len(got) < size:
                 got += sock.recv(65536)
             self.assertEqual(got, piece)
-        wait(lambda: self.agent.status()["sessions"] == 1)
-
-    def test_unpaired_client_refused(self):
-        from audiolink.relay.client import Denied
-        self.agent.run()
-        wait(lambda: self.agent.status()["relay"] == "up")
-        with self.assertRaisesRegex(Denied, "not paired"):
-            self.connect(self.echo.port, secret=os.urandom(16))
-
-    def test_only_listed_ports(self):
-        from audiolink.relay.client import Denied
-        self.agent.run()
-        wait(lambda: self.agent.status()["relay"] == "up")
-        for port in (3128, self.echo.port + 1):
-            with self.assertRaisesRegex(Denied, "isn't open"):
-                self.connect(port)
+        self.assertTrue(wait(lambda: self.agent.status()["sessions"] == 1))
+        if sys.platform.startswith("linux"):
+            self.assertEqual(self.echo.peers[0][0], "127.0.0.2")    # RELAY_SOURCE: the endpoint knows the route
 
     def test_waits_for_internet(self):
         self.wifi.internet = "portal"
@@ -416,37 +400,73 @@ class ThroughTheRelay(unittest.TestCase):
 
     def test_offline_pi(self):
         with self.assertRaisesRegex(Refused, "offline"):
-            self.connect(self.echo.port)
+            self.connect()
 
-    def test_strangers_dont_use_up_the_opens_of_known_clients(self):
+    def test_opens_are_capped_per_client_and_overall(self):
         from audiolink.services import relay as agent_relay
         from tests.helpers import FakeClock, patch_time
         clock = FakeClock()
         with patch_time(agent_relay, clock):
-            self.agent._proved("203.0.113.5")                       # proved itself earlier
-            for _ in range(agent_relay.OPENS_PER_MIN):
-                self.assertTrue(self.agent._rate_ok("198.51.100.%d" % _))
-            self.assertFalse(self.agent._rate_ok("198.51.100.200"))   # strangers share a budget
-            self.assertFalse(self.agent._rate_ok(None))               # an older relay: the same
-            self.assertTrue(self.agent._rate_ok("203.0.113.5"))       # ...that a known client isn't in
-            for _ in range(agent_relay.PER_CLIENT_PER_MIN - 1):
+            for _ in range(agent_relay.PER_CLIENT_PER_MIN):
                 self.assertTrue(self.agent._rate_ok("203.0.113.5"))
-            self.assertFalse(self.agent._rate_ok("203.0.113.5"))      # but each has its own limit
+            self.assertFalse(self.agent._rate_ok("203.0.113.5"))      # each has its own limit
+            for i in range(agent_relay.OPENS_PER_MIN - agent_relay.PER_CLIENT_PER_MIN):
+                self.assertTrue(self.agent._rate_ok("198.51.100.%d" % i))
+            self.assertFalse(self.agent._rate_ok("198.51.100.200"))   # and all share one
+            self.assertFalse(self.agent._rate_ok(None))               # an older relay: the same
             clock.advance(61)
             self.assertTrue(self.agent._rate_ok("198.51.100.200"))
-            clock.advance(agent_relay.KNOWN_FOR)
-            self.agent.opens = [clock.monotonic()] * agent_relay.OPENS_PER_MIN
-            self.assertFalse(self.agent._rate_ok("203.0.113.5"))      # known only for a while
 
-    def test_the_relay_names_the_client_and_a_proof_makes_it_known(self):
+    def test_the_relay_names_the_client(self):
         opened = []
         real = self.agent._open
         self.agent._open = lambda addr, pin, wid, client=None: (opened.append(client), real(addr, pin, wid, client))
-        self.agent.run()
-        wait(lambda: self.agent.status()["relay"] == "up")
-        self.connect(self.echo.port)
+        self.up()
+        sock = self.connect()
+        sock.sendall(b"x")
+        self.assertEqual(sock.recv(1), b"x")
         self.assertEqual(opened, ["127.0.0.1"])
-        self.assertTrue(wait(lambda: "127.0.0.1" in self.agent.known))
+
+
+@unittest.skipUnless(shutil.which("openssl"), "needs openssl to make a test certificate")
+@needs_tls
+class EndpointThroughTheRelay(unittest.TestCase):
+    """The real endpoint behind the relay: TLS pinned to the Pi's key, auth, the relay route."""
+
+    def setUp(self):
+        from audiolink.services.endpoint import Endpoint
+        from audiolink.services.identity import IdentityService
+        from audiolink.services.relay import RelayAgent
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        cert, key = make_cert(self.dir)
+        pin = pin_of(cert)
+        relay = Relay(wire.server_context(cert, key), open_wait=2)
+        srv = relay.listen("127.0.0.1", 0)
+        self.addCleanup(srv.close)
+        threading.Thread(target=relay.serve, args=(srv,), daemon=True).start()
+        self.addr, self.pin = ("127.0.0.1", srv.getsockname()[1]), pin
+        self.identity = IdentityService(self.dir)
+        self.seed = os.urandom(32)
+        self.identity.claim(ed25519_public(self.seed), "desktop")
+        self.ep = Endpoint(self.identity, port=0, wifi_ip=lambda: "10.9.9.9", bind="127.0.0.1")
+        self.ep.register("route", lambda conn, req: {"route": conn.route}, "user")
+        self.agent = RelayAgent(self.identity, FakeWifi(), ["%s:%d#%s" % (self.addr + (pin,))],
+                                endpoint_port=self.ep.port)
+        self.agent.run()
+        self.assertTrue(wait(lambda: self.agent.status()["relay"] == "up"))
+
+    def test_auth_through_the_relay(self):
+        sock = wire.dial(self.addr, self.pin)
+        send_line(sock, {"v": VERSION, "role": "client", "pub": self.identity.public().hex()})
+        answer(sock)
+        ours, theirs = socket.socketpair()
+        threading.Thread(target=wire.splice, args=(theirs, sock), daemon=True).start()
+        c = EndpointClient(0, sock=ours)
+        self.addCleanup(c.close)
+        self.assertEqual(c.pub, self.identity.public())     # the Pi's own certificate, end to end
+        self.assertEqual(c.auth(self.seed)["role"], "owner")
+        self.assertEqual(c.ask({"op": "route"}), {"route": "relay"})
 
 
 class Addresses(unittest.TestCase):

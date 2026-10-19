@@ -10,15 +10,14 @@ import time
 import unittest
 from unittest import mock
 
-from audiolink.client.pairing import PiConn
-from audiolink.crypto import ed25519_public, ed25519_sign
-from audiolink.services.access import PAIRED, DebugService
-from audiolink.services.endpoint import Endpoint, key_message
+from audiolink.crypto import ed25519_public
+from audiolink.services.access import OWNER, USER
+from audiolink.services.endpoint import Endpoint
 from audiolink.services.identity import IdentityService
 from audiolink.services.shell import (F_CLOSED, F_DATA, F_EOF, F_ERR, F_EXIT, F_SIZE, MAX_CMD, NetworkShells,
                                       ShellServer, frame, header)
 
-from .helpers import needs_tls, wait
+from .helpers import EndpointClient, needs_tls, wait
 
 
 def read_all(read, timeout=10):
@@ -90,19 +89,18 @@ def alive(pid):
         return True
 
 
-class Client(PiConn):
-    """A client of the endpoint over TLS (client/pairing.py)."""
-
-    def __init__(self, port):
-        super().__init__("127.0.0.1", port=port)
-        self.hello = super().hello()
-        self.nonce = bytes.fromhex(self.hello["nonce"])
-
+def reader(c):
+    """Reads what the endpoint client has, then from its socket."""
+    def read():
+        if c.buf:
+            data, c.buf = c.buf, b""
+            return data
+        return c.sock.recv(4096)
+    return read
 
 
 @unittest.skipIf(sys.platform == "win32", "no pty")
 @needs_tls
-@unittest.skip("roles-v1: needs the v2 Pi side")
 class OverTheNetwork(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -110,38 +108,38 @@ class OverTheNetwork(unittest.TestCase):
         self.server = ShellServer(port=0, argv=["/bin/sh"]).run()
         self.addCleanup(self.server.srv.close)
         self.identity = IdentityService(self.dir)
-        self.identity.claim()
-        self.debug = DebugService()
-        self.ep = Endpoint(self.identity, port=0, debug=self.debug, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
-        self.ep.register("look", lambda conn, req: {"ok": True}, PAIRED)
-        self.shells = NetworkShells(self.ep, self.debug, self.identity, port=self.server.port)
+        self.owner, self.other, self.user = os.urandom(32), os.urandom(32), os.urandom(32)
+        self.identity.claim(ed25519_public(self.owner), "desktop")
+        self.identity.add(ed25519_public(self.other), "laptop", OWNER)
+        self.identity.add(ed25519_public(self.user), "mom", USER)
+        self.ep = Endpoint(self.identity, port=0, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
+        self.shells = NetworkShells(self.ep, port=self.server.port)
 
-    def client(self):
-        c = Client(self.ep.port)
+    def client(self, seed=None):
+        c = EndpointClient(self.ep.port)
         self.addCleanup(c.close)
+        self.assertTrue(c.auth(seed or self.owner)["ok"])
         return c
 
-    def shell(self):
-        c = self.client()
-        r = c.ask({"op": "shell", "rows": 40, "cols": 120})
+    def shell(self, seed=None, **req):
+        c = self.client(seed)
+        r = c.ask(dict({"op": "shell", "rows": 40, "cols": 120}, **req))
         return c, r
 
-    def test_refused_while_debug_is_off(self):
-        self.assertEqual(self.shell()[1]["code"], "debug_off")
+    def test_owners_only(self):
+        self.assertEqual(self.shell(self.user)[1]["code"], "not_owner")
 
     def test_runs_and_the_endpoint_timeout_no_longer_applies(self):
-        self.debug.set({"mode": "none"})
         c, r = self.shell()
         self.assertTrue(r["ok"])
-        self.assertEqual(self.debug.status()["shells"], 1)
+        self.assertEqual(self.shells.count(), 1)
         c.sock.sendall(b"echo hel''lo; stty size; exit\n")
-        out = read_all(lambda: c.f.read1(4096))
+        out = read_all(reader(c))
         self.assertIn("hello", out)
         self.assertIn("40 120", out)
         self.assertTrue(wait(lambda: self.shells.count() == 0))
 
     def test_two_at_most_and_they_dont_hold_request_slots(self):
-        self.debug.set({"mode": "none"})
         open_ = [self.shell() for _ in range(2)]
         self.assertTrue(all(r.get("ok") for _, r in open_))
         busy, r = self.shell()
@@ -153,71 +151,39 @@ class OverTheNetwork(unittest.TestCase):
         self.assertTrue(wait(lambda: self.shells.count() == 0))
         self.assertTrue(self.shell()[1].get("ok"))
 
-    def test_debug_off_and_expiry_close_them(self):
-        self.debug.set({"mode": "none"})
-        c, r = self.shell()
+    def test_taken_off_the_list_closes_them(self):
+        c, r = self.shell(self.other)
         self.assertTrue(r["ok"])
         self.assertTrue(wait(lambda: self.shells.count() == 1))
-        self.debug.off("test")
-        read_all(lambda: c.f.read1(4096), timeout=5)       # ends: EOF
+        self.identity.remove(ed25519_public(self.other).hex())
+        read_all(reader(c), timeout=5)                      # ends: EOF
         self.assertTrue(wait(lambda: self.shells.count() == 0))
         self.assertTrue(wait(lambda: self.server.slots._value == 6, 5))
 
-    def test_narrowing_debug_closes_them(self):
-        seed = os.urandom(32)
-        k1, k2 = ed25519_public(seed).hex(), ed25519_public(os.urandom(32)).hex()
-        for before, after, closes in (
-                ({"mode": "none"}, {"mode": "none", "for": 7200}, False),           # longer: stays
-                ({"mode": "key", "keys": [k1]}, {"mode": "key", "keys": [k1, k2]}, False),
-                ({"mode": "none"}, {"mode": "paired"}, True),
-                ({"mode": "none", "setup": True}, {"mode": "none"}, True),
-                ({"mode": "key", "keys": [k1, k2]}, {"mode": "key", "keys": [k1]}, True)):
-            self.debug.set(before)
-            c = self.client()
-            req = {"op": "shell"}
-            if before["mode"] == "key":
-                req.update(key=k1, sig=ed25519_sign(seed, key_message("shell", c.nonce, c.pub)).hex())
-            self.assertTrue(c.ask(req)["ok"], before)
-            self.assertTrue(wait(lambda: self.shells.count() == 1))
-            self.debug.set(after)
-            self.assertEqual(wait(lambda: self.shells.count() == 0, 0.5), closes, (before, after))
-            self.shells.close_all("next")
-            self.assertTrue(wait(lambda: self.server.slots._value == 6, 5))
-
-    def test_a_new_read_secret_closes_them(self):
-        self.debug.set({"mode": "none"})
-        c, r = self.shell()
-        self.assertTrue(wait(lambda: self.shells.count() == 1))
-        self.identity.handle("rotate_secret", {})
-        self.assertTrue(wait(lambda: self.shells.count() == 0))
-
     def test_framed_over_the_network(self):
-        self.debug.set({"mode": "none"})
-        c = self.client()
-        r = c.ask({"op": "shell", "v": 2, "cmd": "cat; exit 5"})
+        c, r = self.shell(v=2, cmd="cat; exit 5")
         self.assertEqual((r["ok"], r["v"]), (True, 2))
         c.sock.sendall(frame(F_DATA, b"through\n") + frame(F_EOF))
-        got, order = frames_until_end(lambda: c.f.read1(4096))
+        got, order = frames_until_end(reader(c))
         self.assertEqual(got[F_DATA], b"through\n")
         self.assertEqual(json.loads(got[F_EXIT]), {"status": 5})
 
     def test_a_framed_shell_hears_why_it_was_closed(self):
-        self.debug.set({"mode": "none"})
-        c = self.client()
-        self.assertEqual(c.ask({"op": "shell", "v": 2})["v"], 2)
+        c, r = self.shell(self.other, v=2)
+        self.assertEqual(r["v"], 2)
         self.assertTrue(wait(lambda: self.shells.count() == 1))
-        self.debug.off("expired")
-        got, order = frames_until_end(lambda: c.f.read1(4096))
+        self.identity.data["members"][1]["role"] = USER     # made a user
+        self.identity._changed()
+        got, order = frames_until_end(reader(c))
         self.assertEqual(order[-1], F_CLOSED)
-        self.assertEqual(json.loads(got[F_CLOSED]), {"why": "debug access ended"})
+        self.assertEqual(json.loads(got[F_CLOSED]), {"why": "no longer an owner of %s" % self.identity.pi_name()})
         self.assertTrue(wait(lambda: self.server.slots._value == 6, 5))
 
     def test_old_clients_get_the_bare_terminal(self):
-        self.debug.set({"mode": "none"})
-        c = self.client()
-        self.assertEqual(c.ask({"op": "shell"})["v"], 1)
+        c, r = self.shell()
+        self.assertEqual(r["v"], 1)
         c.sock.sendall(b"echo hi''ya; exit\n")
-        self.assertIn("hiya", read_all(lambda: c.f.read1(4096)))
+        self.assertIn("hiya", read_all(reader(c)))
 
 
 def frames_until_end(read, timeout=10):

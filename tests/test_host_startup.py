@@ -85,23 +85,14 @@ class ExposeReport(unittest.TestCase):
     def test_pi_says_what_it_took(self):
         srv, busy = taken_port()
         self.addCleanup(srv.close)
-        free = free_port()
         s = Streams("pi", expose_ports="1024-65535")
         s.session = mock.Mock()
-        self.addCleanup(s._apply_expose, [])
-        r = s._apply_expose([[80, "127.0.0.1", 22], [free, "127.0.0.1", 22]])
-        self.assertEqual(r["ok"], [[free, "127.0.0.1", 22]])
+        r = s._apply_expose([[80, "127.0.0.1", 22], [2222, "127.0.0.1", 22]])
+        self.assertEqual(r["ok"], [[2222, "127.0.0.1", 22]])
         self.assertEqual(r["refused"], [[80, "outside the ports it allows (1024-65535)"]])
-        s.expose_range = (1, 65535)
-        s.listeners.pop(free)[0].close()
-        # 0.0.0.0 next to a 127.0.0.1 listener binds on some systems: hold the wildcard instead
-        srv.close()
-        hold = socket.socket()
-        hold.bind(("0.0.0.0", busy))
-        hold.listen(1)
-        self.addCleanup(hold.close)
-        r = s._apply_expose([[busy, "127.0.0.1", 22]])
-        self.assertEqual(r["refused"], [[busy, "in use on the Pi"]])
+        # Nothing listens on the Pi any more (streams go through its endpoint): a port in use is fine.
+        self.assertEqual(s._apply_expose([[busy, "127.0.0.1", 22]])["ok"], [[busy, "127.0.0.1", 22]])
+        self.assertEqual((s.ports(), s.listeners), ([busy], {}))
 
 
 class Console(unittest.TestCase):

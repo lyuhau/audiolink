@@ -13,12 +13,13 @@ and "cmd": "..." runs that with `SHELL[0] -c` on pipes, not a pty (`audiolink sh
 
 Reached:
   over USB          a link stream (the host forwards its 127.0.0.1:47802 here; the
-                    Pi's stream allow list has PORT): the host is root anyway
-  over the network  the endpoint's "shell" request (debug level, services/access.py),
-                    which joins the endpoint connection to the server. At most
-                    NETWORK_SHELLS at once, apart from the endpoint's request slots;
-                    closed when debug access ends (off, expiry) or the read secret changes.
-The relay never reaches PORT directly (services/relay.py).
+                    Pi's stream allow list has PORT), when the host's key is an owner's
+                    (services/access.py LinkAccess)
+  over the network  the endpoint's "shell" request (owners), which joins the endpoint
+                    connection to the server. At most NETWORK_SHELLS at once, apart
+                    from the endpoint's request slots; closed when the computer stops
+                    being an owner (taken off the list, made a user, the Pi reset).
+Nothing else reaches PORT: the relay's connections go to the endpoint (services/relay.py).
 """
 import json
 import logging
@@ -35,7 +36,7 @@ import warnings
 
 from ..net import reuse_addr
 from . import Service
-from .access import DEBUG
+from .access import OWNER
 from .endpoint import Takeover
 from .streams import shut
 
@@ -428,40 +429,20 @@ class ShellServer:
 
 
 class NetworkShells(Service):
-    """The endpoint's "shell" request: debug level, its own limit, closed when debug ends."""
+    """The endpoint's "shell" request: owners only, its own limit."""
     caps = ("shell", "shell2")         # shell2: framed (exit status, resize, -- CMD)
 
-    def __init__(self, endpoint, debug, identity, port=PORT, limit=NETWORK_SHELLS):
-        self.debug, self.identity, self.port = debug, identity, port
+    def __init__(self, endpoint, port=PORT, limit=NETWORK_SHELLS):
+        self.port = port
         self.slots = threading.BoundedSemaphore(limit)
         self.limit = limit
         self.lock = threading.Lock()
         self.open = {}                  # endpoint socket -> [shell socket, framed, why closed]
-        self.secret = identity.keys()[1]
-        endpoint.register("shell", self._shell, DEBUG)
-        debug.on_end(self.close_all)
-        debug.shells = self.count
-        identity.subscribe(self._identity_changed)
+        endpoint.register("shell", self._shell, OWNER)
 
     def count(self):
         with self.lock:
             return len(self.open)
-
-    def close_all(self, why):
-        """Closes the shells' side: each join() then ends, telling a framed client why."""
-        with self.lock:
-            socks, self.open = list(self.open.values()), {}
-        for s in socks:
-            s[2] = why
-            shut(s[0])
-        if socks:
-            log.info("shell: closed %d network shell%s (%s)", len(socks), "s"[:len(socks) != 1], why)
-
-    def _identity_changed(self):
-        secret = self.identity.keys()[1]
-        if secret != self.secret:
-            self.secret = secret
-            self.close_all("read secret changed")
 
     def _shell(self, conn, req):
         try:
@@ -487,17 +468,21 @@ class NetworkShells(Service):
 
         def last():
             if entry[1] and entry[2]:
-                why = "the Pi has a new code" if entry[2] == "read secret changed" else "debug access ended"
                 try:
-                    conn.sock.sendall(frame(F_CLOSED, {"why": why}))
+                    conn.sock.sendall(frame(F_CLOSED, {"why": entry[2]}))
                 except (OSError, ValueError):
                     pass
 
+        def revoked(why):               # the endpoint's: this computer is no longer an owner
+            entry[2] = why
+            shut(target)
+        conn.on_revoke = revoked
+
         def run():
             try:
-                if self.debug.snapshot().get("mode", "off") == "off":
-                    entry[2] = "off"
-                    shut(target)                # debug ended just now
+                pending = conn.leftover()
+                if pending:
+                    target.sendall(pending)
                 join(conn.sock, target, last)
             finally:
                 self._ended(conn, target)

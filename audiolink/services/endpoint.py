@@ -1,31 +1,28 @@
-"""Pi side: the network endpoint (TCP PORT, mDNS _audiolink._tcp) that machines reach
-over Wi-Fi, the setup network or the relay. Services register requests on it (pairing,
-Wi-Fi changes, logs, updates, shells), each with the access level it needs
-(services/access.py decides).
+"""Pi side: the network endpoint (TCP PORT, mDNS _audiolink._tcp) that computers reach
+over Wi-Fi, the setup network or the relay (docs/protocol.md). Services register
+requests on it (streams, invites, Wi-Fi changes, logs, updates, shells), each with the
+role it needs (services/access.py).
 
 Protocol: TLS 1.3 (audiolink/tls.py: the Pi's certificate is for its identity key, which
-clients compare with the one in its connect code), then one JSON object per line.
-Every connection starts with
-  {"op":"hello"} -> {"name","tag","pub","claimed","nonce","tls"}
-Proofs a request can carry (each bound to the Pi's key as the client saw it in TLS, so
-one made for an impostor's connection is no good here):
-  "proof"        HMAC-SHA256(read secret, op + nonce + key): a machine that paired with
-                 this Pi; its sensitive fields travel sealed with the read secret (Conn.seal/open)
-  "key", "sig"   an ed25519 signature of KEY_LABEL + op + nonce + key (debug key mode)
-A connection that starts without TLS (an older audiolink) gets its hello answered and
-every request refused with UPGRADE, so it can say what to do.
-A handler can keep the connection for itself (a shell): it raises Takeover, and the
-endpoint frees the request slot and drops its timeout first.
+clients pin to the Pi code they hold), then one JSON object per line:
+  {"op":"hello"} -> {"v", "name", "tag", "pub", "claimed", "nonce", "tls"}
+  {"op":"auth", "key", "sig"} -> {"ok", "name", "role", "record"} | {"error", "code": "not_listed"}
+The signature is over auth.auth_message(nonce, the Pi's key), so it's good on this
+connection only. Once per connection; the connection then has that key's role. Without
+it only hello and pair work: anything else is an older client's (the read secret's
+`proof`), told UPGRADE, as is a connection that starts without TLS.
 
-Strangers can reach the endpoint (the LAN, the open setup network), so a connection
-has PROVE_WITHIN s to make a request that proves something (paired, or a debug
-request the switch allows) before it's dropped, one address can hold PER_ADDR
-connections that haven't, and only proven ones count as someone connected
-(services/presence.py). One turned away gets BUSY in the clear (the client says the
-Pi is busy) and the refusal is logged.
+A handler can keep the connection for itself (a shell, an opened stream): it raises
+Takeover, and the endpoint frees the request slot and drops its timeout first. A
+computer taken off the list (or a Pi that started over) loses its connections at once,
+held ones too; an owner made a user loses those that needed an owner.
+
+Strangers can reach the endpoint (the LAN, the open setup network, the relay), so a
+connection has PROVE_WITHIN s to prove a key (auth, or pairing) before it's dropped,
+one address can hold PER_ADDR connections that haven't, and only proven ones count as
+someone connected (services/presence.py). One turned away gets BUSY in the clear (the
+client says the Pi is busy) and the refusal is logged.
 """
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -33,33 +30,24 @@ import socket
 import threading
 import time
 
-from .. import tls
-from ..crypto import ed25519_verify, open_sealed, seal
+from .. import auth, tls
 from ..net import reuse_addr
-from .access import DEBUG, KEY_LABEL, PUBLIC, RELAY_SOURCE, decide, route_of
+from .access import NONE, OWNER, RELAY_SOURCE, Refused, allows, not_owner, route_of
 
 log = logging.getLogger("audiolink")
 
 PORT = 47900
-MAX_CONNS = 16              # connections served at once
+MAX_CONNS = 16              # connections served at once (held ones don't count)
 PER_ADDR = 2                # of them not yet proven, from one address
 PROVE_WITHIN = 15           # s a connection has to prove itself before it's dropped
 IDLE = 30                   # s between requests on a proven connection
-EXEMPT = (RELAY_SOURCE, "127.0.0.1")    # the relay (proven there; services/relay.py caps it), the Pi
+MAX_LINE = 1 << 20          # bytes in one request (an update chunk is 64 KiB)
+EXEMPT = (RELAY_SOURCE, "127.0.0.1")    # the relay (services/relay.py caps it), the Pi
 BUSY = {"error": "busy", "code": "busy"}
 LOG_EVERY = 60              # s between logged refusals of one address
 LINGER = 1                  # s a turned-away connection stays open after BUSY
 UPGRADE = {"error": "This Pi's audiolink is newer than this computer's: update audiolink here",
            "code": "upgrade"}
-
-
-def proof_for(secret, op, nonce, pub):
-    """pub: the Pi's public key from its TLS certificate."""
-    return hmac.new(secret, tls.bind(op.encode() + nonce, pub), hashlib.sha256).hexdigest()
-
-
-def key_message(op, nonce, pub):
-    return tls.bind(KEY_LABEL + op.encode() + nonce, pub)
 
 
 class Takeover(Exception):
@@ -72,61 +60,91 @@ class Takeover(Exception):
 
 
 class Conn:
-    """One client connection, as seen by request handlers."""
+    """One client connection, as seen by request handlers. key, name, role: the
+    computer it proved itself to be (None before auth)."""
 
     def __init__(self, sock, addr, identity, route="relay", secure=True):
         self.sock, self.addr, self.route = sock, addr, route
         self.identity = identity
         self.secure = secure                # TLS (False: an older client, refused)
-        self.pub = identity.public()        # what proofs are bound to
-        self.nonce = os.urandom(16)
-        self.f = sock.makefile("rwb")
-        self.verified = set()               # (key, sig) already checked on this connection
-        self.logged = set()                 # debug ops logged on this connection
-        self.proven = False                 # made a request that proved something
+        self.nonce = os.urandom(auth.NONCE_BYTES)
+        self.buf = b""                      # read past the last request (a stream's first bytes)
+        self.key = self.name = self.role = None
+        self.proven = False                 # proved a key, or paired
         self.on_proven = lambda: None
+        self.lock = threading.Lock()
+        self.busy = False                   # serving a request: a revoke waits for its reply
+        self.revoked = None                 # why it's being closed
+        self.held = None                    # the role a takeover needs while it has the connection
+        self.on_revoke = None               # a takeover's own way to close (a shell says why)
 
     def prove(self):
-        """This connection is someone legitimate (a passed check, or a handler's say: a
-        machine that just paired)."""
+        """This connection is someone legitimate (a key on the list, or a computer that
+        just paired)."""
         if not self.proven:
             self.proven = True
             self.on_proven()
 
     def send(self, obj):
-        self.f.write((json.dumps(obj) + "\n").encode())
-        self.f.flush()
+        self.sock.sendall((json.dumps(obj) + "\n").encode())
 
     def recv(self):
-        line = self.f.readline()
-        if not line:
-            raise ConnectionError("closed")
+        while b"\n" not in self.buf:
+            if len(self.buf) > MAX_LINE:
+                raise ValueError("request too long")
+            data = self.sock.recv(65536)
+            if not data:
+                raise ConnectionError("closed")
+            self.buf += data
+        line, _, self.buf = self.buf.partition(b"\n")
         return json.loads(line)
 
-    def seal(self, obj):
-        return seal(self.identity.keys()[1], json.dumps(obj).encode()).hex()
+    def leftover(self):
+        """What the client sent after its last request (a takeover's first bytes)."""
+        data, self.buf = self.buf, b""
+        return data
 
-    def open(self, blob_hex):
-        pt = open_sealed(self.identity.keys()[1], bytes.fromhex(blob_hex))
-        if pt is None:
-            raise ValueError("couldn't decrypt")
-        return json.loads(pt)
+    def revoke(self, why):
+        """Close it because its key lost its place (see Endpoint._recheck)."""
+        with self.lock:
+            if self.revoked:
+                return
+            self.revoked = why
+            if self.busy:
+                return                      # the request's reply goes out first
+            hook = self.on_revoke
+        if hook:
+            hook(why)
+        else:
+            _shut(self.sock)
+
+
+def _shut(sock):
+    """Wakes whatever thread is reading it. A bare TCP shutdown, even under TLS: the
+    thread using the TLS state finds the end itself."""
+    try:
+        socket.socket.shutdown(sock, socket.SHUT_RDWR)
+    except OSError:
+        pass
 
 
 class Endpoint:
-    def __init__(self, identity, port=PORT, presence=None, debug=None, wifi_ip=None, bind="0.0.0.0",
-                 exempt=EXEMPT):
+    def __init__(self, identity, port=PORT, presence=None, wifi_ip=None, bind="0.0.0.0", exempt=EXEMPT,
+                 record=None):
         self.identity = identity
         self.presence = presence                # services/presence.py: requests count as clients
-        self.debug = debug                      # services/access.py DebugService (None: debug off)
         self.wifi_ip = wifi_ip or (presence.wifi_ip if presence else (lambda: None))
-        self.handlers = {}                      # op -> (fn(conn, req) -> reply or None, level)
+        self.record = record or (lambda: None)  # -> {"name", "ts", "lan", "ssid", "ports"}: where the Pi is
+        self.handlers = {}                      # op -> (fn(conn, req) -> reply or None, role)
         self.exempt = exempt                    # addresses PER_ADDR doesn't apply to
         self.lock = threading.Lock()
         self.active = 0                         # connections being served
         self.unproven = {}                      # address -> its connections not yet proven
         self.turned_away = {}                   # address -> when that was last logged
         self.closing = []                       # [(when, socket)] turned away, closed then
+        self.authed = set()                     # connections with a key, held ones too
+        self.pub = identity.public()
+        identity.subscribe(self._recheck)
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         reuse_addr(srv)
         srv.bind((bind, port))
@@ -135,50 +153,69 @@ class Endpoint:
         threading.Thread(target=self._accept, args=(srv,), daemon=True).start()
         log.info("endpoint: listening on :%d", self.port)
 
-    def register(self, op, fn, level=PUBLIC):
+    def register(self, op, fn, role=OWNER):
         """fn(conn, req) returns a reply dict, or None if it replied itself; it raises
-        StopIteration to end the connection after replying, or Takeover to keep it.
-        level: the access level it needs, or a tuple of levels any one of which will do."""
-        self.handlers[op] = (fn, level)
+        StopIteration to end the connection after replying, Takeover to keep it, or
+        access.Refused to refuse. role: what the connection needs (NONE: anyone)."""
+        self.handlers[op] = (fn, role)
 
-    def _proven(self, conn, op, req, need, switch):
-        proven = set()
-        secret = self.identity.keys()[1]
-        if self.identity.claimed() and hmac.compare_digest(proof_for(secret, op, conn.nonce, conn.pub),
-                                                           str(req.get("proof", ""))):
-            proven.add("paired")
-        if need == DEBUG and switch.get("mode") == "key" and req.get("key") and req.get("sig"):
-            got = (str(req["key"]), str(req["sig"]))
-            try:
-                key, sig = bytes.fromhex(got[0]), bytes.fromhex(got[1])
-            except ValueError:
-                return proven
-            if key in self.debug.keys() and (got in conn.verified or       # still one of the keys
-                                             ed25519_verify(key, key_message(op, conn.nonce, conn.pub), sig)):
-                conn.verified.add(got)
-                proven.add("key")
-        return proven
+    # ---- keys
+    def _auth(self, conn, req):
+        if conn.key is not None:
+            return {"error": "This connection has proved a key already"}
+        name = self.identity.pi_name()
+        try:
+            key, sig = bytes.fromhex(str(req.get("key"))), bytes.fromhex(str(req.get("sig")))
+        except ValueError:
+            key = sig = b""
+        if len(key) != 32 or not auth.verify(key, conn.nonce, conn.identity.public(), sig):
+            log.warning("endpoint: a key proof from %s (%s) that doesn't check out", conn.addr[0], conn.route)
+            return {"error": "This computer's key proof didn't check out (is audiolink up to date here?)",
+                    "code": "not_listed"}
+        member = self.identity.member(key)
+        if member is None:
+            log.warning("endpoint: %s (%s) isn't on the list (key %s...)", conn.addr[0], conn.route, key.hex()[:8])
+            if not self.identity.claimed():
+                return {"error": "%s has no owner yet: claim it with audiolink setup on the computer it's "
+                                 "plugged into" % name, "code": "not_listed"}
+            return {"error": "This computer isn't on %s's list: ask an owner of %s for an invite (audiolink "
+                             "invite NAME, on their computer)" % (name, name), "code": "not_listed"}
+        conn.key, conn.name, conn.role = key, member["name"], member["role"]
+        with self.lock:
+            self.authed.add(conn)
+        conn.prove()
+        log.info("endpoint: %s (%s) from %s (%s)", conn.name, conn.role, conn.addr[0], conn.route)
+        return {"ok": True, "name": conn.name, "role": conn.role, "record": self.record()}
+
+    def _recheck(self):
+        """The list or the key changed: connections whose key lost its place go."""
+        started_over = self.identity.public() != self.pub
+        self.pub = self.identity.public()
+        with self.lock:
+            conns = list(self.authed)
+        for conn in conns:
+            role = NONE if started_over else self.identity.role_of(conn.key)
+            if role is NONE:
+                conn.revoke("%s started over" % self.identity.pi_name() if started_over
+                            else "taken off %s's list" % self.identity.pi_name())
+            elif role != conn.role:
+                conn.role = role
+                if conn.held and not allows(role, conn.held):
+                    conn.revoke("no longer an owner of %s" % self.identity.pi_name())
 
     def check(self, conn, op, req, need):
-        """None if the request may go ahead, else the refusal reply (logged). need: a
-        level, or a tuple of levels any one of which will do."""
-        levels = need if isinstance(need, tuple) else (need,)
-        if PUBLIC in levels:
+        """None if the request may go ahead, else the refusal reply (logged)."""
+        if need is NONE:
             return None
-        switch = self.debug.snapshot() if self.debug else {"mode": "off"}
-        refusals = []
-        for level in levels:
-            why = decide(level, conn.route, self._proven(conn, op, req, level, switch), switch, time.monotonic())
-            if not why:
-                if level == DEBUG and op not in conn.logged:
-                    conn.logged.add(op)
-                    log.info("access: %s from %s (%s, debug %s)", op, conn.addr[0], conn.route, switch.get("mode"))
-                return None
-            refusals.append(why)
-        why = refusals[-1] if req.get("key") else refusals[0]      # what the asker went by
-        log.warning("access: refused %s from %s (%s): %s", op, conn.addr[0], conn.route, why[0])
-        return {"error": why[1], "code": why[0]}
+        if conn.key is None or "proof" in req:
+            return UPGRADE                      # an older client: no auth, or the read secret's proof
+        if allows(conn.role, need):
+            return None
+        log.warning("access: refused %s to %s (%s) from %s (%s)", op, conn.name, conn.role, conn.addr[0], conn.route)
+        e = not_owner(self.identity, conn.name) if need == OWNER else Refused("not_listed", "Not on the list")
+        return {"error": str(e), "code": e.code}
 
+    # ---- connections
     def _accept(self, srv):
         srv.settimeout(LINGER)
         while True:
@@ -251,6 +288,11 @@ class Endpoint:
         while self.closing and self.closing[0][0] <= now:
             self.closing.pop(0)[1].close()
 
+    def _hello(self, conn):
+        info = self.identity.info()
+        conn.send({"v": auth.ENDPOINT_VERSION, "name": info["name"], "tag": info["tag"], "pub": info["pub"],
+                   "claimed": self.identity.claimed(), "nonce": conn.nonce.hex(), "tls": True})
+
     def _serve(self, sock, addr):
         held, conn = True, None
         try:
@@ -276,7 +318,7 @@ class Endpoint:
             first = sock.recv(1, socket.MSG_PEEK)
             secure = first[:1] == bytes([tls.FIRST_BYTE])
             if secure:
-                sock = tls.server_context(self.identity.keys()[0]).wrap_socket(sock, server_side=True)
+                sock = tls.server_context(self.identity.seed()).wrap_socket(sock, server_side=True)
             conn = Conn(sock, addr, self.identity, route, secure)
             conn.on_proven = proven
             greeted = False
@@ -286,28 +328,29 @@ class Endpoint:
                     return
                 sock.settimeout(left)
                 req = conn.recv()
-                op = req.get("op")
+                op = req.get("op") if isinstance(req, dict) else None
                 if op == "hello":
                     if greeted:
                         return                  # one per connection
                     greeted = True
-                    info = self.identity.info()
-                    conn.send({"name": info["name"], "tag": info["tag"], "pub": info["pub"],
-                               "claimed": info["claimed"], "nonce": conn.nonce.hex(), "tls": True})
+                    self._hello(conn)
                     continue
                 if not secure:
                     conn.send(UPGRADE)
                     continue
-                if op not in self.handlers:
-                    conn.send({"error": "unknown op %r" % op})
+                if op == "auth":
+                    conn.send(self._auth(conn, req))
                     continue
-                fn, level = self.handlers[op]
-                refused = self.check(conn, op, req, level)
+                if op not in self.handlers:
+                    conn.send({"error": "unknown op %r" % op} if conn.key else UPGRADE)
+                    continue
+                fn, need = self.handlers[op]
+                refused = self.check(conn, op, req, need)
                 if refused:
                     conn.send(refused)
                     continue
-                if PUBLIC not in (level if isinstance(level, tuple) else (level,)):
-                    conn.prove()
+                with conn.lock:
+                    conn.busy = True
                 try:
                     reply = fn(conn, req)
                 except StopIteration:
@@ -316,8 +359,14 @@ class Endpoint:
                     held = False
                     self._leave(addr[0], held=True, proven=True)
                     sock.settimeout(None)
-                    t.run()
+                    with conn.lock:
+                        conn.busy, conn.held = False, need
+                        revoked = conn.revoked
+                    if not revoked:
+                        t.run()
                     return
+                except Refused as e:
+                    reply = {"error": str(e), "code": e.code}
                 except (OSError, ConnectionError):
                     raise
                 except Exception as e:          # a bug, or a request shaped for another version
@@ -325,9 +374,16 @@ class Endpoint:
                     reply = {"error": "The Pi couldn't do that (%s)" % (str(e) or type(e).__name__)}
                 if reply is not None:
                     conn.send(reply)
+                with conn.lock:
+                    conn.busy = False
+                    if conn.revoked:
+                        return
         except (OSError, ValueError, ConnectionError):
             pass
         finally:
+            if conn:
+                with self.lock:
+                    self.authed.discard(conn)
             was_proven = bool(conn and conn.proven)
             if ends:
                 if was_proven:
@@ -336,3 +392,15 @@ class Endpoint:
                     self.presence.release(ends)
             sock.close()
             self._leave(addr[0], held=held, proven=was_proven)
+
+
+# ---- Until the client side of roles-v1 lands: the old client code (client/pairing.py,
+# client/remote.py) still imports these. Nothing on the Pi uses them; delete with it.
+def proof_for(secret, op, nonce, pub):
+    import hashlib
+    import hmac
+    return hmac.new(secret, tls.bind(op.encode() + nonce, pub), hashlib.sha256).hexdigest()
+
+
+def key_message(op, nonce, pub):
+    return tls.bind(b"audiolink-debug-v1\0" + op.encode() + nonce, pub)

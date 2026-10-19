@@ -93,3 +93,66 @@ def wait(pred, timeout=5.0):
             return True
         _time.sleep(0.01)
     return pred()
+
+
+class EndpointClient:
+    """A bare client of a Pi's endpoint (services/endpoint.py) for Pi-side tests: TLS,
+    hello, auth with a test key, then JSON lines; after `open`, the socket is the stream."""
+
+    def __init__(self, port, host="127.0.0.1", sock=None):
+        import socket
+        raw = sock or socket.create_connection((host, port), timeout=10)
+        raw.settimeout(10)
+        self.sock, self.pub = tls.client_wrap(raw)
+        self.buf = b""
+
+    def ask(self, obj):
+        self.send(obj)
+        return self.line()
+
+    def send(self, obj):
+        import json
+        self.sock.sendall((json.dumps(obj) + "\n").encode())
+
+    def line(self):
+        import json
+        while b"\n" not in self.buf:
+            data = self.sock.recv(65536)
+            if not data:
+                raise ConnectionError("the Pi closed the connection")
+            self.buf += data
+        line, _, self.buf = self.buf.partition(b"\n")
+        return json.loads(line)
+
+    def hello(self):
+        self.hi = self.ask({"op": "hello"})
+        return self.hi
+
+    def auth(self, seed):
+        """hello (if not yet), then auth signed with this ed25519 seed. -> the reply."""
+        from audiolink.auth import auth_message
+        from audiolink.crypto import ed25519_public, ed25519_sign
+        if not hasattr(self, "hi"):
+            self.hello()
+        sig = ed25519_sign(seed, auth_message(bytes.fromhex(self.hi["nonce"]), self.pub))
+        return self.ask({"op": "auth", "key": ed25519_public(seed).hex(), "sig": sig.hex()})
+
+    def recv_exactly(self, n):
+        data, self.buf = self.buf, b""
+        while len(data) < n:
+            more = self.sock.recv(65536)
+            if not more:
+                break
+            data += more
+        return data
+
+    def close(self):
+        import socket
+        try:
+            socket.socket.shutdown(self.sock, socket.SHUT_RDWR)     # the Pi sees the end now
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass

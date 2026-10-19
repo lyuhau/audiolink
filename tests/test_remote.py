@@ -16,7 +16,6 @@ from audiolink.client.pairing import PiConn
 from audiolink.client.remote import Key, Remote
 from audiolink.crypto import ed25519_public
 from audiolink.host import update_cli
-from audiolink.services.access import PAIRED, DebugService
 from audiolink.services.endpoint import Endpoint
 from audiolink.services.identity import IdentityService
 from audiolink.services.logs import LogsService
@@ -55,15 +54,14 @@ class Harness(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir)
         self.identity = IdentityService(self.dir)
         self.identity.claim()
-        self.debug = DebugService()
-        self.ep = Endpoint(self.identity, port=0, debug=self.debug, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
+        self.ep = Endpoint(self.identity, port=0, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
         self.update = FakeUpdate(self.dir, self.ep)
         logs = os.path.join(self.dir, "logs")
         os.mkdir(logs)
         with open(os.path.join(logs, "audiolink.log"), "w") as f:
             f.write("".join("line %d\n" % i for i in range(10)))
         LogsService(log_dir=logs, prev=os.path.join(logs, "prev"), endpoint=self.ep)
-        self.ep.register("change_status", lambda conn, req: {"saved": []}, PAIRED)
+        self.ep.register("change_status", lambda conn, req: {"saved": []})
 
     def remote(self, code=None, key=None):
         entry = {"alias": "pi", "code": code if code is not None else self.identity.code()}
