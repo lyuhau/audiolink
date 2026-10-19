@@ -27,7 +27,7 @@ Any computer:
   audiolink remove NAME                      take NAME off every Pi this computer owns
   audiolink forget PI                        drop a Pi here, and this computer from its list
   audiolink rename PI NEW [--on-pi]          rename here (or on the Pi itself)
-  audiolink ssh-config [--user NAME]         ~/.ssh/config entries: then just `ssh PI`
+  audiolink ssh-config                       ~/.ssh/config entries: then `ssh PI` (or user@PI)
   audiolink connect PI PORT                  ssh ProxyCommand: find the Pi, connect
   audiolink wifi join NAME --pi PI           over the network (checks the network first when it can)
   audiolink wifi status|check --pi PI        over the network, the relay included
@@ -130,7 +130,6 @@ def build_parser():
                     help="start audiolink host at login, and keep it running")
     au.add_argument("--no-autostart", dest="autostart", action="store_false",
                     help="don't start audiolink host at login (removes it if set up)")
-    stp.add_argument("--user", help="ssh NAME: your login on the computer the Pi is plugged into")
     stp.add_argument("--code", metavar="CODE", help="the Pi's code (al2-...), if it isn't on this network: "
                      "join through its relay")
     stp.add_argument("--invite", metavar="CODE", help="the 6-digit invite code (from audiolink invite on an owner "
@@ -189,7 +188,6 @@ def build_parser():
     ren.add_argument("new", help="the new name: lowercase letters, digits and dashes")
     ren.add_argument("--on-pi", action="store_true", help="rename the Pi itself (it must be plugged in here)")
     sshc = sub.add_parser("ssh-config", help="print ~/.ssh/config entries for known Pis")
-    sshc.add_argument("--user", help="login user on the computer the Pi is plugged into (default: yours here)")
     sshc.add_argument("--port", type=argtypes.port, default=2222,
                       help="the Pi's port for ssh when its exposed ports aren't known (default 2222)")
     con = sub.add_parser("connect", help="pipe stdin/stdout to a Pi port (ssh ProxyCommand)")

@@ -299,10 +299,11 @@ class Reaching(KeyringCase):
         self.assertIn("last_seen", e)
 
     def test_ssh_config(self):
-        out, err, _ = self.run_cmd(pis.ssh_config_command, user=None, port=2222)
+        out, err, _ = self.run_cmd(pis.ssh_config_command, port=2222)
         self.assertIn("plugged into", out)
         self.assertIn("offered no ports", err)
-        self.assertIn("--user", err)
+        self.assertIn("  HostKeyAlias audiolink-%s\n" % keyring.pub_of(self.code), out)
+        self.assertNotIn("User ", out)
         self.assertEqual(pis._quote(r"C:\Program Files\audiolink.exe", windows=True),
                          r'"C:\Program Files\audiolink.exe"')
 

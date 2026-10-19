@@ -691,13 +691,10 @@ class Guide:
         """The ~/.ssh/config block for ssh NAME (not on its host: that's this computer)."""
         entry = keyring.lookup(self.name, known=True)
         path = sshconfig.default_path(self.home)
-        tag = keyring.pub_of(entry["code"])[:8]
-        user = self.a.user
-        if user is None:                # as before, or ssh's own default (this login's name)
-            old = sshconfig.current(path, tag) or ""
-            user = next((ln.split()[1] for ln in old.splitlines() if ln.strip().startswith("User ")), None)
+        pub = keyring.pub_of(entry["code"])
+        tag = pub[:8]
         port = (self.is_host and self.ssh_port) or pis.ssh_port(entry, SSH_PI_PORT)
-        text = sshconfig.block(tag, self.name, port, user,
+        text = sshconfig.block(tag, self.name, port, pub,
                                pis._launcher(self.installed.argv, self.installed.env))
         result = sshconfig.write(path, tag, text)
         print("ssh %s: %s" % (self.name, "updated" if result == "updated" else "set up"))
@@ -718,7 +715,13 @@ class Guide:
             ok, what = self.banner(self.name, self.ssh_port)
         done(("works" if client else "yes") if ok else what)
         detail("%s", what)
-        if ok:
+        if ok and client and what == "reached the login":
+            # gate 2 is the host's own login (docs/state.md "Two gates"): audiolink got this far
+            print("ssh %s reached its host's ssh server, which didn't take this computer's key. On that "
+                  "computer, add your key to ~/.ssh/authorized_keys; or from here, if it allows a password: "
+                  "ssh-copy-id %s" % (self.name, self.name))
+            print("Done: ssh %s (once your key is let in)" % self.name)
+        elif ok:
             print("Done%s" % (": ssh %s" % self.name if client else ""))
         elif self.is_host:
             print("ssh %s works once %s is online (audiolink wifi status) and this computer's ssh server is on"

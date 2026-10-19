@@ -6,7 +6,6 @@ owner (everything). This computer gets on a list by claiming a Pi over USB (setu
 by redeeming an invite from an owner (setup, client/pairing.py).
 """
 import collections
-import getpass
 import os
 import shlex
 import socket
@@ -288,19 +287,17 @@ def ssh_port(entry, default=2222):
 
 
 def ssh_config_command(a):
+    from . import sshconfig
     pis = keyring.load()
     if not pis:
         raise SystemExit("No Pis yet (audiolink setup)")
-    user = a.user or getpass.getuser()
-    if not a.user:
-        sys.stderr.write("Logging in as %s, this computer's user (another: --user NAME)\n" % user)
     print("# audiolink: add to ~/.ssh/config once (appending again adds duplicates; ssh uses the first),\n"
-          "# then: ssh NAME. Each entry logs in to the computer that Pi is plugged into, as %s." % user)
-    for e in sorted(pis.values(), key=lambda e: e["alias"]):
+          "# then: ssh NAME, or ssh user@NAME. Each entry reaches the computer that Pi is plugged into.\n"
+          "# (audiolink setup keeps these entries for you.)")
+    for pub, e in sorted(pis.items(), key=lambda kv: kv[1]["alias"]):
         rec = e.get("last_record")
         port = ssh_port(e, a.port)
         if rec and not rec.get("ports"):
             sys.stderr.write("%s offered no ports when last found (on its host: audiolink host --expose %d:22)\n"
                              % (e["alias"], a.port))
-        print("\nHost %s\n  HostName %s\n  Port %d\n  User %s\n  ProxyCommand %s connect %s %%p"
-              % (e["alias"], e["alias"], port, user, _launcher(), e["alias"]))
+        print("\n" + sshconfig.block(pub[:8], e["alias"], port, pub, _launcher()), end="")

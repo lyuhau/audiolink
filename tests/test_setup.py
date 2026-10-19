@@ -312,18 +312,18 @@ class SshBlock(TempConfig):
         path = self.dir / ".ssh" / "config"
         path.parent.mkdir()
         path.write_text("Host *\n  ServerAliveInterval 30")
-        b1 = sshconfig.block("abcd1234", "kitchen", 2222, "me", "/bin/audiolink")
+        b1 = sshconfig.block("abcd1234", "kitchen", 2222, "ab" * 32, "/bin/audiolink")
         self.assertEqual(sshconfig.write(path, "abcd1234", b1), "added")
         self.assertEqual(sshconfig.write(path, "abcd1234", b1), "unchanged")
         with open(str(path), "a") as f:
             f.write("\nHost other\n  Port 1\n")
-        b2 = sshconfig.block("abcd1234", "pantry", 2200, "me", "/bin/audiolink")
+        b2 = sshconfig.block("abcd1234", "pantry", 2200, "ab" * 32, "/bin/audiolink")
         self.assertEqual(sshconfig.write(path, "abcd1234", b2), "updated")
         text = path.read_text()
         self.assertEqual(text.count("BEGIN audiolink abcd1234"), 1)
         self.assertTrue(text.startswith("Host *\n  ServerAliveInterval 30\n\n# BEGIN"))
-        self.assertIn("Host pantry\n  HostName pantry\n  Port 2200\n  User me\n"
-                      "  ProxyCommand /bin/audiolink connect pantry %p\n# END audiolink abcd1234\n", text)
+        self.assertIn("Host pantry\n  HostName pantry\n  Port 2200\n  HostKeyAlias audiolink-%s\n"
+                      "  ProxyCommand /bin/audiolink connect pantry %%p\n# END audiolink abcd1234\n" % ("ab" * 32), text)
         self.assertNotIn("kitchen", text)
         self.assertTrue(text.endswith("Host other\n  Port 1\n"))
         self.assertEqual(sshconfig.current(path, "abcd1234"), b2)
@@ -335,7 +335,7 @@ class SshBlock(TempConfig):
     @needs_modes
     def test_new_file_is_private(self):
         path = self.dir / "h" / ".ssh" / "config"
-        sshconfig.write(path, "t", sshconfig.block("t", "x", 2222, "me", "a"))
+        sshconfig.write(path, "t", sshconfig.block("t", "x", 2222, "ab" * 32, "a"))
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
 
@@ -345,7 +345,7 @@ class SshBlock(TempConfig):
         with mock.patch.object(sshconfig.sys, "platform", "win32"), \
                 mock.patch.object(Path, "mkdir", autospec=True) as mkdir:
             mkdir.side_effect = lambda p, *a, **k: os.makedirs(str(p), exist_ok=True)
-            sshconfig.write(path, "t", sshconfig.block("t", "x", 2222, "me", "a"))
+            sshconfig.write(path, "t", sshconfig.block("t", "x", 2222, "ab" * 32, "a"))
         self.assertNotIn("mode", mkdir.call_args.kwargs)
 
 
@@ -506,7 +506,8 @@ class Setup(TempConfig):
             self.assertIn(line, out)
         self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
         self.assertTrue(self.plist().exists())
-        self.assertIn("Host green-rowan\n  HostName green-rowan\n  Port 2222\n  ProxyCommand /inst/audiolink "
+        self.assertIn("Host green-rowan\n  HostName green-rowan\n  Port 2222\n  HostKeyAlias audiolink-%s\n"
+                      "  ProxyCommand /inst/audiolink " % keyring.pub_of(code_for(self.host.ident)) +
                       "connect green-rowan %p", self.ssh_config())
         self.assertNotIn("Start it for this setup", out)                 # the Pi is here: no question
         self.assertEqual(self.banners, [("green-rowan", 2222)])
@@ -640,20 +641,31 @@ class Setup(TempConfig):
             print("Added green-rowan")
             return entry
         with mock.patch("audiolink.client.pairing.add_over_network", found):
-            out, exit_code = self.setup("--yes", "--user", "alice", pi_device=False)
+            out, exit_code = self.setup("--yes", pi_device=False)
         self.assertIsNone(exit_code, out)
         self.assertIn("Looking for a Pi on this network...", out)
         self.assertIn("Done: ssh green-rowan", out)
-        self.assertIn("User alice", self.ssh_config())
+        self.assertNotIn("User ", self.ssh_config())        # the computer behind the Pi can change
+        self.assertIn("HostKeyAlias audiolink-%s" % keyring.pub_of(code), self.ssh_config())
         self.assertEqual(self.runner.spawned, [])
         self.assertFalse((self.dir / "config" / "host.json").exists())
         with mock.patch("audiolink.client.pairing.add_over_network", lambda a, ask: None):
             out, exit_code = self.setup("--yes", pi_device=False, banner=(False, "green-rowan is offline"))
         self.assertIn("No new Pi here; setting up green-rowan (added before)", out)
-        self.assertIn("User alice", self.ssh_config())       # its earlier answer
         self.assertIn("Trying ssh green-rowan... green-rowan is offline", out)
         self.assertEqual(self.ssh_config().count("# BEGIN audiolink"), 1)
         self.assertEqual(self.lookups, [keyring.code_for(keyring.pub_of(code))])   # added before: refreshed
+
+    def test_reaching_the_login_explains_gate_2(self):
+        self.host.running = False
+        keyring.upsert(code_for(new_identity()), name="green-rowan", seen=True)
+        with mock.patch("audiolink.client.pairing.add_over_network", lambda a, ask: None):
+            out, exit_code = self.setup("--yes", pi_device=False, banner=(True, "reached the login"))
+        self.assertIsNone(exit_code, out)
+        self.assertIn("Trying ssh green-rowan... works", out)
+        self.assertIn("didn't take this computer's key", out)
+        self.assertIn("ssh-copy-id green-rowan", out)
+        self.assertIn("Done: ssh green-rowan (once your key is let in)", out)
 
     def test_added_before_gets_its_current_record(self):
         self.host.running = False

@@ -23,14 +23,18 @@ def ssh_default_path():
         return Path(os.environ["USERPROFILE"]) / ".ssh" / "config" if os.environ.get("USERPROFILE") else None
 
 
-def block(tag, alias, port, user, proxy):
-    """proxy: how to run audiolink in a ProxyCommand (already quoted)."""
+def block(tag, alias, port, pub, proxy):
+    """ssh ALIAS: whatever computer the Pi is plugged into (docs/state.md "The ssh side").
+    No User (ssh's default login, or ssh user@ALIAS): the computer behind can change. The
+    host key is filed under the Pi's key, not the name or port. proxy: how to run
+    audiolink in a ProxyCommand (already quoted)."""
     return "\n".join([
         BEGIN % tag,
         "# %s: written by audiolink setup (run it again to change this; it replaces this block)" % alias,
         "Host %s" % alias,
         "  HostName %s" % alias,
-        "  Port %d" % port] + (["  User %s" % user] if user else []) + [
+        "  Port %d" % port,
+        "  HostKeyAlias audiolink-%s" % pub,
         "  ProxyCommand %s connect %s %%p" % (proxy, alias),
         END % tag]) + "\n"
 
