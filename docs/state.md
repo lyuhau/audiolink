@@ -195,8 +195,9 @@ presence counts relay and LAN clients from there (today: from the source address
 ### Context rules
 
 A separate axis that only narrows: no Wi-Fi changes, shell port or uplink proxy over
-the relay; exposed ports refused on the setup network unless an owner allows it; the
-exposed-port range, set by owners.
+the relay. (The setup-network rule and the exposed-port range go: they existed because
+anyone nearby could reach the ports; with every stream needing a listed key, the setup
+network is just another channel.)
 
 ### Finding a Pi
 
@@ -207,7 +208,7 @@ contact.
 
 | Thing | Contains | Gives |
 |---|---|---|
-| **Pi code** | the Pi's public key | finding it on the relay and checking it's the right Pi. No access, so it can be shown freely |
+| **Pi code** | the Pi's public key | finding it on the relay, and pinning TLS to it on every path (LAN and relay). No access, so it can be shown freely |
 | **Invite** | a one-use 6-digit code (today's pairing code) | puts the redeemer's key on the list, as user (or owner, `--owner`), and hands over the Pi code |
 
 The read secret goes: request proofs and the relay tunnel proof become keys; the record
@@ -223,8 +224,11 @@ seal goes with the DHT; field sealing goes to the keyed connection.
 | `audiolink reset PI` | the same as the pins, by an owner: giving away and selling are both this |
 | `audiolink forget PI` | this computer drops the Pi, and takes itself off the Pi's list when it can reach it |
 
-Gone: `share` (the Pi code grants nothing: `pis` shows it), `rotate-secret` (`remove`
-instead), `pairing code` (`invite` instead), `debug`.
+`audiolink pis [PI]` shows each Pi: online (LAN or relay) or its last record ("last
+seen on SSID X"), its code, and for owners its list. It takes over from `find`.
+
+Gone: `find` (`pis`), `share` (the Pi code grants nothing: `pis` shows it),
+`rotate-secret` (`remove` instead), `pairing code` (`invite` instead), `debug`.
 
 Setup's last check runs real ssh and reports gate 2 plainly: "logged in", or "reached
 desktop's sshd; your key was refused. On desktop, add your key; from here, if desktop
@@ -248,7 +252,8 @@ which is right: it is another computer. Fix it as ssh says, or keep one Pi per h
 the Pi's key on every path; prove the computer key; refresh the Pi's record.
 
 The Pi's own sshd (dev images) is a different machine: its own entry
-(`green-rowan-pi`), owners only.
+(`green-rowan-pi`, `HostKeyAlias audiolink-<pi key>-pi`, so the two host keys don't
+collide), owners only.
 
 ### Lifecycle
 
@@ -262,7 +267,7 @@ The Pi's own sshd (dev images) is a different machine: its own entry
 | Pi moves between your hosts | nothing in audiolink; ssh warns once that the host key changed |
 | Second Pi on a host | claimed by the host; its own list, invited to separately |
 | Give away / sell | `reset` (or the pins): nothing carries over |
-| Reinstall a computer | a new key: invite it, remove the old name |
+| Reinstall a computer | a new key: invite it from another owner computer, remove the old name. If it was the only owner: reset, claim, re-invite (setup suggests a second owner while there's only one) |
 | Dead card | reset (new card), claim, re-invite |
 
 ### What each machine stores, new
@@ -277,14 +282,22 @@ The Pi's own sshd (dev images) is a different machine: its own entry
 ### Getting there
 
 A clean break: there's one deployment, so one protocol version replaces the read secret
-with keys; old peers get "update audiolink"; each Pi is claimed once more.
+with keys; old peers get "update audiolink"; each Pi is claimed once more. The relay
+server needs no change (it joins by Pi key and never sees the proofs): the break is the
+Pi and the computers only. Wire details: docs/protocol.md.
 
 | # | Step | Pi update |
 |---|---|---|
 | 1 | computer keys; the Pi's list; key proofs on the endpoint, the relay tunnel and LAN streams (exposed ports off the Wi-Fi); the read secret and the DHT removed; control-port token | yes |
-| 2 | `invite` and `remove`; `forget` removes itself; the gone commands removed | yes |
+| 2 | `invite`, `remove`, `pis` (with `find` folded in); `forget` removes itself; the gone commands removed | yes |
 | 3 | USB narrowed to host jobs; custody removed | yes |
 | 4 | Pi entries with `HostKeyAlias`; setup's gate-2 message | no |
+
+Steps 1 and 2 ship together: after 1 alone nobody but the claimer gets on a list. They
+are the release that breaks compatibility; 3 and 4 follow.
+
+Moving a Pi over: today's Pi takes a code update over USB without a key, so `audiolink
+update` with the new version comes first, then `setup` claims it under the new rules.
 
 ### Not in the first version
 
