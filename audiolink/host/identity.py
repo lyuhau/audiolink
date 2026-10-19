@@ -1,69 +1,68 @@
-"""Host daemon side of the Pi's identity.
+"""Host daemon side of the Pi's identity (docs/protocol.md "USB link").
 
-When a Pi connects over USB (and whenever its identity changes):
-  - if this machine knows it (keyring), refresh what we know (name, last seen) and,
-    while the Pi has no persistent storage, keep the custody copy current;
-  - if the Pi has a fresh identity (it lost its own at a RAM-only reboot, or just
-    got an SD card) and we hold custody for its board serial, restore it, so its
-    code and name survive;
-  - one-time migration: before Pis owned their identity, the host kept one in
-    discovery.json; hand that to the Pi so existing connect codes keep working.
+When a Pi connects over USB (and whenever its identity changes, e.g. just claimed):
+  - prove this computer's key to it once per link-up (`link.auth`, signed over the nonce
+    in the Pi's HELLO): the link then has that key's role on the Pi's list (owner, user,
+    or none: host jobs only), which `peer` on the control port reports;
+  - if this computer knows the Pi (keyring), refresh what it knows: name, last seen, role.
 """
-import json
 import logging
 import threading
 import time
 
+from ..auth import auth_message
 from ..client import keyring
-from ..discovery.record import code_for
-from ..paths import config_dir
 from ..services import Service
 
 log = logging.getLogger("audiolink")
 
-LEGACY = config_dir() / "discovery.json"
-
 
 class HostIdentity(Service):
+    def __init__(self, key=None):
+        self._key = key
+        self.role = None                # this link's role on the Pi's list
+        self.pi = None                  # the Pi's identity info, as it last said
+        self.nonce = None
+
+    @property
+    def key(self):
+        if self._key is None:
+            from ..client.computer import key
+            self._key = key()
+        return self._key
+
     def on_peer_hello(self, info):
-        if info.get("identity"):
-            threading.Thread(target=self._sync, args=(info["identity"],), daemon=True).start()
+        self.role, self.pi = None, info.get("identity")
+        self.nonce = info.get("nonce")
+        if self.pi:
+            threading.Thread(target=self._sync, daemon=True).start()
 
     def on_event(self, name, data):
-        if name == "identity":          # renamed, (un)discoverable, claimed, restored
-            self._sync(data)
+        if name == "identity":          # renamed, claimed, a list change
+            self.pi = data
+            self._sync()
 
-    def _sync(self, ident):
+    def _sync(self):
         try:
-            self._sync_inner(ident)
+            self._auth()
+            self._refresh()
         except Exception as e:
             log.warning("identity: %s", e)
 
-    def _sync_inner(self, ident):
-        req = self.session.request
-        pub, entry = keyring.by_serial(ident["serial"])
-
-        if entry is None and LEGACY.exists():
-            legacy = json.loads(LEGACY.read_text())
-            data = dict(legacy, name=ident["name"], claimed=True, discoverable=True)
-            ident = req("identity.restore", data)
-            code = code_for(data)
-            keyring.upsert(code, name=ident["name"], serial=ident["serial"],
-                           custody=None if ident["persistent"] else data, seen=True)
-            LEGACY.rename(LEGACY.with_suffix(".json.migrated"))
-            log.info("identity: moved this host's old discovery identity to %s; existing codes keep working",
-                     ident["name"])
+    def _auth(self):
+        if not self.nonce or not self.pi or not self.pi.get("pub"):
             return
+        pub = bytes.fromhex(self.pi["pub"])
+        sig = self.key.sign(auth_message(bytes.fromhex(self.nonce), pub))
+        r = self.session.request("link.auth", {"key": self.key.pub.hex(), "sig": sig.hex()})
+        self.role = (r or {}).get("role")
+        log.info("link: this computer is %s on %s", self.role or "not on the list", self.pi.get("name"))
 
-        if entry is None:
-            return                      # not added on this machine: nothing to do
-        custody = entry.get("custody")
-        if custody and ident["pub"] != pub and (not ident["persistent"] or ident.get("fresh")):
-            ident = req("identity.restore", custody)
-            log.info("identity: restored %s's identity from this host's custody copy", ident["name"])
-        if ident["pub"] != pub:
-            return                      # a different identity on a known board (e.g. reflashed)
-        fields = {"name": ident["name"], "code": req("identity.code")["code"]}     # e.g. a rotated secret
-        if custody:
-            fields["custody"] = req("identity.export")      # keep name/flags current (also a backup)
-        keyring.update(pub, last_seen=int(time.time()), **fields)
+    def _refresh(self):
+        pub = self.pi["pub"]
+        if pub in keyring.load():
+            keyring.update(pub, name=self.pi.get("name"), role=self.role, last_seen=int(time.time()))
+
+    def local_ops(self):
+        """For `peer` on the control port: the link's role."""
+        return {"role": self.role}

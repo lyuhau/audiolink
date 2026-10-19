@@ -1,24 +1,20 @@
-"""Talking to a Pi's endpoint from any machine, with whatever proof this machine has
-(services/access.py): its connect code (paired), a debug key (--key FILE), or none.
-
-Reached like `connect`: the local network (--at, last address, mDNS, the setup
-network), then the relay (needs the connect code), then a DHT lookup. PI is a name
-from `audiolink pis`, a connect code, or (for a Pi this machine hasn't added) an address.
+"""Talking to a Pi's endpoint from any machine (docs/protocol.md): found on this network
+(--at, its last address, mDNS, the setup network) or through its relay, then this
+computer's key proves itself once (auth), and the connection has that key's role.
+PI is a name from `audiolink pis`, a Pi code, or (for a Pi this computer hasn't added)
+an address.
 """
 import re
 import socket
 import threading
 
 from .. import tls
-from ..discovery.record import parse_code
-from ..services.endpoint import PORT, key_message, proof_for
 from ..ui import detail, done, step
 from . import keyring
-from .computer import Key
-from .pairing import Busy, OldPi, PiConn, busy, impostor, reach, too_old
+from .computer import Key, key as computer_key
+from .pairing import Busy, NotListed, OldPi, PiConn, busy, impostor, reach, too_old
 
 
-# ---------------------------------------------------------------- reaching a Pi
 def _looks_like_address(s):
     return bool(re.fullmatch(r"[0-9.]+|[0-9a-fA-F:]+:[0-9a-fA-F:]*|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+", s))
 
@@ -34,28 +30,26 @@ def _resolve(pi):
         raise SystemExit("No Pi named %s (see: audiolink pis; an address works too)" % pi)
 
 
-def _over_relay(pub, secret):
-    """A plain socket carrying the Pi's endpoint through its relay, or None. The relay
-    connection is TLS, which only one thread may drive: splice() drives it, and the
-    caller gets the other end of a socket pair."""
-    from ..relay.client import Denied, connect
+def over_relay(pub):
+    """(a plain socket carrying the Pi's endpoint through its relay, None), or (None, the
+    relay's reason, e.g. "offline"). The relay connection is TLS, which only one thread
+    may drive: splice() drives it, and the caller gets the other end of a socket pair."""
+    from ..relay.client import connect
     from ..relay.wire import Refused, splice
     try:
-        tls = connect(pub, secret, PORT)
-    except Denied as e:
-        raise SystemExit(str(e))
-    except Refused:
-        return None
+        relayed = connect(pub)
+    except Refused as e:
+        return None, str(e)
     mine, theirs = socket.socketpair()
-    threading.Thread(target=splice, args=(theirs, tls), daemon=True).start()
-    return mine
+    threading.Thread(target=splice, args=(theirs, relayed), daemon=True).start()
+    return mine, None
 
 
-def _through_relay(sock, pub, name):
+def through_relay(sock, pub, name):
     """(PiConn, hello, how) over a relayed socket, or None."""
     try:
         conn = PiConn("relay", sock=sock)
-    except (OSError, ValueError):                       # e.g. the Pi's audiolink predates TLS
+    except (OSError, ValueError):
         sock.close()
         return None
     try:
@@ -63,6 +57,9 @@ def _through_relay(sock, pub, name):
     except tls.Mismatch:
         conn.close()
         raise impostor("through the relay", name)
+    except OldPi as e:
+        conn.close()
+        raise too_old(e.hello.get("name") or name)
     except (OSError, ValueError):
         conn.close()
         return None
@@ -72,9 +69,9 @@ def _through_relay(sock, pub, name):
     return conn, hello, "through the relay"
 
 
-def _find(entry, at, turned_away):
-    """(PiConn, hello, how) or (None, None, None). Addresses that turned this machine
-    away (the Pi is busy) go in turned_away."""
+def find(entry, at, turned_away):
+    """(PiConn, hello, how, why) : how it was reached, or (None, None, None, why the relay
+    didn't). Addresses that turned this computer away (the Pi is busy) go in turned_away."""
     if not entry.get("code"):
         for ip in list(at) + [entry["addr"]]:
             try:
@@ -87,64 +84,88 @@ def _find(entry, at, turned_away):
             except (OSError, ValueError):
                 continue
             try:
-                return conn, conn.hello(), "at %s" % ip
+                return conn, conn.hello(), "at %s" % ip, None
             except tls.Mismatch:
                 conn.close()
                 raise impostor("at %s" % ip)
+            except OldPi as e:
+                conn.close()
+                raise too_old(e.hello.get("name") or ip)
             except (OSError, ValueError):
                 conn.close()
-        return None, None, None
+        return None, None, None, None
     conn, hello = reach(entry, at, busy=turned_away)
     if conn:
-        return conn, hello, "at %s" % conn.ip
-    pub, secret = parse_code(entry["code"])
-    sock = _over_relay(pub, secret)
+        return conn, hello, "at %s" % conn.ip, None
+    pub = keyring.parse(entry["code"])
+    sock, why = over_relay(pub)
     if sock is not None:
-        found = _through_relay(sock, pub, entry.get("alias") or "the Pi")
+        found = through_relay(sock, pub, entry.get("alias") or "the Pi")
         if found:
-            return found
-    conn, hello = reach(entry, at, with_dht=True, busy=turned_away)
-    return (conn, hello, "at %s" % conn.ip) if conn else (None, None, None)
+            return found + (None,)
+        why = "no answer through the relay"
+    return None, None, None, why
+
+
+def not_listed(name):
+    return SystemExit("%s doesn't have this computer on its list. On an owner computer: audiolink invite %s; "
+                      "then audiolink setup here" % (name, socket.gethostname().split(".")[0]))
 
 
 class Remote:
-    def __init__(self, entry, at, key):
-        self.entry, self.at, self.key = entry, at, key
+    def __init__(self, entry, at, key=None):
+        self.entry, self.at = entry, at
+        self.key = key or computer_key()
         self.name = entry.get("alias") or entry.get("name") or "the Pi"
-        self.secret = parse_code(entry["code"])[1] if entry.get("code") else None
         self.conn = self.hello = None
+        self.relay_why = None
 
     def open(self, quiet=False):
         if not quiet:
             step("Finding %s" % self.name)
         turned_away = []
-        self.conn, self.hello, how = _find(self.entry, self.at, turned_away)
+        self.conn, self.hello, how, self.relay_why = find(self.entry, self.at, turned_away)
         if not self.conn:
             if not quiet:
                 done("not found")
             if turned_away:
                 raise busy(self.name)
+            if self.relay_why == "offline":
+                raise SystemExit("%s is offline (not on this network, nor on its relay)%s"
+                                 % (self.name, _last_seen(self.entry)))
             raise SystemExit("%s isn't reachable from here (not on this network, its setup network or its relay)"
                              % self.name)
+        try:
+            self.conn.auth(self.key)
+        except NotListed:
+            self.conn.close()
+            if not quiet:
+                done("not let in")
+            raise not_listed(self.name)
         if self.entry.get("code"):
-            keyring.seen(keyring.pub_of(self.entry["code"]))
+            pub = keyring.pub_of(self.entry["code"])
+            rec = self.conn.record
+            fields = {"role": self.conn.role}
+            if isinstance(rec, dict) and rec.get("ts"):
+                fields["last_record"] = rec
+                if rec.get("name"):
+                    fields["name"] = rec["name"]
+            keyring.update(pub, **fields)
+            keyring.seen(pub)
         if not quiet:
             done("found")
             if not self.entry.get("code"):
                 print("This computer has no code for %s, so it can't tell it's the real one "
                       "(the connection is encrypted, but anyone could answer at that address)" % self.name)
-        detail("%s", how)
+        detail("%s, as %s", how, self.conn.role)
         return self
 
+    @property
+    def role(self):
+        return self.conn.role if self.conn else None
+
     def ask(self, op, **fields):
-        """A request with every proof this machine has."""
-        nonce, pub = bytes.fromhex(self.hello["nonce"]), self.conn.pub
-        req = dict(fields, op=op)
-        if self.secret:
-            req["proof"] = proof_for(self.secret, op, nonce, pub)
-        if self.key:
-            req["key"], req["sig"] = self.key.pub.hex(), self.key.sign(key_message(op, nonce, pub)).hex()
-        return self.conn.ask(req)
+        return self.conn.ask(dict(fields, op=op))
 
     def call(self, op, args=None):
         """Like host.control.call for an endpoint request: the result, or SystemExit."""
@@ -154,8 +175,13 @@ class Remote:
         return r
 
     def refusal(self, r):
-        if r.get("code") == "unknown" or str(r.get("error", "")).startswith("unknown op"):
+        code = r.get("code")
+        if code == "unknown" or str(r.get("error", "")).startswith("unknown op"):
             return "%s's audiolink is too old for this; update it over USB" % self.name
+        if code == "not_owner":
+            return "Only an owner of %s can do that (this computer is a %s)" % (self.name, self.role or "user")
+        if code == "not_listed":
+            return str(not_listed(self.name).code)
         return r["error"]
 
     def close(self):
@@ -164,6 +190,13 @@ class Remote:
             self.conn = None
 
 
+def _last_seen(entry):
+    from ..ui import ago
+    rec = entry.get("last_record") or {}
+    if not rec.get("ts"):
+        return ""
+    return "; last seen %s on %s" % (ago(rec["ts"]), rec.get("ssid") or "an unknown network")
+
+
 def open_remote(pi, at=(), key_path=None):
     return Remote(_resolve(pi), list(at), Key(key_path) if key_path else None).open()
-

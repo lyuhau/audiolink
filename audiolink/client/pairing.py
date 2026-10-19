@@ -1,10 +1,11 @@
-"""Pairing with a Pi over the network, client side (see services/pairing.py).
+"""Talking to a Pi's endpoint over the network, client side (docs/protocol.md).
 
-`audiolink add` (network part): find Pis on the local network (mDNS) or on the Pi's
-own setup network (SETUP_ADDR), then pair: an unclaimed Pi is claimed on the spot,
-a claimed one asks for a fresh 6-digit code from its host or a paired machine.
-`audiolink pairing code PI`: issue that code (over USB if the Pi is plugged in here,
-otherwise over the network, proving this machine already knows the Pi).
+PiConn: TLS pinned to the Pi's key, hello, then auth with this computer's key (once per
+connection: the reply has its role and the Pi's record), then requests, or `open` to turn
+the connection into a stream to a port on the Pi's host.
+Finding Pis: mDNS on the local network, the Pi's setup network (SETUP_ADDR).
+Invites: setup without a Pi on USB finds one here and redeems a 6-digit invite code
+(from `audiolink invite` on an owner computer), carrying this computer's key in.
 """
 import hmac
 import json
@@ -17,13 +18,13 @@ import threading
 import time
 
 from .. import tls
-from ..crypto import Spake2, open_sealed
-from ..discovery.record import parse_code
+from ..auth import ENDPOINT_VERSION, auth_message
+from ..crypto import Spake2, open_sealed, seal
 from . import keyring
 from ..ui import detail
 
 # The Pi's side of these (same wire protocol, so the same constants).
-from ..services.endpoint import PORT, proof_for
+from ..services.endpoint import PORT
 from ..services.pairing import ID_CLIENT, ID_PI
 from ..services.setup_ap import AP_ADDR as SETUP_ADDR      # where the Pi sits on its setup network
 
@@ -118,11 +119,15 @@ def busy(name):
 
 
 class OldPi(ConnectionError):
-    """A Pi whose audiolink predates TLS on its endpoint (hello: what it said)."""
+    """A Pi whose audiolink predates this protocol (hello: what it said)."""
 
     def __init__(self, hello):
         super().__init__("too old")
         self.hello = hello
+
+
+class NotListed(Exception):
+    """The Pi doesn't have this computer's key on its list (or refused it)."""
 
 
 def _plain_hello(ip, port):
@@ -174,6 +179,7 @@ class PiConn:
         threading.Thread(target=splice, args=(theirs, secure), daemon=True).start()
         self.sock.settimeout(30)
         self.f = self.sock.makefile("rwb")
+        self.role = self.record = None
 
     def ask(self, obj):
         self.f.write((json.dumps(obj) + "\n").encode())
@@ -184,21 +190,42 @@ class PiConn:
         return json.loads(line)
 
     def hello(self):
-        """The Pi's hello, which must name the key its certificate is for."""
+        """The Pi's hello, which must name the key its certificate is for. A Pi on an older
+        protocol raises OldPi."""
         h = self.ask({"op": "hello"})
         if h.get("pub") != self.pub.hex():
             raise tls.Mismatch(h.get("pub"))
+        if not isinstance(h.get("v"), int) or h["v"] < ENDPOINT_VERSION:
+            raise OldPi(h)
+        self.nonce = bytes.fromhex(h["nonce"])
         return h
 
-    def ask_auth(self, op, hello, secret, sealed=None, **fields):
-        """An authenticated request: proves this machine knows the Pi's read secret;
-        `sealed` (a dict) travels encrypted with it."""
-        from ..crypto import seal
-        proof = proof_for(secret, op, bytes.fromhex(hello["nonce"]), self.pub)
-        req = dict(fields, op=op, proof=proof)
-        if sealed is not None:
-            req["sealed"] = seal(secret, json.dumps(sealed).encode()).hex()
-        return self.ask(req)
+    def auth(self, key):
+        """Prove this computer's key (once per connection): the reply has its role and
+        the Pi's record. Raises NotListed if the Pi refuses it."""
+        sig = key.sign(auth_message(self.nonce, self.pub))
+        r = self.ask({"op": "auth", "key": key.pub.hex(), "sig": sig.hex()})
+        if "error" in r:
+            raise NotListed(r["error"])
+        self.role, self.record = r.get("role"), r.get("record")
+        return r
+
+    def open_stream(self, port):
+        """Ask for a stream to `port` on the Pi's host; on success this connection is that
+        stream (self.sock), so the reply is read a byte at a time: nothing after it."""
+        self.f.flush()
+        self.sock.sendall((json.dumps({"op": "open", "port": port}) + "\n").encode())
+        line = b""
+        while not line.endswith(b"\n"):
+            b = self.sock.recv(1)
+            if not b:
+                raise ConnectionError("the Pi closed the connection")
+            line += b
+        r = json.loads(line)
+        if "error" in r:
+            return r
+        self.sock.settimeout(None)
+        return r
 
     def close(self):
         try:
@@ -214,23 +241,16 @@ def impostor(where, name="the Pi"):
 
 
 def too_old(name):
-    return SystemExit("%s's audiolink is too old to reach over the network; update it over USB "
-                      "(audiolink update)" % name)
+    return SystemExit("%s's audiolink is too old for this computer's; update it: plug it in here and "
+                      "run audiolink update" % name)
 
 
-def reach(entry, at=(), with_dht=False, busy=None):
-    """(PiConn, hello) for this known Pi over the network, or (None, None). Tries
-    --at addresses, its last known LAN address, mDNS, the setup network address, and
-    (with_dht) a fresh DHT lookup. Addresses that turned it away go in `busy` (a list)."""
+def reach(entry, at=(), busy=None):
+    """(PiConn, hello) for this known Pi on the network here, or (None, None). Tries --at
+    addresses, its last known LAN address, mDNS, and the setup network address.
+    Addresses that turned it away go in `busy` (a list)."""
     pub = keyring.pub_of(entry["code"])
     ips = list(at) + (entry.get("last_record") or {}).get("lan", []) + browse(1.0) + [SETUP_ADDR]
-    if with_dht:
-        from .find import lookup
-        try:
-            rec, _ = lookup(entry["code"])
-            ips = (rec or {}).get("lan", []) + ips
-        except SystemExit:
-            pass
     for ip in dict.fromkeys(ips):
         try:
             conn = PiConn(ip, timeout=1.5)
@@ -251,6 +271,11 @@ def reach(entry, at=(), with_dht=False, busy=None):
             if e.claimed == pub:
                 raise impostor("at %s" % ip, entry.get("alias") or "this Pi")
             continue
+        except OldPi as e:
+            conn.close()
+            if e.hello.get("pub") == pub:
+                raise too_old(e.hello.get("name") or "The Pi")
+            continue
         except (OSError, ValueError):
             conn.close()
             continue
@@ -270,7 +295,7 @@ def candidates(at=()):
         try:
             c = PiConn(ip, timeout=1.5)
         except OldPi as e:
-            print("%s (at %s) runs an audiolink too old to pair over the network; update it over USB"
+            print("%s (at %s) runs an older audiolink; update it: plug it in and run audiolink update"
                   % (e.hello.get("name", "A Pi"), ip))
             continue
         except Busy:
@@ -280,67 +305,57 @@ def candidates(at=()):
             continue
         try:
             out.append((c, c.hello()))
+        except OldPi as e:
+            c.close()
+            print("%s (at %s) runs an older audiolink; update it: plug it in and run audiolink update"
+                  % (e.hello.get("name", "A Pi"), ip))
         except (OSError, ValueError):               # including a certificate that doesn't match
             c.close()
     return out
 
 
-# ---------------------------------------------------------------- pairing
-def pair(conn, code=None, client_name="audiolink"):
-    """Run the exchange; returns {"code", "name"}. Raises SystemExit with a reason."""
-    a = Spake2("A", code or "", ID_CLIENT, ID_PI)
+# ---------------------------------------------------------------- invites
+def pair(conn, code, key, client_name="audiolink"):
+    """Redeem an invite: the SPAKE2 exchange with the 6-digit code, carrying this
+    computer's key in. Returns {"name", "role", "pub", "record"}; SystemExit with a reason."""
+    a = Spake2("A", code, ID_CLIENT, ID_PI)
     r = conn.ask({"op": "pair", "msg": a.msg.hex(), "client": client_name})
     if "error" in r:
-        raise SystemExit(r["error"])
+        raise SystemExit(_pair_refusal(r))
     try:
-        key, ours, theirs = a.finish(bytes.fromhex(str(r["msg"])))
+        ke, ours, theirs = a.finish(bytes.fromhex(str(r["msg"])))
     except (KeyError, ValueError):
         raise SystemExit("Pairing failed (bad reply from the Pi); retry")
-    r = conn.ask({"confirm": ours.hex()})
+    sealed_key = seal(ke, json.dumps({"key": key.pub.hex()}).encode())
+    r = conn.ask({"confirm": ours.hex(), "key": sealed_key.hex()})
     if "error" in r:
-        raise SystemExit(r["error"])
+        raise SystemExit(_pair_refusal(r))
     try:
         confirm, sealed = bytes.fromhex(str(r.get("confirm", ""))), bytes.fromhex(str(r["payload"]))
     except (KeyError, ValueError):
         confirm, sealed = b"", b""
     if not hmac.compare_digest(confirm, theirs):
         raise SystemExit("Pairing stopped: the other side didn't know the code (wrong Pi, or someone in between)")
-    payload = open_sealed(key, sealed)
+    payload = open_sealed(ke, sealed)
     if payload is None:
         raise SystemExit("Pairing failed (unreadable reply); retry")
-    return json.loads(payload)
+    result = json.loads(payload)
+    if result.get("pub") != conn.pub.hex():
+        raise SystemExit("Pairing stopped: the Pi named another key than its certificate's")
+    return result
 
 
-def request_code(conn, hello, code):
-    """Ask a Pi for a fresh pairing code, proving we know its read secret."""
-    _, secret = parse_code(code)
-    r = conn.ask_auth("new_code", hello, secret)
-    if "error" in r:
-        raise SystemExit("Refused: %s" % r["error"])
-    issued = open_sealed(secret, bytes.fromhex(r["sealed"]))
-    if issued is None:
-        raise SystemExit("Unreadable reply (this computer's code for it may be outdated)")
-    return json.loads(issued)
+def _pair_refusal(r):
+    if r.get("code") == "claim_usb":
+        return "That Pi has no owner yet: plug it into a computer and run audiolink setup there to claim it"
+    return r["error"]
 
 
-def _outdated(conn, hello, entry):
-    """Does the Pi refuse this machine's code for it (its secret was rotated)?"""
-    if not hello.get("claimed"):
-        return True
-    try:
-        r = conn.ask_auth("change_status", hello, parse_code(entry["code"])[1])
-    except (OSError, ValueError):
-        return False
-    return r.get("code") == "not_paired" or str(r.get("error", "")).startswith("Not added")
-
-
-# ---------------------------------------------------------------- commands
-def pairing_code(typed, name):
-    """A typed pairing code, checked before it costs one of the code's tries."""
-    code = re.sub(r"\s", "", typed or "")
+def invite_code(typed, name):
+    """A typed invite code, checked before it costs one of the code's tries."""
+    code = re.sub(r"\s|-", "", typed or "")
     if not re.fullmatch(r"\d{6}", code):
-        raise SystemExit("A pairing code is 6 digits (on a computer that has %s: audiolink pairing code %s)"
-                         % (name, name))
+        raise SystemExit("An invite code is 6 digits (on an owner computer of %s: audiolink invite NAME)" % name)
     return code
 
 
@@ -359,6 +374,9 @@ def _again(ip, pub, name):
     except tls.Mismatch:
         conn.close()
         raise impostor("at %s" % ip, name)
+    except OldPi as e:
+        conn.close()
+        raise too_old(e.hello.get("name") or name)
     except (OSError, ValueError):
         conn.close()
         raise lost
@@ -368,14 +386,28 @@ def _again(ip, pub, name):
     return conn, hello
 
 
-def add_over_network(a, ask):
-    """The network part of `audiolink add`. Returns the keyring entry or None."""
+def _listed(conn, key):
+    """Is this computer's key on the Pi's list?"""
+    try:
+        conn.auth(key)
+        return True
+    except NotListed:
+        return False
+    except (OSError, ValueError):
+        return False
+
+
+def add_over_network(a, ask, key=None):
+    """Redeem an invite to a Pi found on this network (setup without a Pi on USB).
+    Returns the keyring entry or None (no Pi here that doesn't have this computer already)."""
+    from .computer import key as computer_key
+    key = key or computer_key()
     known = keyring.load()
     found = candidates(a.at or [])
     new, seen = [], set()
     try:
         for c, h in found:
-            if h["pub"] not in seen and (h["pub"] not in known or _outdated(c, h, known[h["pub"]])):
+            if h["pub"] not in seen and (h["pub"] not in known or not _listed(c, key)):
                 new.append((c.ip, h))
             seen.add(h["pub"])
     finally:
@@ -386,71 +418,61 @@ def add_over_network(a, ask):
     if len(new) == 1:
         ip, hello = new[0]
     else:
-        ip, hello = ask.choose("Add which Pi?", [
-            ("%s%s" % (h["name"], "" if h["claimed"] else "  (unclaimed)"), (ip, h)) for ip, h in new])
+        ip, hello = ask.choose("Which Pi?", [
+            ("%s%s" % (h["name"], "" if h["claimed"] else "  (no owner yet)"), (ip, h)) for ip, h in new])
     name = hello["name"]
     detail("%s, tag %s, at %s", name, hello["tag"], ip)
-    code = None
-    if hello["claimed"]:
-        given = a.pairing_code is not None
-        if hello["pub"] in known:
-            print("%s's code has changed; this computer needs a pairing code%s" % (
-                name, ": pairing with the one given" if given else
-                ". Get one on a computer that has it: audiolink pairing code %s" % name))
-        elif given:
-            print("Found %s (claimed): pairing with the code given" % name)
-        else:
-            print("Found %s (claimed). Get a code on a computer that knows it: audiolink pairing code %s"
-                  % (name, name))
-        code = pairing_code(a.pairing_code if given else ask.text("Pairing code: "), name)
-    elif not ask.yes("Found %s (unclaimed). Claim it?" % name, default=True):
-        raise SystemExit("Not added")
+    if not hello["claimed"]:
+        raise SystemExit("Found %s, which has no owner yet: plug it into a computer and run audiolink setup "
+                         "there to claim it" % name)
+    typed = getattr(a, "invite", None)
+    if typed is not None:
+        print("Found %s: joining with the invite code given" % name)
+    else:
+        print("Found %s. Get an invite code on an owner computer: audiolink invite %s"
+              % (name, socket.gethostname().split(".")[0]))
+    code = invite_code(typed if typed is not None else ask.text("Invite code: "), name)
     conn, hello = _again(ip, hello["pub"], name)
     try:
-        if hello["claimed"] and code is None:
-            raise SystemExit("%s was just claimed by another computer; get a pairing code from it: "
-                             "audiolink pairing code %s" % (name, name))
-        result = pair(conn, code if hello["claimed"] else None, client_name=socket.gethostname())
+        result = pair(conn, code, key, client_name=socket.gethostname())
     except (OSError, ValueError):
-        raise SystemExit("Lost %s (at %s) while pairing; retry" % (name, ip))
+        raise SystemExit("Lost %s (at %s) while joining; retry" % (name, ip))
     finally:
         conn.close()
-    entry, created = keyring.upsert(result["code"], name=result["name"], alias=a.name, seen=True)
+    return _joined(result, a)
+
+
+def add_through_relay(pi_code, a, ask, key=None):
+    """Redeem an invite to a Pi that isn't on this network, through its relay: the Pi's
+    code (al2-...) says which; the invite code says this computer may join."""
+    from .computer import key as computer_key
+    from .remote import over_relay, through_relay
+    key = key or computer_key()
+    pub = keyring.parse(pi_code)
+    typed = getattr(a, "invite", None)
+    code = invite_code(typed if typed is not None else ask.text("Invite code: "), "the Pi")
+    sock, why = over_relay(pub)                 # after the prompt: the Pi drops connections that wait
+    found = through_relay(sock, pub, "the Pi") if sock is not None else None
+    if not found:
+        raise SystemExit("The Pi isn't reachable through its relay (%s)" % (why or "no answer"))
+    conn = found[0]
+    try:
+        result = pair(conn, code, key, client_name=socket.gethostname())
+    except (OSError, ValueError):
+        raise SystemExit("Lost the Pi while joining; retry")
+    finally:
+        conn.close()
+    return _joined(result, a)
+
+
+def _joined(result, a):
+    entry, created = keyring.upsert(keyring.code_for(result["pub"]), name=result["name"], alias=a.name,
+                                    seen=True)
+    fields = {"role": result.get("role")}
     rec = result.get("record")
-    if isinstance(rec, dict) and rec.get("ts"):     # where it is now (older Pis don't say)
-        keyring.update(keyring.pub_of(result["code"]), last_record=rec)
-        entry["last_record"] = rec
-    print("%s %s" % ("Added" if created else "Updated", entry["alias"]))
+    if isinstance(rec, dict) and rec.get("ts"):
+        fields["last_record"] = rec
+    keyring.update(result["pub"], **fields)
+    entry.update(fields)
+    print("%s %s (%s)" % ("Added" if created else "Updated", entry["alias"], result.get("role") or "user"))
     return entry
-
-
-def code_command(a):
-    """`audiolink pairing code PI`: a fresh 6-digit code for pairing a new machine."""
-    from ..host.control import DEFAULT_PORT, call
-    entry = keyring.lookup(a.pi, known=True)
-    pub = keyring.pub_of(entry["code"])
-    port = getattr(a, "control_port", None) or DEFAULT_PORT
-    issued = None
-    try:                                            # plugged in here? ask over USB
-        if call("identity.info", port=port)["pub"] == pub:
-            issued = call("pairing.new_code", port=port)
-    except SystemExit:
-        pass
-    turned_away = []
-    if issued is None:                              # otherwise over the network
-        conn, hello = reach(entry, a.at or [], busy=turned_away)
-        if conn:
-            try:
-                issued = request_code(conn, hello, entry["code"])
-            finally:
-                conn.close()
-    if issued is None and turned_away:
-        raise busy(entry["alias"])
-    if issued is None:
-        raise SystemExit("%s not found (not plugged in here or on this network)" % entry["alias"])
-    if not issued.get("code"):                      # over USB, from a Pi nobody has claimed
-        print("%s is unclaimed: no code needed. On the new computer: audiolink add" % entry["alias"])
-        return
-    print("Pairing code for %s: %s %s  (one use, %d min)" % (entry["alias"], issued["code"][:3], issued["code"][3:],
-                                                               issued["expires_in"] // 60))
-    print("On the new computer: audiolink add")

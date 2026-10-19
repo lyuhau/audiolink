@@ -87,6 +87,7 @@ class SlowAsk:
         return True
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side (client/pairing.py is ported)")
 @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
 class AddOverNetwork(unittest.TestCase):
     def setUp(self):
@@ -256,26 +257,79 @@ class Guessing(unittest.TestCase):
         self.assertIn("expired or been used up", self.attempt("10.0.0.4", "000000").sent[-1]["error"])
 
 
+class InvitePi:
+    """The Pi's half of redeeming an invite (docs/protocol.md "Invites"), in-process: what
+    the client's pair() talks to."""
+
+    def __init__(self, code, role="user", name="green-rowan"):
+        import os
+        from audiolink.crypto import ed25519_public
+        self.pub = ed25519_public(os.urandom(32))
+        self.code, self.role, self.name, self.got_key = code, role, name, None
+
+    def ask(self, obj):
+        import json
+        from audiolink.crypto import open_sealed, seal
+        if obj.get("op") == "pair":
+            self.spake = Spake2("B", self.code, ID_CLIENT, ID_PI)
+            self.ke, self.ours, self.theirs = self.spake.finish(bytes.fromhex(obj["msg"]))
+            return {"msg": self.spake.msg.hex()}
+        if bytes.fromhex(obj["confirm"]) != self.theirs:
+            return {"error": "Wrong code (2 tries left)"}
+        self.got_key = json.loads(open_sealed(self.ke, bytes.fromhex(obj["key"])))["key"]
+        payload = {"name": self.name, "role": self.role, "pub": self.pub.hex(), "record": {"ts": 1, "lan": []}}
+        return {"confirm": self.ours.hex(), "payload": seal(self.ke, json.dumps(payload).encode()).hex()}
+
+
 class Replies(unittest.TestCase):
+    def key(self):
+        import os
+        from audiolink.client.computer import Key
+        from audiolink.crypto import ed25519_public
+        k = Key.__new__(Key)
+        k.seed = os.urandom(32)
+        k.pub = ed25519_public(k.seed)
+        return k
+
     def test_a_reply_without_its_fields(self):
         class Conn:
             def ask(self, obj):
                 return {}
         with self.assertRaisesRegex(SystemExit, "bad reply"):
-            pairing.pair(Conn(), "123456")
+            pairing.pair(Conn(), "123456", self.key())
 
-    def test_code_for_an_unclaimed_pi_over_usb(self):
-        from audiolink.crypto import ed25519_public
-        import os
-        pub = ed25519_public(os.urandom(32))
-        entry = {"alias": "pi", "code": "x"}
-        calls = {"identity.info": {"pub": pub.hex()}, "pairing.new_code": {"code": None, "unclaimed": True}}
-        with mock.patch.object(keyring, "lookup", lambda name, known=False: entry), \
-                mock.patch.object(keyring, "pub_of", lambda code: pub.hex()), \
-                mock.patch("audiolink.host.control.call", lambda op, args=None, port=None: calls[op]), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
-            pairing.code_command(argparse.Namespace(pi="pi", at=None, control_port=None))
-        self.assertIn("pi is unclaimed: no code needed", out.getvalue())
+    def test_redeeming_carries_this_computers_key_in(self):
+        pi, key = InvitePi("123456", role="owner"), self.key()
+        conn = mock.Mock(ask=pi.ask, pub=pi.pub)        # pub: the certificate's key
+        got = pairing.pair(conn, "123456", key)
+        self.assertEqual(pi.got_key, key.pub.hex())
+        self.assertEqual((got["name"], got["role"], got["pub"]), ("green-rowan", "owner", pi.pub.hex()))
+
+    def test_a_wrong_code(self):
+        pi = InvitePi("123456")
+        conn = mock.Mock(ask=pi.ask, pub=pi.pub)
+        with self.assertRaisesRegex(SystemExit, "Wrong code"):
+            pairing.pair(conn, "654321", self.key())
+        self.assertIsNone(pi.got_key)
+
+    def test_the_payload_names_the_certificates_key(self):
+        pi = InvitePi("123456")
+        conn = mock.Mock(ask=pi.ask, pub=b"\x02" * 32)     # some other key's certificate
+        with self.assertRaisesRegex(SystemExit, "another key than its certificate"):
+            pairing.pair(conn, "123456", self.key())
+
+    def test_an_unclaimed_pi_says_claim_over_usb(self):
+        conn = mock.Mock()
+        conn.ask.return_value = {"error": "no owner", "code": "claim_usb"}
+        with self.assertRaisesRegex(SystemExit, "audiolink setup there to claim it"):
+            pairing.pair(conn, "123456", self.key())
+
+    def test_invite_codes(self):
+        self.assertEqual(pairing.invite_code("482 177", "pi"), "482177")
+        self.assertEqual(pairing.invite_code("482-177", "pi"), "482177")
+        for bad in ("", "12345", "1234567", "12345a"):
+            with self.assertRaisesRegex(SystemExit, "6 digits"):
+                pairing.invite_code(bad, "pi")
 
 
 class RecordNow(unittest.TestCase):

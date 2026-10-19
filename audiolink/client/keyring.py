@@ -3,28 +3,31 @@
 Each entry is keyed by the Pi's public key, which never changes; names are labels:
   alias       what *this machine* calls it (`connect ALIAS`, ssh config); user-editable
   name        what the Pi calls itself (its advertised name), as last seen
-  code        al1- connect code: public key + read secret (find and read, not forge)
+  code        the Pi code, al2- + its public key: finds the Pi and pins TLS to it; grants
+              nothing (access is this computer's key on the Pi's list). An al1- code from
+              before (public key + read secret) is read for its public key only.
   serial      the board's serial, when learned over USB
-  custody     the Pi's full identity, kept while the Pi has no persistent storage, so the
-              host can restore it after a reboot
   added       when this machine added it
-  last_seen   the last real contact: over USB, a connection to it, or a fresh DHT record
-  last_record its last DHT record (client/find.py)
+  role        this computer's role on the Pi's list (user, owner), as it last said
+  last_seen   the last real contact: over USB, or a connection to it
+  last_record its record (name, ts, lan, ssid, ports) from the last connection or pairing
 
 The host daemon and commands both change the file: each load-modify-save holds a lock
 file (other processes) and _changing (this process's threads), and save_json replaces
 the file atomically.
 """
+import base64
+import binascii
 import contextlib
 import os
 import threading
 import time
 
-from ..discovery.record import parse_code
 from ..paths import config_dir, load_json, save_json
 
 PATH = config_dir() / "pis.json"
-NOT_A_CODE = "That's not a connect code (al1-...; from: audiolink share NAME)"
+NOT_A_CODE = "That's not a Pi code (al2-...; audiolink pis PI shows it)"
+PREFIXES = ("al2-", "al1-")             # al1-: before keys (public key + read secret)
 
 
 class Ambiguous(KeyError):
@@ -87,23 +90,44 @@ def changing():
 
 
 def load():
-    return load_json(PATH, {})
+    pis = load_json(PATH, {})
+    for pub, e in pis.items():          # entries from before keys: their code held the read secret,
+        if str(e.get("code", "")).startswith("al1-"):  # and custody the Pi's private key
+            e["code"] = code_for(pub)
+        e.pop("custody", None)
+    return pis
 
 
 def save(pis):
-    save_json(PATH, pis, indent=1, sort_keys=True)     # 0600: custody entries hold the Pi's private key
+    save_json(PATH, pis, indent=1, sort_keys=True)
+
+
+def code_for(pub):
+    """The Pi code for a public key (bytes or hex)."""
+    if isinstance(pub, str):
+        pub = bytes.fromhex(pub)
+    return "al2-" + base64.urlsafe_b64encode(pub).decode().rstrip("=")
+
+
+def is_code(s):
+    return str(s).startswith(PREFIXES)
 
 
 def parse(code):
-    """(public key, secret) of a connect code; anything else ends the command with a message."""
+    """The public key (32 bytes) of a Pi code; anything else ends the command with a message."""
     try:
-        return parse_code(code)
-    except ValueError:
+        if not is_code(code):
+            raise ValueError
+        raw = base64.urlsafe_b64decode(code[4:] + "=" * (-len(code[4:]) % 4))
+        if len(raw) != (32 if code.startswith("al2-") else 48):
+            raise ValueError
+    except (ValueError, binascii.Error):
         raise SystemExit(NOT_A_CODE)
+    return raw[:32]
 
 
 def pub_of(code):
-    return parse(code)[0].hex()
+    return parse(code).hex()
 
 
 def unique_alias(pis, wanted, pub):
@@ -114,26 +138,24 @@ def unique_alias(pis, wanted, pub):
     return alias
 
 
-def upsert(code, name=None, alias=None, serial=None, custody=None, seen=False):
+def upsert(code, name=None, alias=None, serial=None, seen=False):
     """Add or update a Pi; seen: it was just reached (sets last_seen). Returns (entry, created)."""
     with changing():
-        return _upsert(code, name, alias, serial, custody, seen)
+        return _upsert(code, name, alias, serial, seen)
 
 
-def _upsert(code, name, alias, serial, custody, seen):
+def _upsert(code, name, alias, serial, seen):
     pis = load()
     pub = pub_of(code)
     e = pis.get(pub)
     created = e is None
     if created:
         e = {"added": int(time.time())}
-    e["code"] = code
+    e["code"] = code_for(pub)
     if name:
         e["name"] = name
     if serial:
         e["serial"] = serial
-    if custody is not None:
-        e["custody"] = custody
     if alias or created:
         e["alias"] = unique_alias(pis, alias or name or "pi-" + pub[:4], pub)
     if seen:
@@ -148,13 +170,13 @@ def resolve(name_or_code, known=False):
     throwaway entry so it still works, unless known). Raises KeyError if nothing
     matches, Ambiguous if several Pis call themselves that, SystemExit for a broken code."""
     pis = load()
-    if name_or_code.startswith("al1-"):
+    if is_code(name_or_code):
         pub = pub_of(name_or_code)
         if pub in pis:
             return pis[pub]
         if known:
             raise KeyError(name_or_code)
-        return {"code": name_or_code, "alias": None, "name": None}
+        return {"code": code_for(pub), "alias": None, "name": None}
     for field in ("alias", "name"):
         hits = [e for e in pis.values() if e.get(field) == name_or_code]
         if len(hits) == 1:
@@ -173,8 +195,9 @@ def lookup(name_or_code, known=False):
         raise SystemExit("%d Pis call themselves %s; use the name in the first column (audiolink pis)"
                          % (e.args[0], name_or_code))
     except KeyError:
-        if name_or_code.startswith("al1-"):
-            raise SystemExit("No Pi with that code here (add it: audiolink add CODE)")
+        if is_code(name_or_code):
+            raise SystemExit("No Pi with that code here (to be let in: audiolink invite NAME on an owner "
+                             "computer, then audiolink setup here)")
         raise SystemExit("No Pi named %s (see: audiolink pis)" % name_or_code)
 
 

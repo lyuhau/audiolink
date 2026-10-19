@@ -3,20 +3,53 @@
 The host daemon owns the audio device, so other commands (e.g. `audiolink wifi`)
 talk to it over 127.0.0.1 with one JSON request and one JSON reply per connection.
 Requests named in local_ops are answered by the daemon itself; anything else
-("wifi.scan", ...) is forwarded to the Pi over the session.
+("wifi.scan", ...) is forwarded to the Pi over the session, with the link's role (the
+host's key on the Pi's list): the control port adds no authority of its own.
+
+Every request carries a token from <config>/control-token, which only the OS user who
+runs `audiolink host` can read: other users on the computer can't drive this host.
 """
+import hmac
 import json
 import logging
 import os
+import secrets
 import socket
 import threading
 import time
 
 from ..net import reuse_addr
+from ..paths import config_dir
 
 log = logging.getLogger("audiolink")
 
 DEFAULT_PORT = int(os.environ.get("AUDIOLINK_CONTROL_PORT", "47800"))
+NOT_YOURS = "not this user's audiolink host"
+
+
+def token_path():
+    return os.path.join(str(config_dir()), "control-token")
+
+
+def make_token():
+    """A fresh token for this run of `audiolink host`, readable by this user only."""
+    tok = secrets.token_hex(32)
+    path = token_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.tmp-%d" % (path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(tok)
+    os.replace(tmp, path)
+    return tok
+
+
+def read_token():
+    try:
+        with open(token_path()) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def listen(port=DEFAULT_PORT):
@@ -31,7 +64,10 @@ def listen(port=DEFAULT_PORT):
         log.debug("control port 127.0.0.1:%d: %s", port, e)
         try:
             call("peer", port=port, timeout=3)
-        except SystemExit:
+        except SystemExit as e:
+            if "another user's" in str(e.code):
+                raise SystemExit("audiolink host is already running here, as another login (one host per "
+                                 "computer)")
             raise SystemExit("Port %d is taken by another program; give audiolink another: "
                              "--control-port PORT (the same for its other commands)" % port)
         raise SystemExit("audiolink host is already running")
@@ -39,14 +75,18 @@ def listen(port=DEFAULT_PORT):
     return srv
 
 
-def serve(session, srv, local_ops=None):
-    """srv: from listen(). local_ops: {op: fn(args) -> result} handled in the daemon."""
+def serve(session, srv, local_ops=None, token=None):
+    """srv: from listen(). local_ops: {op: fn(args) -> result} handled in the daemon.
+    token: what each request must carry (make_token())."""
     local_ops = local_ops or {}
+    token = token if token is not None else make_token()
 
     def handle(conn):
         with conn:
             try:
                 req = json.loads(conn.makefile("r").readline())
+                if not hmac.compare_digest(str(req.get("token", "")), token):
+                    raise PermissionError(NOT_YOURS)
                 if req["op"] in local_ops:
                     result = local_ops[req["op"]](req.get("args") or {})
                 else:
@@ -78,7 +118,7 @@ def call(op, args=None, port=DEFAULT_PORT, timeout=120):
         raise SystemExit("audiolink host isn't running (start it: audiolink host)")
     try:
         with conn:
-            conn.sendall((json.dumps({"op": op, "args": args or {}}) + "\n").encode())
+            conn.sendall((json.dumps({"op": op, "args": args or {}, "token": read_token()}) + "\n").encode())
             line = conn.makefile("r").readline()
         reply = json.loads(line) if line else None
     except socket.timeout:
@@ -89,5 +129,7 @@ def call(op, args=None, port=DEFAULT_PORT, timeout=120):
         raise SystemExit("audiolink host stopped before answering")
     if not reply.get("ok"):
         msg = reply.get("error") or "Failed"
+        if msg == NOT_YOURS:
+            msg = "audiolink host here is another user's (it runs as a different login)"
         raise SystemExit(msg[:1].upper() + msg[1:])
     return reply["result"]

@@ -11,14 +11,13 @@ from types import SimpleNamespace
 from unittest import mock
 
 from audiolink.client import keyring, pis
-from audiolink.discovery.record import code_for, new_identity
 from tests.helpers import needs_symlinks
 
-BAD = ["al1-garbage", "al1-!!", "al1-"]
+BAD = ["al2-garbage", "al2-!!", "al2-", "al1-short"]
 
 
 def new_code():
-    return code_for(new_identity())
+    return keyring.code_for(os.urandom(32))
 
 
 class KeyringCase(unittest.TestCase):
@@ -41,13 +40,69 @@ class KeyringCase(unittest.TestCase):
         return out.getvalue(), err.getvalue(), code
 
 
+class FakeRemote:
+    """client/remote.Remote, already found and authed: answers from a dict of ops."""
+    instances = []
+
+    def __init__(self, entry, at, key=None, role="owner", answers=None, fail=None):
+        self.entry, self.name, self.role, self.answers, self.fail = entry, entry.get("alias"), role, answers or {}, fail
+        self.calls, self.closed = [], False
+        self.key = SimpleNamespace(pub=b"\x01" * 32)
+        self.conn = SimpleNamespace(ip="10.0.0.5", role=role, record=None)
+        self.hello = {"name": entry.get("name")}
+        FakeRemote.instances.append(self)
+
+    def open(self, quiet=False):
+        if self.fail:
+            raise SystemExit(self.fail)
+        return self
+
+    def call(self, op, args=None):
+        self.calls.append((op, args))
+        r = self.answers.get(op, {})
+        if callable(r):
+            r = r(args)
+        if "error" in r:
+            raise SystemExit(r["error"])
+        return r
+
+    def close(self):
+        self.closed = True
+
+
+def fake_remotes(test, **kw):
+    """Patch client/remote.Remote with FakeRemote(**kw); returns the list of instances."""
+    FakeRemote.instances = []
+    p = mock.patch("audiolink.client.remote.Remote", lambda entry, at, key=None: FakeRemote(entry, at, key, **kw))
+    p.start()
+    test.addCleanup(p.stop)
+    return FakeRemote.instances
+
+
 class Codes(KeyringCase):
+    def test_code_is_the_public_key(self):
+        pub = os.urandom(32)
+        code = keyring.code_for(pub)
+        self.assertTrue(code.startswith("al2-"))
+        self.assertEqual(keyring.parse(code), pub)
+        self.assertEqual(keyring.code_for(pub.hex()), code)
+
+    def test_an_old_code_is_read_for_its_key(self):
+        import base64
+        pub = os.urandom(32)
+        old = "al1-" + base64.urlsafe_b64encode(pub + os.urandom(16)).decode().rstrip("=")
+        self.assertEqual(keyring.parse(old), pub)
+        keyring.save({pub.hex(): {"code": old, "alias": "pi", "custody": {"seed": "00"}}})
+        e = keyring.load()[pub.hex()]
+        self.assertEqual(e["code"], keyring.code_for(pub))           # no secret kept
+        self.assertNotIn("custody", e)                               # nor the Pi's private key
+
     def test_malformed_codes_say_so(self):
         from audiolink.client import find
         for bad in BAD:
-            for fn, args in ((pis.forget_command, {"name": bad}), (pis.share_command, {"name": bad}),
+            for fn, args in ((pis.forget_command, {"name": bad}),
                              (pis.rename_command, {"name": bad, "new": "x", "on_pi": False}),
-                             (find.find_command, {"pi": bad}), (find.connect_command, {"pi": bad, "port": 22})):
+                             (find.connect_command, {"pi": bad, "port": 22})):
                 _, _, code = self.run_cmd(fn, **args)
                 self.assertTrue(code.endswith(keyring.NOT_A_CODE), (fn.__name__, bad, code))
 
@@ -58,16 +113,17 @@ class Codes(KeyringCase):
             _, _, msg = self.run_cmd(fn, **args)
             self.assertIn("No Pi with that code here", msg)
         self.assertEqual(keyring.load(), {})
-        self.assertEqual(keyring.resolve(code)["code"], code)      # still usable for connect/find
+        self.assertEqual(keyring.resolve(code)["code"], code)      # still usable for connect
 
     def test_ambiguous_name(self):
         keyring.upsert(new_code(), name="kitchen", alias="a")
         keyring.upsert(new_code(), name="kitchen", alias="b")
-        _, _, msg = self.run_cmd(pis.share_command, name="kitchen")
+        _, _, msg = self.run_cmd(pis.forget_command, name="kitchen")
         self.assertEqual(msg, "2 Pis call themselves kitchen; use the name in the first column (audiolink pis)")
-        out, _, _ = self.run_cmd(pis.pis_command)
+        out, _, _ = self.run_cmd(pis.pis_command, pi=None)
         self.assertIn("tag", out)
         self.assertIn("NETWORK", out)
+        self.assertIn("ROLE", out)
 
     def test_last_seen_only_on_contact(self):
         code = new_code()
@@ -80,34 +136,22 @@ class Codes(KeyringCase):
         e, _ = keyring.upsert(code, seen=True)
         self.assertGreater(e["last_seen"], 1000)
 
-    def test_add_code_checks_it(self):
-        code = new_code()
-        with mock.patch.object(pis, "_check_code", return_value=(None, None)):
-            out, _, _ = self.run_cmd(pis._add_code, code=code, name=None, no_lookup=False)
-        self.assertIn("not checked", out)
-        self.assertNotIn("last_seen", keyring.load()[keyring.pub_of(code)])
-        with mock.patch.object(pis, "_check_code", return_value=("green-rowan", None)):
-            out, _, _ = self.run_cmd(pis._add_code, code=new_code(), name=None, no_lookup=False)
-        self.assertIn("Added green-rowan", out)
-        self.assertNotIn("not checked", out)
-
-    def test_share_warns_on_stderr(self):
+    def test_forget_takes_itself_off_the_list(self):
         code = new_code()
         keyring.upsert(code, name="pi")
-        out, err, _ = self.run_cmd(pis.share_command, name="pi")
-        self.assertEqual(out.strip(), code)
-        self.assertIn("rotate-secret", err)
-
-    def test_forget(self):
-        code = new_code()
-        keyring.upsert(code, name="pi", custody={"seed": "00"})
-        with mock.patch("sys.stdin.isatty", return_value=False):
-            _, _, msg = self.run_cmd(pis.forget_command, name="pi", yes=False)
-        self.assertIn("--yes", msg)                                 # asks first
-        self.assertIn(keyring.pub_of(code), keyring.load())
-        out, _, msg = self.run_cmd(pis.forget_command, name="pi", yes=True)
+        remotes = fake_remotes(self, role="user")
+        out, _, msg = self.run_cmd(pis.forget_command, name="pi")
         self.assertIsNone(msg)
-        self.assertIn("rotate-secret", out)
+        self.assertIn("off its list too", out)
+        self.assertEqual(remotes[0].calls, [("remove", {"key": ("01" * 32)})])
+        self.assertEqual(keyring.load(), {})
+
+    def test_forget_when_unreachable(self):
+        keyring.upsert(new_code(), name="pi")
+        fake_remotes(self, fail="pi isn't reachable from here")
+        out, _, msg = self.run_cmd(pis.forget_command, name="pi")
+        self.assertIsNone(msg)
+        self.assertIn("still on its list", out)
         self.assertEqual(keyring.load(), {})
 
     def test_rename(self):
@@ -121,20 +165,80 @@ class Codes(KeyringCase):
         self.assertIsNone(msg)
         self.assertEqual(keyring.resolve("study")["name"], "den")
 
-    def test_rotate_secret_needs_a_known_pi(self):
-        from audiolink.host import control
-        answers = {"peer": {"connected": True, "peer": {"caps": ["rotate_secret"]}},
-                   "identity.info": {"pub": "ab" * 32, "name": "pi", "persistent": True, "serial": "1"}}
-        with mock.patch.object(control, "call", side_effect=lambda op, args=None, port=None: answers[op]):
-            _, _, msg = self.run_cmd(pis.rotate_secret_command, control_port=None, yes=True)
-        self.assertIn("Add it first: audiolink add", msg)
-        self.assertEqual(keyring.load(), {})
+
+class Lists(KeyringCase):
+    """invite, remove, pis PI: an owner's requests to a Pi (the Pi faked)."""
+
+    def setUp(self):
+        super().setUp()
+        self.code = new_code()
+        keyring.upsert(self.code, name="green-rowan")
+        keyring.update(keyring.pub_of(self.code), role="owner")
+
+    def test_invite(self):
+        remotes = fake_remotes(self, answers={"invite": {"code": "482177", "expires_in": 300}})
+        out, _, msg = self.run_cmd(pis.invite_command, name="mom", owner=False, pi=None, at=None)
+        self.assertIsNone(msg, out)
+        self.assertEqual(remotes[0].calls, [("invite", {"name": "mom", "role": "user"})])
+        self.assertIn("Code for mom: 482-177 (one use, 5 min)", out)
+        self.assertIn("authorized_keys", out)
+
+    def test_invite_needs_an_owner(self):
+        fake_remotes(self, role="user")
+        _, _, msg = self.run_cmd(pis.invite_command, name="mom", owner=True, pi=None, at=None)
+        self.assertIn("Only an owner of green-rowan", msg)
+
+    def test_invite_which_pi(self):
+        other = new_code()
+        keyring.upsert(other, name="blue-ash")
+        keyring.update(keyring.pub_of(other), role="owner")
+        _, _, msg = self.run_cmd(pis.invite_command, name="mom", owner=False, pi=None, at=None)
+        self.assertIn("which one? --pi NAME", msg)
+
+    def test_remove(self):
+        members = [{"name": "mom", "key": "aa" * 32, "role": "user"}]
+        remotes = fake_remotes(self, answers={"members": {"members": members}, "remove": {"ok": True}})
+        out, _, msg = self.run_cmd(pis.remove_command, name="mom", pi=None, at=None)
+        self.assertIsNone(msg)
+        self.assertIn("mom: removed from green-rowan", out)
+        self.assertIn(("remove", {"name": "mom"}), remotes[0].calls)
+        out, _, msg = self.run_cmd(pis.remove_command, name="dad", pi=None, at=None)
+        self.assertIn("isn't on any Pi this computer owns", out)
+
+    def test_remove_fails_where_it_cant_reach(self):
+        fake_remotes(self, fail="green-rowan is offline")
+        _, _, msg = self.run_cmd(pis.remove_command, name="mom", pi=None, at=None)
+        self.assertIn("Couldn't reach (nothing changed there)", msg)
+        self.assertIn("green-rowan: green-rowan is offline", msg)
+
+    def test_pis_one(self):
+        members = [{"name": "macbook", "key": "01" * 32, "role": "owner", "added": 1},
+                   {"name": "mom", "key": "aa" * 32, "role": "user", "added": 1}]
+        keyring.update(keyring.pub_of(self.code), last_record={"ts": 1, "ssid": "HomeWifi", "lan": [], "ports": [2222]})
+        fake_remotes(self, answers={"members": {"members": members}})
+        out, _, msg = self.run_cmd(pis.pis_command, pi="green-rowan", at=None)
+        self.assertIsNone(msg, out)
+        self.assertIn("green-rowan: online, on this network (this computer: owner)", out)
+        self.assertIn("Last record: on HomeWifi", out)
+        self.assertIn("Code: %s" % self.code, out)
+        self.assertIn("macbook", out)
+        self.assertIn("(this computer)", out)
+        self.assertIn("Only one owner", out)
+
+    def test_pis_one_offline(self):
+        keyring.update(keyring.pub_of(self.code), last_record={"ts": 1, "ssid": "HomeWifi", "lan": [], "ports": []})
+        fake_remotes(self, fail="green-rowan is offline (not on this network, nor on its relay)")
+        out, _, msg = self.run_cmd(pis.pis_command, pi="green-rowan", at=None)
+        self.assertIsNone(msg)
+        self.assertIn("green-rowan: green-rowan is offline", out)
+        self.assertIn("Last record: on HomeWifi", out)
+        self.assertNotIn("List:", out)
 
 
 class Lock(KeyringCase):
     def test_processes_dont_lose_each_others_changes(self):
-        script = ("import sys\nfrom audiolink.client import keyring\nfrom audiolink.discovery.record import "
-                  "code_for, new_identity\nfor _ in range(15):\n    keyring.upsert(code_for(new_identity()))\n")
+        script = ("import os\nfrom audiolink.client import keyring\n"
+                  "for _ in range(15):\n    keyring.upsert(keyring.code_for(os.urandom(32)))\n")
         env = dict(os.environ, AUDIOLINK_CONFIG_DIR=self.tmp.name)
         root = str(Path(__file__).resolve().parent.parent)
         procs = [subprocess.Popen([sys.executable, "-c", script], env=env, cwd=root) for _ in range(3)]
@@ -156,37 +260,43 @@ class Reaching(KeyringCase):
         self.code = new_code()
         keyring.upsert(self.code, name="kitchen")
         keyring.update(keyring.pub_of(self.code), last_record={"ts": 1, "ssid": "HomeWifi", "lan": [], "ports": []})
-        for target, value in (("_cached", None), ("_try_connect", None)):
-            p = mock.patch.object(find, target, return_value=value)
-            p.start()
-            self.addCleanup(p.stop)
 
-    def test_offline_on_the_relay_skips_the_dht(self):
-        from audiolink.relay.wire import Refused
-        with mock.patch("audiolink.relay.client.connect", side_effect=Refused("offline")), \
-                mock.patch.object(self.find, "lookup") as lookup:
+    def test_offline_on_the_relay(self):
+        from audiolink.client import remote
+        with mock.patch.object(remote, "reach", return_value=(None, None)), \
+                mock.patch.object(remote, "over_relay", return_value=(None, "offline")):
             _, _, msg = self.run_cmd(self.find.connect_command, pi="kitchen", port=2222)
-        lookup.assert_not_called()
-        self.assertRegex(msg, r"^audiolink: kitchen is offline \(not on its relay; last record .* on HomeWifi\)$")
+        self.assertRegex(msg, r"^audiolink: kitchen is offline \(not on this network, nor on its relay\); "
+                              r"last seen .* on HomeWifi$")
 
     def test_port_not_offered(self):
-        from audiolink.relay.client import Denied
-        with mock.patch("audiolink.relay.client.connect", side_effect=Denied("port 2222 isn't open over the relay")):
+        conn = mock.Mock(ip="10.0.0.5", role="user", record=None)
+        conn.open_stream.return_value = {"error": "port 2222 isn't exposed", "code": "not_exposed"}
+        with mock.patch("audiolink.client.remote.find", return_value=(conn, {"pub": "x"}, "at 10.0.0.5", None)):
             _, _, msg = self.run_cmd(self.find.connect_command, pi="kitchen", port=2222)
         self.assertEqual(msg, "audiolink: kitchen isn't offering port 2222 (on its host: audiolink host "
                               "--expose 2222:22)")
+        conn.auth.assert_called_once()
 
-    def test_find(self):
-        rec = {"ts": 1, "ssid": "HomeWifi", "lan": [], "ports": [], "name": "kitchen"}
-        with mock.patch.object(self.find, "_relay_state", return_value="offline"), \
-                mock.patch.object(self.find, "lookup", return_value=(rec, 1.0)):
-            out, _, msg = self.run_cmd(self.find.find_command, pi="kitchen")
-        self.assertIn("kitchen: offline (not on its relay)", out)
-        self.assertIn("Ports: none", out)
-        with mock.patch.object(self.find, "_relay_state", return_value="offline"), \
-                mock.patch.object(self.find, "lookup", return_value=(None, 1.0)):
-            _, _, msg = self.run_cmd(self.find.find_command, pi="kitchen")
-        self.assertIn("ask its owner", msg)
+    def test_not_on_the_list(self):
+        from audiolink.client.pairing import NotListed
+        conn = mock.Mock(ip="10.0.0.5")
+        conn.auth.side_effect = NotListed("not listed")
+        with mock.patch("audiolink.client.remote.find", return_value=(conn, {"pub": "x"}, "at 10.0.0.5", None)):
+            _, _, msg = self.run_cmd(self.find.connect_command, pi="kitchen", port=2222)
+        self.assertIn("kitchen doesn't have this computer on its list", msg)
+        self.assertIn("audiolink invite", msg)
+
+    def test_the_record_comes_with_auth(self):
+        rec = {"ts": 2, "ssid": "Office", "lan": ["10.0.0.5"], "ports": [2222], "name": "kitchen"}
+        conn = mock.Mock(ip="10.0.0.5", role="user", record=rec)
+        conn.open_stream.return_value = {"ok": True}
+        with mock.patch("audiolink.client.remote.find", return_value=(conn, {"pub": "x"}, "at 10.0.0.5", None)):
+            got = self.find._connect(SimpleNamespace(pi="kitchen", port=2222, at=None))
+        self.assertIs(got, conn)
+        e = keyring.lookup("kitchen")
+        self.assertEqual((e["last_record"], e["role"]), (rec, "user"))
+        self.assertIn("last_seen", e)
 
     def test_ssh_config(self):
         out, err, _ = self.run_cmd(pis.ssh_config_command, user=None, port=2222)
@@ -195,18 +305,6 @@ class Reaching(KeyringCase):
         self.assertIn("--user", err)
         self.assertEqual(pis._quote(r"C:\Program Files\audiolink.exe", windows=True),
                          r'"C:\Program Files\audiolink.exe"')
-
-    def test_add_says_what_next(self):
-        entry = keyring.lookup("kitchen")
-        with mock.patch.object(pis, "_add_usb", return_value=entry):          # on its host
-            out, _, _ = self.run_cmd(pis.add_command, code=None, at=None)
-        self.assertEqual(out.splitlines()[-1], "Next: audiolink wifi (put it on Wi-Fi); on your other computers: "
-                                               "audiolink pairing code kitchen here, then audiolink add there")
-        with mock.patch.object(pis, "_add_usb", return_value=None), \
-                mock.patch("audiolink.client.pairing.add_over_network", return_value=entry):
-            out, _, _ = self.run_cmd(pis.add_command, code=None, at=None)
-        self.assertIn("audiolink ssh-config --user YOU >> ~/.ssh/config", out.splitlines()[-1])
-        self.assertIn("then ssh kitchen", out.splitlines()[-1])
 
     def test_launcher_from_a_checkout_runs_the_checkout(self):     # no PYTHONPATH needed
         checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -224,22 +322,6 @@ class Reaching(KeyringCase):
                 mock.patch.object(sys, "executable", str(d / "link")), \
                 mock.patch.object(sys, "argv", [str(d / "link")]):
             self.assertEqual(pis._launcher(), pis._quote(os.path.realpath(str(exe))))
-
-
-class Discovery(unittest.TestCase):
-    def test_status_lines(self):
-        from audiolink.host.discovery import status_line
-        now = 1_800_000_000
-        base = {"now": now, "clock_known": True, "online": True, "published": None, "error": None}
-        for st, on, want in (
-                ({}, False, "not published (turn on: audiolink discovery enable); the relay works either way"),
-                ({"clock_known": False}, True, "waiting for the time"),
-                ({"online": False, "published": now - 600}, True, "waiting for internet; last published 10 min ago"),
-                ({"error": "boom", "published": now - 60}, True, "publishing failed (retrying; last published 1 min"),
-                ({}, True, "publishing shortly"),
-                ({"published": now - 5 * 3600}, True, "last published 5 h ago: record probably expired (offline?)"),
-                ({"published": now - 20}, True, "published just now")):
-            self.assertIn(want, status_line("pi", dict(base, **st), on))
 
 
 def wifi_args(**kw):

@@ -129,6 +129,16 @@ def ssh_banner(alias, port):
     return False, "no ssh server answered" if not data else "something other than ssh answered"
 
 
+def _refresh_record(entry):
+    """Connect to a known Pi once: auth brings its current record. -> the record, or None."""
+    from .client.remote import Remote
+    r = Remote(entry, []).open(quiet=True)
+    try:
+        return r.conn.record
+    finally:
+        r.close()
+
+
 def in_wsl():
     """Linux under Windows (WSL): mDNS answers don't reach it, NAT or mirrored networking."""
     try:
@@ -176,9 +186,7 @@ class Guide:
         self.port = getattr(a, "control_port", None) or control.DEFAULT_PORT
         self.sleep = sleep or time.sleep
         self.pi_device, self.sshd, self.banner, self.login = pi_device, sshd, banner, login
-        if lookup is None:
-            from .client.find import lookup
-        self.lookup = lookup
+        self.lookup = lookup or _refresh_record
         self.installer = installer or (lambda: install.install(self.runner, platform, home))
         self.temp_host = None           # an `audiolink host` started for this setup
         self.installed = None
@@ -441,16 +449,20 @@ class Guide:
         got = pis.add_usb_entry(self.port)
         if got is None:
             raise SystemExit("Lost the Pi; plug it in again and rerun audiolink setup")
-        entry, created, first, custody = got
+        entry, created, first, no_state = got
         self.entry = entry
         name = entry["alias"]
-        if created:
-            print("Added %s%s" % (name, " (claimed: first computer)" if first else ""))
-            ran("audiolink add")
+        if first:
+            print("Claimed %s: this computer owns it" % name)
+        elif created:
+            print("Added %s (%s)" % (name, entry.get("role") or "not on its list: host jobs only"))
         else:
             print("%s: added here" % name)
-        if custody:
-            print("No SD card: keeping a backup of the Pi's identity here")
+        if no_state:
+            print("%s keeps nothing across restarts (no SD card?): its list lasts until it restarts" % name)
+        if not first and entry.get("role") != "owner":
+            print("This computer isn't an owner of %s, so it can be its host but not change it (Wi-Fi, name). "
+                  "On an owner computer: audiolink invite %s --owner" % (name, socket.gethostname().split(".")[0]))
         wanted = self.a.name
         if not wanted and created:
             wanted = self.ask.text_default("Name", name).strip().lower()
@@ -633,31 +645,28 @@ class Guide:
         self.try_ssh()
 
     def refreshed(self, entry):
-        """A Pi added before: fetch its current record (audiolink find), so ssh NAME tries
-        its LAN address before the relay. Pairing with an older Pi left none. Quiet: the
+        """A Pi added before: connect once, which brings its current record (and this
+        computer's role), so ssh NAME tries its LAN address before the relay. Quiet: the
         relay still works without it."""
         try:
-            rec, took = self.lookup(entry["code"])
+            rec = self.lookup(entry)
         except (SystemExit, OSError, ValueError) as e:
-            detail("no record (%s)", e)
+            detail("no record (%s)", getattr(e, "code", e))
             return entry
         detail("record: %s", ", ".join(rec["lan"]) if rec and rec.get("lan") else "none")
         return keyring.lookup(entry["alias"], known=True) if rec else entry
 
     def find_pi(self):
         a = self.a
-        add = SimpleNamespace(code=a.code, name=a.name, no_lookup=False, at=a.at, pairing_code=a.pairing_code)
+        add = SimpleNamespace(code=a.code, name=a.name, at=a.at, invite=a.invite)
+        from .client.pairing import add_over_network, add_through_relay
         if a.code:
-            entry = pis._add_code(add)
-            ran("audiolink add CODE")
-            return entry
+            return add_through_relay(a.code, add, self.ask)
         if a.pi:
             return self.refreshed(keyring.lookup(a.pi, known=True))
-        from .client.pairing import add_over_network
         print("Looking for a Pi on this network...", flush=True)
         entry = add_over_network(add, self.ask)
         if entry:
-            ran("audiolink add")
             return entry
         known = sorted(keyring.load().values(), key=lambda e: e["alias"])
         if len(known) == 1:
@@ -671,14 +680,12 @@ class Guide:
             print("WSL doesn't hear the Pi's answers on the network: audiolink setup --at ADDRESS")
         else:
             print("Know its address? audiolink setup --at ADDRESS")
-        code = self.ask.text("Or the Pi's connect code (al1-..., from audiolink share NAME on a computer that has the Pi): ")
-        add.code = code.strip()
-        if not add.code:
+        code = self.ask.text("Or join through its relay: the Pi's code (al2-..., from audiolink pis PI on a "
+                             "computer that has it): ")
+        if not code.strip():
             raise SystemExit("Not set up. Join the Pi's network (or its setup network, audiopi-...) and run "
                              "audiolink setup again")
-        entry = pis._add_code(add)
-        ran("audiolink add CODE")
-        return entry
+        return add_through_relay(code.strip(), add, self.ask)
 
     def client_block(self):
         """The ~/.ssh/config block for ssh NAME (not on its host: that's this computer)."""

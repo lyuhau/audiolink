@@ -1,13 +1,9 @@
-"""`audiolink pis | add | share | forget | rename | ssh-config`: the Pis this machine knows.
+"""`audiolink pis [PI] | invite | remove | forget | rename | ssh-config`: the Pis this
+computer knows, and their lists (docs/state.md "Commands").
 
-add tries the ways a Pi can be reached, in order:
-  1. USB: a Pi plugged into this machine (through the running `audiolink host`);
-     physical possession is the trust, so no code is needed
-  2. the network: Pis found over mDNS on the local network, or on the Pi's own setup
-     network, or at --at ADDRESS; claimed Pis need a fresh pairing code (client/pairing.py)
-  3. a connect code someone shared: `audiolink add al1-...`, checked through the relay
-     or on the DHT when the Pi can be reached
-The first machine to add a Pi claims it.
+A Pi's list holds computer keys, each a user (passes through to the Pi's host) or an
+owner (everything). This computer gets on a list by claiming a Pi over USB (setup), or
+by redeeming an invite from an owner (setup, client/pairing.py).
 """
 import collections
 import getpass
@@ -16,12 +12,11 @@ import shlex
 import socket
 import subprocess
 import sys
-import threading
 import time
 
 from ..names import NAME_RE
 from . import keyring
-from ..ui import Prompter, ago, detail, done, step
+from ..ui import ago, detail
 
 
 def _quote(arg, windows=None):
@@ -49,10 +44,18 @@ def _launcher(argv=None, env=None):
     return "%s %s" % (_quote(sys.executable), _quote(checkout))     # its __main__.py
 
 
+def _this_computer():
+    return socket.gethostname().split(".")[0] or "computer"
+
+
+# ---------------------------------------------------------------- pis
 def pis_command(a):
+    if getattr(a, "pi", None):
+        return _one(a)
     pis = keyring.load()
     if not pis:
-        print("No Pis yet (add one: audiolink add)")
+        print("No Pis yet (claim one: plug it in and run audiolink setup; or get an invite: audiolink invite "
+              "on an owner computer, then audiolink setup)")
         return
     aliases = {e["alias"] for e in pis.values()}
     called = collections.Counter(e.get("name") for e in pis.values())
@@ -63,21 +66,58 @@ def pis_command(a):
         notes = ["calls itself %s" % own] if own and own != e["alias"] else []
         if own and (called[own] > 1 or (own != e["alias"] and own in aliases)):
             notes.append("tag %s" % pub[:4])      # names alone don't tell these apart
-        rows.append((e["alias"], ago(e.get("last_seen")), rec.get("ssid") or "-",
-                     "  (%s)" % ", ".join(notes) if notes else "", pub, e, rec))
+        rows.append((e["alias"], e.get("role") or "-", ago(e.get("last_seen")), rec.get("ssid") or "-",
+                     "  (%s)" % ", ".join(notes) if notes else "", pub, rec))
     w0 = max(len("NAME"), max(len(r[0]) for r in rows))
-    w1 = max(len("LAST SEEN"), max(len(r[1]) for r in rows))
-    print("%-*s  %-*s  %s" % (w0, "NAME", w1, "LAST SEEN", "NETWORK"))
-    for alias, when, where, notes, pub, e, rec in rows:
-        print("%-*s  %-*s  %s%s" % (w0, alias, w1, when, where, notes))
-        detail("tag %s, addresses %s%s", pub[:4], ", ".join(rec.get("lan", [])) or "-",
-               ", identity backup kept here" if e.get("custody") else "")
+    w1 = max(len("ROLE"), max(len(r[1]) for r in rows))
+    w2 = max(len("LAST SEEN"), max(len(r[2]) for r in rows))
+    print("%-*s  %-*s  %-*s  %s" % (w0, "NAME", w1, "ROLE", w2, "LAST SEEN", "NETWORK"))
+    for alias, role, when, where, notes, pub, rec in rows:
+        print("%-*s  %-*s  %-*s  %s%s" % (w0, alias, w1, role, w2, when, where, notes))
+        detail("tag %s, addresses %s", pub[:4], ", ".join(rec.get("lan", [])) or "-")
 
 
+def _one(a):
+    """`audiolink pis PI`: online (on this network or through its relay) or when it was last
+    seen, its code, and for an owner its list."""
+    from .remote import Remote
+    e = keyring.lookup(a.pi, known=True)
+    name = e["alias"]
+    try:
+        r = Remote(e, list(getattr(a, "at", None) or [])).open(quiet=True)
+    except SystemExit as why:
+        print("%s: %s" % (name, why.code))
+        r = None
+    if r is not None:
+        e = keyring.lookup(a.pi, known=True)
+        print("%s: online, %s (this computer: %s)"
+              % (name, "through its relay" if r.conn.ip == "relay" else "on this network", r.role))
+    rec = e.get("last_record") or {}
+    if rec.get("ts"):
+        print("Last record: on %s, %s" % (rec.get("ssid") or "an unknown network", ago(rec["ts"])))
+        print("Ports: %s" % (", ".join(map(str, rec.get("ports") or [])) or "none"))
+        detail("addresses %s", ", ".join(rec.get("lan") or []) or "?")
+    print("Code: %s" % e["code"])
+    if r is not None and r.role == "owner":
+        members = r.call("members")["members"]
+        print("List:")
+        mine = r.key.pub.hex()
+        for m in sorted(members, key=lambda m: (m["role"] != "owner", m["name"])):
+            print("  %-16s %-6s added %s%s" % (m["name"], m["role"], ago(m.get("added")),
+                                              "  (this computer)" if m["key"] == mine else ""))
+        if sum(m["role"] == "owner" for m in members) == 1:
+            print("Only one owner: if that computer is lost, the Pi needs a reset. Another: audiolink invite NAME --owner")
+    if r is not None:
+        r.close()
+
+
+# ---------------------------------------------------------------- USB: claim
 def add_usb_entry(port, alias=None):
-    """Add (or refresh) the Pi plugged in here; USB is the trust, so no code and no question.
-    -> (entry, created, claimed just now, an identity backup kept: it has no SD card), or None if no Pi is reachable over USB from here."""
+    """Add (or refresh) the Pi plugged in here, claiming it if it has no owner (USB is the
+    trust). -> (entry, created, claimed just now, no saved state), or None if no Pi is
+    reachable over USB from here."""
     from ..host.control import call
+    from .computer import key as computer_key
     try:
         peer = call("peer", port=port)
     except SystemExit:
@@ -85,164 +125,115 @@ def add_usb_entry(port, alias=None):
     if not peer.get("connected") or "identity" not in (peer.get("peer") or {}).get("caps", []):
         return None
     info = call("identity.info", port=port)
-    claim = call("identity.claim", port=port)
-    code = call("identity.code", port=port)["code"]
-    custody = None if info["persistent"] else call("identity.export", port=port)
-    entry, created = keyring.upsert(code, name=info["name"], alias=alias, serial=info["serial"],
-                                    custody=custody, seen=True)
-    return entry, created, bool(claim.get("first")), custody is not None
+    first = False
+    role = (peer.get("link") or {}).get("role")
+    if not info.get("owners"):
+        key = computer_key()
+        call("identity.claim", {"key": key.pub.hex(), "name": _this_computer()}, port=port)
+        first, role = True, "owner"
+    entry, created = keyring.upsert(keyring.code_for(info["pub"]), name=info["name"], alias=alias,
+                                    serial=info["serial"], seen=True)
+    keyring.update(info["pub"], role=role)
+    entry["role"] = role
+    return entry, created, first, not info.get("persistent", True)
 
 
-def _add_usb(a):
-    """Returns the entry, or None if no Pi is reachable over USB from here."""
-    from ..host.control import DEFAULT_PORT
-    got = add_usb_entry(getattr(a, "control_port", None) or DEFAULT_PORT, a.name)
-    if got is None:
-        return None
-    entry, created, first, custody = got
-    print("%s %s%s" % ("Added" if created else "Updated", entry["alias"],
-                       " (claimed: first computer)" if first else ""))
-    if custody:
-        print("No SD card: keeping a backup of its identity here")
-    return entry
+# ---------------------------------------------------------------- invite, remove
+def _owner_remote(pi, at=()):
+    from .remote import Remote
+    e = keyring.lookup(pi, known=True)
+    r = Remote(e, list(at)).open(quiet=True)
+    if r.role != "owner":
+        r.close()
+        raise SystemExit("Only an owner of %s can do that (this computer is a %s)" % (e["alias"], r.role))
+    return r
 
 
-OUTDATED = "That code is out of date (the Pi has a new one); ask for a fresh one: audiolink share NAME"
+def _which_pi(a):
+    """--pi, or the one Pi this computer owns."""
+    if getattr(a, "pi", None):
+        return a.pi
+    owned = [e["alias"] for e in keyring.load().values() if e.get("role") == "owner"]
+    if len(owned) == 1:
+        return owned[0]
+    if not owned:
+        raise SystemExit("This computer owns no Pi (audiolink pis)")
+    raise SystemExit("This computer owns %s: which one? --pi NAME" % ", ".join(sorted(owned)))
 
 
-def _check_code(code, dht=True):
-    """Does the Pi behind a code answer to it? -> (name, DHT record or None), or (None, None)
-    if it can't be reached now. Ends the command if the Pi turns the code down. The relay
-    proves it both ways (each side proves it holds the secret); a DHT record does too
-    (signed with the Pi's key, readable only with the secret)."""
-    from ..relay.client import Denied, connect
-    from ..relay.wire import Refused, splice
-    from ..services.endpoint import PORT
-    from .remote import _through_relay
-    pub, secret = keyring.parse(code)
+def invite_command(a):
+    name = a.name.strip().lower()
+    if not NAME_RE.match(name):
+        raise SystemExit("Names: lowercase letters, digits and dashes, up to 32")
+    role = "owner" if a.owner else "user"
+    pi = _which_pi(a)
+    r = _owner_remote(pi, getattr(a, "at", None) or [])
     try:
-        sock = connect(pub, secret, PORT)
-    except Denied as e:
-        detail("the relay: %s", e)
-        raise SystemExit(OUTDATED if "not paired" in str(e) else "audiolink: %s" % e)
-    except Refused as e:
-        detail("the relay: %s", e)
-        sock = None
-    if sock is not None:
-        mine, theirs = socket.socketpair()
-        threading.Thread(target=splice, args=(theirs, sock), daemon=True).start()
-        found = _through_relay(mine, pub, "the Pi")
-        if found:
-            found[0].close()
-            return found[1].get("name"), None
-    if dht:
-        from .find import lookup
-        detail("not on its relay; looking on the DHT (--no-lookup skips this)")
+        got = r.call("invite", {"name": name, "role": role})
+    finally:
+        r.close()
+    code = got["code"]
+    print("Code for %s: %s-%s (one use, %d min)" % (name, code[:3], code[3:], got.get("expires_in", 300) // 60))
+    print("%s will %s %s. On %s: audiolink setup, and type the code"
+          % (name, "own" if role == "owner" else "pass through", r.name, name))
+    if role == "user":
+        print("%s logs in to %s's host only with its key in that computer's authorized_keys" % (name, r.name))
+
+
+def remove_command(a):
+    """Take NAME off every Pi this computer owns that lists it."""
+    owned = [e for e in keyring.load().values() if e.get("role") == "owner"]
+    if getattr(a, "pi", None):
+        owned = [keyring.lookup(a.pi, known=True)]
+    if not owned:
+        raise SystemExit("This computer owns no Pi (audiolink pis)")
+    removed, failed = [], []
+    for e in sorted(owned, key=lambda e: e["alias"]):
         try:
-            rec, _ = lookup(code)
-        except SystemExit:
-            raise SystemExit(OUTDATED)
-        if rec:
-            return rec.get("name"), rec
-    return None, None
-
-
-def _add_code(a):
-    pub = keyring.pub_of(a.code)
-    step("Checking it")
-    name, rec = _check_code(a.code, dht=not a.no_lookup)
-    done("found %s" % name if name else "not reachable now")
-    entry, created = keyring.upsert(a.code, name=name, alias=a.name, seen=bool(name and not rec))
-    if rec:
-        keyring.update(pub, last_record=rec)
-        keyring.seen(pub, rec.get("ts"))
-    print("%s %s%s" % ("Added" if created else "Updated", entry["alias"],
-                       "" if name else "; not checked (it isn't reachable now)"))
-    return entry
-
-
-def add_command(a):
-    from ..ui import line_buffered
-    from .pairing import add_over_network
-    line_buffered()
-    usb = False
-    if a.code:
-        entry = _add_code(a)
-    else:
-        entry = None if a.at else _add_usb(a)
-        usb = entry is not None
-        if entry is None:
-            print("Searching this network...", flush=True)
-            entry = add_over_network(a, Prompter(a, "--pairing-code, --at"))
-    if entry is None:
-        raise SystemExit("No new Pi found. To add one:\n"
-                         "  plug it in here (with audiolink host running)\n"
-                         "  or join its network or setup network (audiopi-...)  [--at ADDRESS if not found]\n"
-                         "  or paste its code: audiolink add al1-...  (from: audiolink share NAME)")
-    if usb:                             # this is its host: next, Wi-Fi and the other computers
-        print("Next: audiolink wifi (put it on Wi-Fi); on your other computers: audiolink pairing "
-              "code %s here, then audiolink add there" % entry["alias"])
-    else:
-        print("Connect: audiolink ssh-config --user YOU >> ~/.ssh/config (YOU: your login on the "
-              "computer it's plugged into), then ssh %s" % entry["alias"])
-
-
-def rotate_secret_command(a):
-    """A new read secret for the plugged-in Pi: every other computer loses access."""
-    from ..host.control import DEFAULT_PORT, call
-    port = getattr(a, "control_port", None) or DEFAULT_PORT
-    peer = call("peer", port=port)
-    if not peer.get("connected"):
-        raise SystemExit("No Pi plugged in")
-    caps = (peer.get("peer") or {}).get("caps", [])
-    if "rotate_secret" not in caps:
-        raise SystemExit("The Pi's audiolink can't do this; update it (audiolink update)")
-    info = call("identity.info", port=port)
-    known = keyring.load().get(info["pub"])
-    if known is None:
-        raise SystemExit("%s isn't added here (it would be the only computer left with a code). "
-                         "Add it first: audiolink add" % info["name"])
-    if not getattr(a, "yes", False) and not Prompter(a, "--yes").yes(
-            "New code for %s: every other computer that added it loses access. Go ahead?" % known["alias"]):
-        raise SystemExit("Not changed")
-    code = call("identity.rotate_secret", port=port)["code"]
-    custody = None if info["persistent"] else call("identity.export", port=port)
-    entry, _ = keyring.upsert(code, name=info["name"], serial=info["serial"], custody=custody, seen=True)
-    print("New code for %s (kept here)" % entry["alias"])
-    print("Other computers lost access; to add one again: audiolink pairing code %s, then audiolink add there"
-          % entry["alias"])
-    if "debug" in caps:
+            r = _owner_remote(e["alias"], getattr(a, "at", None) or [])
+        except SystemExit as why:
+            failed.append("%s: %s" % (e["alias"], why.code))
+            continue
         try:
-            mode = call("debug.status", port=port).get("mode")
-        except SystemExit:
-            mode = None
-        if mode in ("key", "none"):
-            print("Debug access (%s) doesn't use the code: it stays until audiolink debug off"
-                  % ("by key" if mode == "key" else "for anyone"))
-
-
-def share_command(a):
-    e = keyring.lookup(a.name, known=True)
-    name = e["alias"]
-    sys.stderr.write("Anyone with this code can use and manage %s from anywhere, including over the relay.\n"
-                     "To take it back: audiolink rotate-secret (%s plugged in).\n" % (name, name))
-    sys.stderr.flush()
-    print(e["code"])
+            members = r.call("members")["members"]
+            if any(m["name"] == a.name for m in members):
+                r.call("remove", {"name": a.name})
+                removed.append(e["alias"])
+        except SystemExit as why:
+            failed.append("%s: %s" % (e["alias"], why.code))
+        finally:
+            r.close()
+    if removed:
+        print("%s: removed from %s" % (a.name, ", ".join(removed)))
+    elif not failed:
+        print("%s isn't on any Pi this computer owns" % a.name)
+    if removed:
+        print("Its line in your hosts' authorized_keys, if any, is yours to remove")
+    if failed:
+        raise SystemExit("Couldn't reach (nothing changed there):\n  " + "\n  ".join(failed))
 
 
 def forget_command(a):
+    """This computer drops the Pi, and takes itself off the Pi's list when it can."""
+    from .remote import Remote
     e = keyring.lookup(a.name, known=True)
-    if e.get("custody") and not getattr(a, "yes", False):
-        print("This computer keeps the backup of %s's identity (it has no SD card): without it, or another\n"
-              "computer's, it gets a new identity (and code) when it restarts" % e["alias"])
-        if not Prompter(a, "--yes").yes("Forget %s anyway?" % e["alias"]):
-            raise SystemExit("Not forgotten")
+    left = False
+    try:
+        r = Remote(e, []).open(quiet=True)
+        try:
+            r.call("remove", {"key": r.key.pub.hex()})
+            left = True
+        finally:
+            r.close()
+    except SystemExit as why:
+        detail("%s", why.code)
     keyring.remove(keyring.pub_of(e["code"]))
-    print("Forgot %s" % e["alias"])
-    print("Its code still works on the Pi; to also cut this computer off: audiolink rotate-secret "
-          "(on the computer it's plugged into)")
+    print("Forgot %s%s" % (e["alias"], "; off its list too" if left else
+                            "; it couldn't be reached, so this computer is still on its list "
+                            "(an owner can remove it: audiolink remove %s)" % _this_computer()))
 
 
+# ---------------------------------------------------------------- rename, ssh-config
 def rename_command(a):
     e = keyring.lookup(a.name, known=True)
     pub = keyring.pub_of(e["code"])
@@ -259,21 +250,34 @@ def rename_command(a):
         keyring.update(pub, alias=new)
         print("Renamed %s to %s on this computer (--on-pi renames the Pi itself)" % (e["alias"], new))
         return
-    from ..host.control import DEFAULT_PORT, call
-    port = getattr(a, "control_port", None) or DEFAULT_PORT
-    info = call("identity.info", port=port)
-    if info["pub"] != pub:
-        raise SystemExit("The Pi plugged in here isn't %s" % e["alias"])
-    if info["name"] == new and e["alias"] == new:
-        print("It's already called %s" % new)
-        return
-    if info["name"] != new:
-        call("identity.rename", {"name": new}, port=port)
+    if not _rename_over_usb(a, pub, new):
+        r = _owner_remote(e["alias"])
+        try:
+            if (r.hello or {}).get("name") != new:
+                r.call("rename", {"name": new})
+        finally:
+            r.close()
     alias = keyring.unique_alias(keyring.load(), new, pub)
     keyring.update(pub, name=new, alias=alias, last_seen=int(time.time()))
     print("Renamed %s to %s: other computers see its new name; their own names for it stay" % (e["alias"], new))
     if alias != new:
         print("%s is taken here (another Pi); called it %s" % (new, alias))
+
+
+def _rename_over_usb(a, pub, new):
+    """Rename the Pi plugged in here, if that's this one (the link's role must be owner).
+    -> whether it was."""
+    from ..host.control import DEFAULT_PORT, call
+    port = getattr(a, "control_port", None) or DEFAULT_PORT
+    try:
+        info = call("identity.info", port=port)
+    except SystemExit:
+        return False
+    if info.get("pub") != pub:
+        return False
+    if info.get("name") != new:
+        call("identity.rename", {"name": new}, port=port)
+    return True
 
 
 def ssh_port(entry, default=2222):
@@ -286,7 +290,7 @@ def ssh_port(entry, default=2222):
 def ssh_config_command(a):
     pis = keyring.load()
     if not pis:
-        raise SystemExit("No Pis yet (add one: audiolink add)")
+        raise SystemExit("No Pis yet (audiolink setup)")
     user = a.user or getpass.getuser()
     if not a.user:
         sys.stderr.write("Logging in as %s, this computer's user (another: --user NAME)\n" % user)

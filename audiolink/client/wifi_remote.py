@@ -9,7 +9,7 @@ then switches. If nobody can reach it there, it opens its setup network.
 from ..ui import detail, done, step
 from ..wifi_ui import FAILURE
 from . import keyring
-from .pairing import reach
+from .pairing import NotListed, reach
 
 REMOTE_ACTIONS = ("join", "status", "check")
 PORTAL_THERE = "sign in on the computer it's plugged into: audiolink wifi portal"
@@ -22,7 +22,7 @@ def _pick_pi(a):
     if len(pis) == 1:
         return pis[0]
     raise SystemExit("Which Pi? Use --pi NAME (see: audiolink pis)" if pis else
-                     "No Pis yet (add one: audiolink add)")
+                     "No Pis yet (audiolink setup)")
 
 
 def over_network(a):
@@ -40,7 +40,7 @@ def status_command(a):
     from .remote import Remote
     if a.name:
         raise SystemExit("audiolink wifi %s takes no network name" % a.action)
-    remote = Remote(_pick_pi(a), a.at or [], None).open()
+    remote = Remote(_pick_pi(a), a.at or []).open()
     try:
         r = remote.call("wifi_status", {"check": a.action == "check"})["result"]
     finally:
@@ -54,22 +54,33 @@ def change_command(a):
     """`audiolink wifi join NAME` over the network."""
     from ..wifi_ui import wifi_password
     from ..ui import Prompter
+    from .computer import key as computer_key
+    from .remote import not_listed
     if not a.name:
         raise SystemExit("Usage: audiolink wifi join NAME")
     entry = _pick_pi(a)
     pi, net = entry["alias"], a.name
-    pub, secret = keyring.parse(entry["code"])
+    pub = keyring.pub_of(entry["code"])
     setup_net = "audiopi-%s" % (entry.get("name") or pi)
     step("Finding %s" % pi)
     conn, hello = reach(entry, a.at or [])
     if not conn:
         done("not found")
         raise SystemExit("%s isn't on this network or on its setup network (%s)" % (pi, setup_net))
-    done("found")
-    detail("at %s", conn.ip)
-    keyring.seen(pub.hex())
     try:
-        st = conn.ask_auth("change_status", hello, secret, ssid=net)
+        conn.auth(computer_key())
+    except NotListed:
+        conn.close()
+        done("not let in")
+        raise not_listed(pi)
+    done("found")
+    detail("at %s, as %s", conn.ip, conn.role)
+    keyring.seen(pub)
+    if conn.role != "owner":
+        conn.close()
+        raise SystemExit("Only an owner of %s can change its Wi-Fi (this computer is a %s)" % (pi, conn.role))
+    try:
+        st = conn.ask({"op": "change_status", "ssid": net})
         if "error" in st:
             raise SystemExit(st["error"])
         saved = st.get("saved", [])
@@ -94,7 +105,7 @@ def change_command(a):
                 typed = True
         step("Checking %s" % net)
         conn.sock.settimeout(90)        # the Pi tries the network before answering
-        r = conn.ask_auth("change_wifi", hello, secret, sealed=details)
+        r = conn.ask(dict(details, op="change_wifi"))      # the password: inside TLS, pinned to the Pi
     finally:
         conn.close()
     if "error" in r:

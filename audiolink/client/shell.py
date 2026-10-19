@@ -2,9 +2,8 @@
 command run there.
 
 No PI: the Pi plugged in here, over the link (the host daemon's shell port).
-PI: over the network, reached like `connect` (LAN, setup network, relay); the Pi's
-debug switch decides (services/access.py): this machine's pairing, --key FILE, or
-nothing. Raw terminal here; Windows isn't supported yet.
+PI: over the network, reached like `connect` (LAN, setup network, relay), for owners of
+the Pi. Raw terminal here; Windows isn't supported yet.
 
 With a Pi that frames the shell (cap "shell2"; services/shell.py) the command ends with
 the shell's exit status, a resized window follows here, and `-- CMD` runs CMD with
@@ -225,7 +224,7 @@ def shell_command(a):
     if not a.pi:
         return _usb(a, cmd)
     from .remote import open_remote
-    remote = open_remote(a.pi, a.at or [], getattr(a, "key", None))
+    remote = open_remote(a.pi, a.at or [])
     try:
         r = remote.ask("shell", v=2, **dict(_header(), **({"cmd": cmd} if cmd is not None else {})))
     except BaseException:

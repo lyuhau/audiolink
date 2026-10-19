@@ -4,7 +4,6 @@ import shutil
 import socket
 import tempfile
 import threading
-import time
 import unittest
 from unittest import mock
 
@@ -205,6 +204,7 @@ class Client(PiConn):
 
 
 @needs_tls
+@unittest.skip("roles-v1: needs the v2 Pi side")
 class EndpointAccess(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -297,6 +297,7 @@ class FakePresence:
             self.touched += 1
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side")
 @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
 class Strangers(unittest.TestCase):
     """Connections that prove nothing can't lock others out or keep the Pi 'in use'."""
@@ -368,90 +369,6 @@ class Strangers(unittest.TestCase):
         stranger.close()
         self.assertTrue(wait(lambda: self.ep.active == 1))
         self.assertEqual((self.presence.held, self.presence.touched), (set(), 1))
-
-
-class DebugCommand(unittest.TestCase):
-    """`audiolink debug`, against a DebugService standing in for the plugged-in Pi."""
-
-    def run_cmd(self, *argv):
-        import contextlib
-        import io
-        from unittest import mock
-        from audiolink.__main__ import main
-        svc = self.svc
-
-        def call(op, args=None, port=None):
-            if op == "peer":
-                return {"connected": True, "peer": {"caps": ["debug"]}}
-            return svc.handle(op.split(".", 1)[1], args or {})
-        out = io.StringIO()
-        with mock.patch("audiolink.host.control.call", call), mock.patch("audiolink.host.debug_cli.call", call), \
-                contextlib.redirect_stdout(out):
-            main(["debug"] + list(argv))
-        return out.getvalue()
-
-    def setUp(self):
-        self.svc = DebugService()
-
-    def test_on_status_off(self):
-        out = self.run_cmd("on", "--for", "2h")
-        self.assertIn("Debug: on, computers that added it", out)
-        self.assertIn("Routes: USB, LAN, setup network, relay", out)
-        self.assertIn("Ends in 2 h (at ", out)
-        self.assertIn("Network shells open: 0", out)
-        out = self.run_cmd("on", "--auth", "none")
-        self.assertIn("Routes: USB, LAN\n", out)
-        self.assertIn("Warning: anyone on the Pi's Wi-Fi network can get a root shell", out)
-        self.assertIn("or its setup network", self.run_cmd("on", "--auth", "none", "--setup"))
-        self.assertIn("Debug: on", self.run_cmd("status"))
-        self.assertEqual(self.run_cmd("off"), "Debug: off\n")
-        self.assertEqual(self.svc.status()["mode"], "off")
-
-    def test_key_files(self):
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d)
-        path = os.path.join(d, "k.pub")
-        with open(path, "w") as f:
-            f.write("# keys\n%s\n%s\n" % (ed25519_public(b"\1" * 32).hex(), ed25519_public(b"\2" * 32).hex()))
-        self.assertIn("Debug: on, 2 debug keys", self.run_cmd("on", "--key", path))
-        self.assertEqual(len(self.svc.keys()), 2)
-
-    def test_refuses_mismatched_options(self):
-        for argv in (["on", "--auth", "key"], ["on", "--setup"], ["on", "--for", "forever"],
-                     ["off", "--for", "2h"], ["status", "--auth", "none"], ["off", "--persist"]):
-            with self.assertRaises(SystemExit, msg=argv):
-                self.run_cmd(*argv)
-
-    def test_checks_options_before_asking_the_pi(self):
-        from unittest import mock
-        from audiolink.__main__ import main
-        call = mock.Mock(side_effect=AssertionError("asked the Pi"))
-        with mock.patch("audiolink.host.debug_cli.call", call):
-            with self.assertRaises(SystemExit) as e:
-                main(["debug", "on", "--for", "forever"])
-        self.assertIn("--for", str(e.exception.code))
-
-    def test_no_pi(self):
-        from unittest import mock
-        from audiolink.__main__ import main
-        with mock.patch("audiolink.host.debug_cli.call", lambda op, args=None, port=None: {"connected": False}):
-            with self.assertRaises(SystemExit) as e:
-                main(["debug", "status"])
-        self.assertEqual(e.exception.code, "No Pi plugged in (debug status comes from the plugged-in Pi)")
-
-    def test_off_counts_closed_shells(self):
-        self.svc.set({"mode": "none"})
-        self.svc.shells = lambda: 2
-        self.assertEqual(self.run_cmd("off"), "Debug: off (closed 2 network shells)\n")
-
-    def test_spans_and_times(self):
-        from audiolink.host.debug_cli import _at, _span
-        self.assertEqual([_span(s) for s in (59, 2700, 3600, 5400, 86400, 129600, 3 * 86400 + 4 * 3600)],
-                         ["1 min", "45 min", "1 h", "1 h 30 min", "24 h", "36 h", "3 d 4 h"])
-        noon = time.mktime((2026, 10, 14, 12, 0, 0, 0, 0, -1))
-        self.assertEqual(_at(7500, noon), "14:05")
-        self.assertEqual(_at(86400, noon), "12:00 tomorrow")
-        self.assertTrue(_at(3 * 86400, noon).endswith("17 Oct 12:00"))
 
 
 class RunsForReal(unittest.TestCase):

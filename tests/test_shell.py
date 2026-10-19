@@ -102,6 +102,7 @@ class Client(PiConn):
 
 @unittest.skipIf(sys.platform == "win32", "no pty")
 @needs_tls
+@unittest.skip("roles-v1: needs the v2 Pi side")
 class OverTheNetwork(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

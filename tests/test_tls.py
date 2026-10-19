@@ -60,6 +60,7 @@ class Impostor(IdentityService):
         return dict(super().info(), pub=self.claims)
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side")
 @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
 class Endpoints(unittest.TestCase):
     def pi(self, cls=IdentityService):

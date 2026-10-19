@@ -96,8 +96,8 @@ class HostConfig(TempConfig):
         from audiolink import __main__ as cli
         host_config.save({"control_port": 47900})
         seen = {}
-        with mock.patch("audiolink.host.debug_cli.debug_command", lambda a: seen.setdefault("port", a.control_port)):
-            cli.main(["debug"])
+        with mock.patch("audiolink.host.logs_cli.logs_command", lambda a: seen.setdefault("port", a.control_port)):
+            cli.main(["logs"])
         self.assertEqual(seen["port"], 47900)
         with mock.patch.dict(os.environ, {"AUDIOLINK_CONTROL_PORT": "47950"}):
             self.assertIsNone(host_config.control_port())
@@ -403,19 +403,18 @@ class FakeHost:
         if op == "peer":
             return {"connected": self.connected, "peer": {"caps": ["identity", "wifi", "proxy"],
                                                           "identity": {"name": self.ident_name}},
-                    "expose": self.expose}
+                    "link": {"role": "owner" if self.claimed else None}, "expose": self.expose}
         if op == "audio.status":
             return {"running": False}
         if not self.connected:
             raise SystemExit("No Pi plugged in")
         if op == "identity.info":
             return {"name": self.ident_name, "serial": "s1", "persistent": True,
-                    "pub": keyring.pub_of(code_for(self.ident))}
+                    "pub": keyring.pub_of(code_for(self.ident)), "owners": 1 if self.claimed else 0}
         if op == "identity.claim":
-            first, self.claimed = not self.claimed, True
-            return {"first": first}
-        if op == "identity.code":
-            return {"code": code_for(self.ident)}
+            assert not self.claimed and len(bytes.fromhex(args["key"])) == 32
+            self.claimed = True
+            return {"members": [{"key": args["key"], "name": args["name"], "role": "owner"}]}
         if op == "identity.rename":
             self.ident_name = args["name"]
             return {}
@@ -471,7 +470,7 @@ class Setup(TempConfig):
             return banner
         g = guide.Guide(a, runner=self.runner, platform="darwin", home=self.home, pi_device=lambda: pi_device,
                         sshd=lambda: sshd, banner=ssh, login=ssh, installer=lambda: inst,
-                        lookup=lambda code: (self.lookups.append(code), (None, 0))[1],
+                        lookup=lambda entry: (self.lookups.append(entry["code"]), None)[1],
                         usb_state=usb_state or (lambda: "pi" if pi_device else None))
         g.ask.tty = False
         out = io.StringIO()
@@ -496,8 +495,8 @@ class Setup(TempConfig):
         out, code = self.setup("--yes", "--wifi", "Home", "--autostart")
         self.assertIsNone(code, out)
         self.assertEqual(self.runner.spawned, [["/inst/audiolink", "host"]])
-        for line in ("Installed audiolink in", "Added green-rowan (claimed: first computer)",
-                     "  (audiolink add)", "Connecting green-rowan to Home... online", '  (audiolink wifi join "Home")',
+        for line in ("Installed audiolink in", "Claimed green-rowan: this computer owns it",
+                     "Connecting green-rowan to Home... online", '  (audiolink wifi join "Home")',
                      "This computer's ssh is reachable through green-rowan", "microphone",
                      "audiolink host: starts at login\n", "Starting audiolink host... connected to green-rowan",
                      "Make this computer green-rowan's host? yes",
@@ -583,7 +582,7 @@ class Setup(TempConfig):
         for line in ("Pi in USB boot mode: no card set up", "Set up the Pi's card? (erases the card) yes",
                      "Downloading the card image", "Opening the card... 31.9 GB",
                      "Writing the card... done", "Unplug the Pi and plug it back in", "Waiting for the Pi to start... started",
-                     "Added green-rowan"):
+                     "Claimed green-rowan"):
             self.assertIn(line, out)
         self.assertEqual(calls["written"], [("/dev/disk7", Path("/cache/audiolink-pi.zip"))])   # never disk2
         self.assertEqual(self.runner.ran("/rp"), [["/rp", "-d", "/msd"]])
@@ -654,7 +653,7 @@ class Setup(TempConfig):
         self.assertIn("User alice", self.ssh_config())       # its earlier answer
         self.assertIn("Trying ssh green-rowan... green-rowan is offline", out)
         self.assertEqual(self.ssh_config().count("# BEGIN audiolink"), 1)
-        self.assertEqual(self.lookups, [code])          # added before: its record fetched; not when just added
+        self.assertEqual(self.lookups, [keyring.code_for(keyring.pub_of(code))])   # added before: refreshed
 
     def test_added_before_gets_its_current_record(self):
         self.host.running = False
@@ -662,9 +661,9 @@ class Setup(TempConfig):
         keyring.upsert(code, name="green-rowan", seen=True)
         rec = {"name": "green-rowan", "lan": ["192.168.99.185"], "ports": [2222], "ts": 1}
 
-        def lookup(c):
-            keyring.update(keyring.pub_of(c), last_record=rec)
-            return rec, 0.5
+        def lookup(entry):                              # a connection: auth brings the record
+            keyring.update(keyring.pub_of(entry["code"]), last_record=rec)
+            return rec
         with mock.patch("audiolink.client.pairing.add_over_network", lambda a, ask: None):
             a = build_parser().parse_args(["setup", "--yes", "-v"])
             g = guide.Guide(a, home=self.home, pi_device=lambda: False, lookup=lookup)
@@ -680,8 +679,8 @@ class Setup(TempConfig):
         code = code_for(new_identity())
         keyring.upsert(code, name="green-rowan", seen=True)
 
-        def lookup(c):
-            raise SystemExit("Found its record, but can't read it")
+        def lookup(entry):
+            raise SystemExit("green-rowan is offline")
         a = build_parser().parse_args(["setup", "--yes", "--pi", "green-rowan"])
         g = guide.Guide(a, home=self.home, pi_device=lambda: False, lookup=lookup)
         with contextlib.redirect_stdout(io.StringIO()):

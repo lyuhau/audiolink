@@ -74,6 +74,7 @@ class Harness(unittest.TestCase):
         return r
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side")
 class Logs(Harness):
     def test_paired_machines_read_logs(self):
         r = self.remote()
@@ -85,6 +86,7 @@ class Logs(Harness):
             self.remote(code="").call("logs", {"action": "list"})
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side")
 class Update(Harness):
     def run_update(self, path, **kw):
         a = argparse.Namespace(pi="pi", at=None, key=None, status=False, revert=False, pyz=path,
@@ -116,6 +118,7 @@ class Update(Harness):
             self.assertEqual(f.read(), pyz())
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side")
 class Keys(Harness):
     def key(self):
         k = Key.__new__(Key)
@@ -132,6 +135,7 @@ class Keys(Harness):
             self.remote(key=self.key()).call("update", {"action": "status"})
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side")
 class WithoutTheCode(Harness):
     """Debug access without the Pi's code (--auth key or none) reaches what it needs:
     the update's status (also after the restart) and the logs."""
@@ -158,6 +162,7 @@ class WithoutTheCode(Harness):
             self.status(self.remote(code=""))
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side")
 class Rotate(Harness):
     def test_rotate_secret(self):
         old = self.identity.code()

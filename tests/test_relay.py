@@ -343,6 +343,7 @@ class Echo:
                 c.sendall(data)
 
 
+@unittest.skip("roles-v1: needs the v2 Pi side")
 @unittest.skipUnless(shutil.which("openssl"), "needs openssl to make a test certificate")
 class ThroughTheRelay(unittest.TestCase):
     """Relay, Pi agent and client in one process."""

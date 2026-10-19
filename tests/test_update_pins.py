@@ -135,7 +135,7 @@ class UpdateCommand(unittest.TestCase):
     def test_options_dont_combine(self):
         self.refused(["--status", "--revert"], "Pick one")
         self.refused([self.file(pyz()), "--status"], "Pick one")
-        self.refused(["--status", "--at", "10.0.0.2"], "go with --pi")
+        self.refused(["--status", "--at", "10.0.0.2"], "goes with --pi")
         self.assertEqual(self.calls, [])
 
     def test_revert_with_nothing_installed(self):

@@ -1,7 +1,7 @@
 """`audiolink update [PYZ] | --revert | --status [--pi PI]`: new code for a Pi.
 
 Sends the .pyz over the link (USB networking not needed), or with --pi over the network
-(debug access, services/access.py); the Pi keeps it on its SD card and restarts into it
+(owners of the Pi); the Pi keeps it on its SD card and restarts into it
 (services/update.py). Default: the .pyz this command runs from.
 
 Over USB the link goes to the baseline audio format first: a daemon restarting in a
@@ -67,10 +67,8 @@ class NetCaller:
             try:
                 if self.remote.conn is None:
                     self.remote.open(quiet=True)
-                if action == "status":              # allowed with debug off (after a restart)
+                if action == "status":
                     r = self.remote.ask("update_status")
-                    if r.get("code") == "not_paired" and self.remote.key:   # a Pi before keys could
-                        r = self.remote.ask("update", action="status")
                     if "error" in r:
                         raise SystemExit(self.remote.refusal(r))
                     return r["result"]
@@ -143,8 +141,8 @@ def update_command(a):
     port = a.control_port
     if (a.pyz is not None) + a.revert + a.status > 1:
         raise SystemExit("Pick one: a .pyz to send, --revert or --status")
-    if (a.key or a.at) and not a.pi:
-        raise SystemExit("--key and --at go with --pi PI (over the network)")
+    if a.at and not a.pi:
+        raise SystemExit("--at goes with --pi PI (over the network)")
     data = path = None
     if not (a.status or a.revert):
         path = a.pyz or _this_pyz()
@@ -153,7 +151,7 @@ def update_command(a):
         data = read_pyz(path)
     if a.pi:
         from ..client.remote import open_remote
-        call = NetCaller(open_remote(a.pi, a.at or [], a.key))
+        call = NetCaller(open_remote(a.pi, a.at or []))
     else:
         from .control import call
         peer = call("peer", port=port)
