@@ -88,96 +88,97 @@ class SlowAsk:
         return True
 
 
-@unittest.skip("roles-v1: needs the v2 Pi side (client/pairing.py is ported)")
 @unittest.skipIf(tls.unsupported(), "this Python's SSL library can't do TLS 1.3 with ed25519")
 class AddOverNetwork(unittest.TestCase):
+    """setup without a Pi on USB: redeeming an invite to a Pi found here (client/pairing.py),
+    against the real Pi side (endpoint, pairing service, the list)."""
+
     def setUp(self):
+        import os
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
-        self.identity = IdentityService(self.dir)
-        self.identity.claim()
-        self.ep = Endpoint(self.identity, port=0, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
+        for patch in (mock.patch.object(keyring, "PATH", Path(self.dir) / "pis.json"),
+                      mock.patch.dict(os.environ, {"AUDIOLINK_CONFIG_DIR": self.dir})):
+            patch.start()
+            self.addCleanup(patch.stop)
+        from audiolink.client import computer
+        self.key = computer.key()                       # this computer's (in the temp folder)
+        self.identity = IdentityService(Path(self.dir) / "pi")
+        self.identity.claim(os.urandom(32).hex(), "macbook")
+        self.rec = None
+        self.ep = Endpoint(self.identity, port=0, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1",
+                           record=lambda: self.rec)
         self.svc = PairingService(self.identity, self.ep)
-        self.ep.register("change_status", lambda conn, req: {"saved": []})
         port = self.ep.port
 
         def candidates(at):
             c = PiConn("127.0.0.1", port=port)
             return [(c, c.hello())]
-        for patch in (mock.patch.object(keyring, "PATH", Path(self.dir) / "pis.json"),
-                      mock.patch.object(endpoint, "PROVE_WITHIN", 0.3),
+        for patch in (mock.patch.object(endpoint, "PROVE_WITHIN", 0.3),
                       mock.patch.object(pairing, "candidates", candidates),
                       mock.patch.object(pairing, "PiConn",
                                         lambda ip, timeout=3: PiConn(ip, port=port, timeout=timeout))):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def add(self, ask, pairing_code=None):
-        a = argparse.Namespace(at=None, pairing_code=pairing_code, name=None)
+    def add(self, ask, invite=None):
+        a = argparse.Namespace(at=None, invite=invite, name=None)
         with contextlib.redirect_stdout(io.StringIO()) as out:
             entry = pairing.add_over_network(a, ask)
         return entry, out.getvalue()
 
-    def tries_left(self):
-        return self.svc.handle("status", {})["tries_left"]
+    def my_entry(self):
+        return next((m for m in self.identity.members() if m["key"] == self.key.pub.hex()), None)
 
     def test_a_slow_answer_doesnt_lose_the_pi(self):
-        code = self.svc.new_code()["code"]
+        code = self.svc.invite("pc", "user")["code"]
         entry, out = self.add(SlowAsk(code[:3] + " " + code[3:]))
-        self.assertEqual(entry["code"], self.identity.code())
-        self.assertIn("audiolink pairing code", out)
+        self.assertEqual(entry["code"], keyring.code_for(self.identity.public()))
+        self.assertEqual(entry["role"], "user")
+        self.assertEqual((self.my_entry()["name"], self.my_entry()["role"]), ("pc", "user"))
+        self.assertIn("audiolink invite", out)
+        self.assertIn("on its list as pc", out)
 
     def test_a_given_code_needs_no_hint(self):
-        code = self.svc.new_code()["code"]
-        entry, out = self.add(SlowAsk(wait=0), pairing_code=code)
-        self.assertEqual(entry["code"], self.identity.code())
-        self.assertIn("(claimed): pairing with the code given", out)
-        self.assertNotIn("audiolink pairing code", out)
+        code = self.svc.invite("pc", "user")["code"]
+        entry, out = self.add(SlowAsk(wait=0), invite=code)
+        self.assertIn("joining with the invite code given", out)
+        self.assertNotIn("Get an invite code", out)
 
-    def test_claiming_after_a_slow_yes(self):
+    def test_a_pi_with_no_owner_is_claimed_over_usb(self):
         self.identity.start_over()
-        entry, _ = self.add(SlowAsk())
-        self.assertTrue(self.identity.claimed())
-        self.assertEqual(entry["code"], self.identity.code())
+        with self.assertRaisesRegex(SystemExit, "has no owner yet: plug it into a computer"):
+            self.add(SlowAsk("123456", wait=0))
 
     def test_a_code_that_isnt_six_digits_costs_no_try(self):
-        self.svc.new_code()
+        self.svc.invite("pc", "user")
         for typed in ("12345", "12345a", "1234567"):
             with self.assertRaisesRegex(SystemExit, "6 digits"):
                 self.add(SlowAsk(typed, wait=0))
-        self.assertEqual(self.tries_left(), 3)
+        self.assertEqual(self.svc.code["tries"], 3)
 
-    def test_an_empty_pairing_code_option_isnt_ignored(self):
-        self.svc.new_code()
+    def test_an_empty_invite_option_isnt_ignored(self):
+        self.svc.invite("pc", "user")
         with self.assertRaisesRegex(SystemExit, "6 digits"):
-            self.add(SlowAsk(None), pairing_code="")
-
-    def pis(self):
-        from audiolink.client import pis
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            pis.pis_command(argparse.Namespace())
-        return out.getvalue().splitlines()[1].split()
+            self.add(SlowAsk(None), invite="")
 
     def test_the_pis_network_comes_with_pairing(self):
-        rec = {"v": 1, "name": "pi", "ts": 1700000000, "lan": ["10.0.0.5"], "ssid": "HomeWifi", "ports": [2222]}
-        self.svc.where = lambda: rec
-        self.add(SlowAsk(self.svc.new_code()["code"], wait=0))
-        self.assertEqual(self.pis()[-1], "HomeWifi")
-        self.assertEqual(keyring.load()[self.identity.info()["pub"]]["last_record"], rec)
+        self.rec = {"name": "pi", "ts": 1700000000, "lan": ["10.0.0.5"], "ssid": "HomeWifi", "ports": [2222]}
+        self.add(SlowAsk(self.svc.invite("pc", "user")["code"], wait=0))
+        self.assertEqual(keyring.load()[self.identity.public().hex()]["last_record"], self.rec)
 
-    def test_an_older_pi_says_no_network(self):
-        self.add(SlowAsk(self.svc.new_code()["code"], wait=0))
-        self.assertEqual(self.pis()[-1], "-")
-        self.assertNotIn("last_record", keyring.load()[self.identity.info()["pub"]])
+    def test_already_on_the_list_is_no_new_pi(self):
+        self.add(SlowAsk(self.svc.invite("pc", "user")["code"], wait=0))
+        entry, _ = self.add(SlowAsk(None))
+        self.assertIsNone(entry)
 
-    def test_a_rotated_code_says_so(self):
-        old = self.identity.code()
-        keyring.upsert(old, name="pi")
-        self.identity.handle("rotate_secret", {})
-        code = self.svc.new_code()["code"]
-        entry, out = self.add(SlowAsk(code, wait=0))
-        self.assertIn("code has changed; this computer needs a pairing code", out)
-        self.assertEqual(entry["code"], self.identity.code())
+    def test_an_owner_invite_raises_the_role_in_place(self):
+        self.add(SlowAsk(self.svc.invite("pc", "user")["code"], wait=0))
+        entry, out = self.add(SlowAsk(wait=0), invite=self.svc.invite("pc", "owner")["code"])
+        self.assertIn("Updated", out)
+        self.assertIn("(owner, on its list as pc)", out)
+        self.assertEqual(entry["role"], "owner")
+        self.assertEqual(sum(m["key"] == self.key.pub.hex() for m in self.identity.members()), 1)
 
 
 class FakeConn:

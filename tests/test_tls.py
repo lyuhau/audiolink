@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 from audiolink import tls
-from audiolink.client import pairing
+from audiolink.client import keyring, pairing
 from audiolink.client.pairing import OldPi, PiConn
 from audiolink.crypto import ed25519_public, ed25519_sign
 from audiolink.auth import auth_message
@@ -78,7 +78,7 @@ class Endpoints(unittest.TestCase):
         return c
 
     def reach(self, identity, ep):
-        entry = {"alias": "pi", "code": identity.code()}
+        entry = {"alias": "pi", "code": keyring.code_for(identity.public())}
         with mock.patch.object(pairing, "PiConn", functools.partial(PiConn, port=ep.port)), \
                 mock.patch.object(pairing, "browse", lambda timeout: []), \
                 mock.patch.object(pairing, "SETUP_ADDR", "127.0.0.1"):
@@ -95,7 +95,6 @@ class Endpoints(unittest.TestCase):
         identity.start_over()
         self.assertEqual(self.conn(ep).pub, identity.public())
 
-    @unittest.skip("roles-v1: client side pending (pairing.reach takes a connect code with a read secret)")
     def test_reach_pins_the_key_from_the_code(self):
         identity, _, ep = self.pi()
         conn, hello = self.reach(identity, ep)

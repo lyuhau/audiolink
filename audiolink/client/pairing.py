@@ -405,9 +405,10 @@ def add_over_network(a, ask, key=None):
     known = keyring.load()
     found = candidates(a.at or [])
     new, seen = [], set()
+    given = getattr(a, "invite", None) is not None     # an invite for a Pi already joined: e.g. to owner
     try:
         for c, h in found:
-            if h["pub"] not in seen and (h["pub"] not in known or not _listed(c, key)):
+            if h["pub"] not in seen and (given or h["pub"] not in known or not _listed(c, key)):
                 new.append((c.ip, h))
             seen.add(h["pub"])
     finally:

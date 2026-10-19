@@ -1,5 +1,5 @@
-"""Network logs and updates through the endpoint (client/remote.py, host/update_cli.py),
-debug keys from the client, and rotating the read secret."""
+"""A Pi's endpoint from another computer (client/remote.py, host/update_cli.py, logs), against
+the real Pi side: auth with this computer's key, then what its role allows."""
 import argparse
 import contextlib
 import hashlib
@@ -9,12 +9,12 @@ import shutil
 import tempfile
 import unittest
 import zipfile
+from pathlib import Path
 from unittest import mock
 
-from audiolink.client import keyring, pairing
+from audiolink.client import computer, keyring, remote as remote_mod
 from audiolink.client.pairing import PiConn
-from audiolink.client.remote import Key, Remote
-from audiolink.crypto import ed25519_public
+from audiolink.client.remote import Remote
 from audiolink.host import update_cli
 from audiolink.services.endpoint import Endpoint
 from audiolink.services.identity import IdentityService
@@ -52,46 +52,76 @@ class Harness(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
-        self.identity = IdentityService(self.dir)
-        self.identity.claim()
+        for p in (mock.patch.object(keyring, "PATH", Path(self.dir) / "pis.json"),
+                  mock.patch.dict(os.environ, {"AUDIOLINK_CONFIG_DIR": self.dir})):
+            p.start()
+            self.addCleanup(p.stop)
+        self.key = computer.key()                       # this computer's
+        self.identity = IdentityService(os.path.join(self.dir, "pi"))
+        self.identity.claim(os.urandom(32).hex(), "macbook")
         self.ep = Endpoint(self.identity, port=0, wifi_ip=lambda: "127.0.0.1", bind="127.0.0.1")
-        self.update = FakeUpdate(self.dir, self.ep)
+        self.update = FakeUpdate(os.path.join(self.dir, "pi"), self.ep)
         logs = os.path.join(self.dir, "logs")
         os.mkdir(logs)
         with open(os.path.join(logs, "audiolink.log"), "w") as f:
             f.write("".join("line %d\n" % i for i in range(10)))
         LogsService(log_dir=logs, prev=os.path.join(logs, "prev"), endpoint=self.ep)
-        self.ep.register("change_status", lambda conn, req: {"saved": []})
+        self.code = keyring.code_for(self.identity.public())
+        keyring.upsert(self.code, name="pi")
 
-    def remote(self, code=None, key=None):
-        entry = {"alias": "pi", "code": code if code is not None else self.identity.code()}
-        r = Remote(entry, [], key)
-        r.conn = PiConn("127.0.0.1", port=self.ep.port)
-        r.hello = r.conn.ask({"op": "hello"})
+    def let_in(self, role):
+        self.identity.add(self.key.pub.hex(), "pc", role)
+
+    def remote(self):
+        """client/remote.Remote, found at the test's endpoint (as the LAN would)."""
+        def find(entry, at, turned_away):
+            conn = PiConn("127.0.0.1", port=self.ep.port)
+            return conn, conn.hello(), "at 127.0.0.1", None
+        with mock.patch.object(remote_mod, "find", find):
+            r = Remote(keyring.lookup("pi"), []).open(quiet=True)
         self.addCleanup(r.close)
         return r
 
 
-@unittest.skip("roles-v1: needs the v2 Pi side")
-class Logs(Harness):
-    def test_paired_machines_read_logs(self):
+class Roles(Harness):
+    def test_an_owner_reads_logs(self):
+        self.let_in("owner")
         r = self.remote()
+        self.assertEqual(r.role, "owner")
         self.assertEqual(r.call("logs", {"action": "tail", "lines": 2})["result"]["text"], "line 8\nline 9")
         self.assertIn("audiolink.log", r.call("logs", {"action": "list"})["result"]["files"])
 
-    def test_others_dont(self):
-        with self.assertRaisesRegex(SystemExit, "Not added"):
-            self.remote(code="").call("logs", {"action": "list"})
+    def test_a_user_doesnt(self):
+        self.let_in("user")
+        r = self.remote()
+        with self.assertRaisesRegex(SystemExit, "Only an owner of pi can do that"):
+            r.call("logs", {"action": "list"})
+
+    def test_not_on_the_list(self):
+        with self.assertRaisesRegex(SystemExit, "pi doesn't have this computer on its list"):
+            self.remote()
+
+    def test_the_record_and_role_land_in_the_keyring(self):
+        self.let_in("user")
+        self.remote()
+        e = keyring.lookup("pi")
+        self.assertEqual(e["role"], "user")
+        self.assertIn("last_seen", e)
+
+    def test_removed_mid_connection(self):
+        self.let_in("owner")
+        r = self.remote()
+        self.identity.remove(self.key.pub.hex())
+        with self.assertRaises((SystemExit, OSError, ValueError, ConnectionError)):
+            r.call("logs", {"action": "list"})          # the Pi closed this computer's connections
 
 
-@unittest.skip("roles-v1: needs the v2 Pi side")
 class Update(Harness):
-    def run_update(self, path, **kw):
-        a = argparse.Namespace(pi="pi", at=None, key=None, status=False, revert=False, pyz=path,
-                               control_port=None, **kw)
-        remote = self.remote()
+    def run_update(self, path):
+        a = argparse.Namespace(pi="pi", at=None, status=False, revert=False, pyz=path, control_port=None)
+        r = self.remote()
         out = io.StringIO()
-        with mock.patch("audiolink.client.remote.open_remote", lambda *args: remote), \
+        with mock.patch("audiolink.client.remote.open_remote", lambda *args: r), \
                 patch_time(update_cli, FakeClock()), contextlib.redirect_stdout(out):
             update_cli.update_command(a)
         return out.getvalue()
@@ -102,87 +132,19 @@ class Update(Harness):
             f.write(pyz())
         return path
 
-    def test_needs_debug_access(self):
-        with self.assertRaisesRegex(SystemExit, "Debug access is off"):
-            self.run_update(self.pyz_file())
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "audiolink.pyz")))
-
-    def test_installs_over_the_network(self):
-        self.debug.set({"mode": "paired"})
+    def test_an_owner_installs_over_the_network(self):
+        self.let_in("owner")
         out = self.run_update(self.pyz_file())
-        self.assertIn("reset pins", out)                    # the warning
         self.assertIn("running %s" % hashlib.sha256(pyz()).hexdigest()[:12], out)
-        with open(os.path.join(self.dir, "audiolink.pyz"), "rb") as f:
+        with open(os.path.join(self.dir, "pi", "audiolink.pyz"), "rb") as f:
             self.assertEqual(f.read(), pyz())
 
-
-@unittest.skip("roles-v1: needs the v2 Pi side")
-class Keys(Harness):
-    def key(self):
-        k = Key.__new__(Key)
-        k.path, k.seed = "test", os.urandom(32)
-        k.pub = ed25519_public(k.seed)
-        return k
-
-    def test_key_mode_from_the_client(self):
-        k = self.key()
-        self.debug.set({"mode": "key", "keys": [k.pub.hex()]})
-        st = self.remote(code="", key=k).call("update", {"action": "status"})["result"]
-        self.assertIn("update", st)
-        with self.assertRaisesRegex(SystemExit, "debug key"):
-            self.remote(key=self.key()).call("update", {"action": "status"})
+    def test_a_user_cant(self):
+        self.let_in("user")
+        with self.assertRaisesRegex(SystemExit, "Only an owner"):
+            self.run_update(self.pyz_file())
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "pi", "audiolink.pyz")))
 
 
-@unittest.skip("roles-v1: needs the v2 Pi side")
-class WithoutTheCode(Harness):
-    """Debug access without the Pi's code (--auth key or none) reaches what it needs:
-    the update's status (also after the restart) and the logs."""
-    key = Keys.key
-
-    def status(self, remote):
-        return update_cli.NetCaller(remote)("update.status")
-
-    def test_key(self):
-        k = self.key()
-        self.debug.set({"mode": "key", "keys": [k.pub.hex()]})
-        self.assertIn("running_hash", self.status(self.remote(code="", key=k)))
-        r = self.remote(code="", key=k)
-        self.assertEqual(r.call("logs", {"action": "tail", "lines": 1})["result"]["text"], "line 9")
-        with self.assertRaisesRegex(SystemExit, "debug key"):
-            self.remote(code="", key=self.key()).call("logs", {"action": "list"})
-
-    def test_none(self):
-        self.debug.set({"mode": "none"})
-        self.assertIn("running_hash", self.status(self.remote(code="")))
-        self.remote(code="").call("logs", {"action": "list"})
-        self.debug.off("test")
-        with self.assertRaisesRegex(SystemExit, "Not added"):     # nothing to go by: the paired refusal
-            self.status(self.remote(code=""))
-
-
-@unittest.skip("roles-v1: needs the v2 Pi side")
-class Rotate(Harness):
-    def test_rotate_secret(self):
-        old = self.identity.code()
-        calls = {"peer": lambda a: {"connected": True, "peer": {"caps": ["rotate_secret"]}}}
-        for op in ("info", "rotate_secret", "export"):
-            calls["identity." + op] = (lambda op: lambda a: self.identity.handle(op, a))(op)
-        from audiolink.client import pis
-        with mock.patch.object(keyring, "PATH", keyring.PATH.__class__(self.dir) / "pis.json"), \
-                mock.patch("audiolink.host.control.call", lambda op, args=None, port=None: calls[op](args or {})), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
-            keyring.upsert(old, name="pi")
-            pis.rotate_secret_command(argparse.Namespace(control_port=None, yes=True))
-            entry = keyring.lookup("pi")
-        new = self.identity.code()
-        self.assertNotEqual(new, old)
-        self.assertEqual(entry["code"], new)                # this computer keeps access
-        self.assertEqual(keyring.pub_of(new), keyring.pub_of(old))      # same Pi, same key
-        self.assertIn("lost access", out.getvalue())
-        with self.assertRaisesRegex(SystemExit, "Not added"):
-            self.remote(code=old).call("logs", {"action": "list"})
-        self.remote(code=new).call("logs", {"action": "list"})
-        stale = self.remote(code=old)
-        self.assertTrue(pairing._outdated(stale.conn, stale.hello, {"code": old}))
-        fresh = self.remote(code=new)
-        self.assertFalse(pairing._outdated(fresh.conn, fresh.hello, {"code": new}))
+if __name__ == "__main__":
+    unittest.main()
