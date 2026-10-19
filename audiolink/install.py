@@ -3,7 +3,9 @@ keep working after Downloads is cleaned up:
 
   macOS    ~/Applications/audiolink (the folder, or audiolink.pyz), linked from ~/bin/audiolink
   Linux    ~/.local/share/audiolink, linked from ~/.local/bin/audiolink
-  Windows  %LOCALAPPDATA%\\audiolink (add it to PATH; a .pyz gets audiolink.cmd next to it)
+  Windows  %LOCALAPPDATA%\\Programs\\audiolink (add it to PATH; a .pyz gets audiolink.cmd next to it)
+           (%LOCALAPPDATA%\\audiolink is the cache folder: earlier versions installed there,
+           and replacing the install deleted the cache. setup moves such a copy out.)
 
 The release folder (PyInstaller) is copied whole; a .pyz is copied, with a small launcher
 script. macOS's quarantine flag is cleared on the copy. Running the installed copy (or
@@ -33,9 +35,37 @@ def places(platform=sys.platform, home=None, environ=None):
     if platform == "darwin":
         return home / "Applications" / "audiolink", home / "bin"
     if platform == "win32":
-        return Path(environ.get("LOCALAPPDATA") or home / "AppData" / "Local") / "audiolink", None
+        return _local(home, environ) / "Programs" / "audiolink", None
     data = Path(environ.get("XDG_DATA_HOME") or home / ".local" / "share")
     return data / "audiolink", home / ".local" / "bin"
+
+
+def _local(home, environ):
+    return Path(environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+
+
+OLD_WINDOWS = ("audiolink.exe", "_internal", "audiolink.pyz", "audiolink.cmd")   # ours, not the cache's
+
+
+def _move_out_old_windows_copy(home, environ, src, notes):
+    """An earlier install in the cache folder: remove its files (only those), unless it's
+    what's running now (Windows can't delete a running .exe; the next setup does)."""
+    old = _local(home, environ) / "audiolink"
+    if not (old / "audiolink.exe").exists() and not (old / "audiolink.pyz").exists():
+        return
+    if _same(src, old) or _same(src.parent, old):
+        notes.append("The old copy in %s is running; run the new one (%s) and setup removes the old"
+                     % (old, places("win32", home, environ)[0]))
+        return
+    for name in OLD_WINDOWS:
+        p = old / name
+        if p.is_dir():
+            shutil.rmtree(str(p), ignore_errors=True)
+        elif p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 
 def running():
@@ -155,6 +185,8 @@ def install(runner, platform=sys.platform, home=None, environ=None, what=None, p
             import shlex
             _link(bindir / "audiolink", "#!/bin/sh\n%s\nexec %s \"$@\"\n"
                   % (MARK, " ".join(shlex.quote(x) for x in argv)), notes, target)
+    if platform == "win32":
+        _move_out_old_windows_copy(Path(home or Path.home()), environ, src, notes)
     if changed and platform == "darwin":
         runner.run(["xattr", "-dr", "com.apple.quarantine", str(dest)])    # not code-signed yet
     note = _path_note(bindir or dest, environ)

@@ -228,8 +228,40 @@ class SelfInstall(TempConfig):
         src.write_bytes(b"PK zip")
         env = {"LOCALAPPDATA": str(self.dir / "local"), "PATH": ""}
         got = install.install(FakeRunner(), "win32", self.home, env, what=("pyz", src, None), python="C:\\Py\\python.exe")
-        self.assertTrue((self.dir / "local" / "audiolink" / "audiolink.cmd").exists())
+        self.assertTrue((self.dir / "local" / "Programs" / "audiolink" / "audiolink.cmd").exists())
         self.assertTrue(any("PATH" in n for n in got.notes))
+
+    def old_windows_copy(self):
+        """An install by an earlier version, in the cache folder, beside cache files."""
+        old = self.dir / "local" / "audiolink"
+        (old / "_internal").mkdir(parents=True)
+        (old / "audiolink.exe").write_text("v0")
+        (old / "found.json").write_text("{}")
+        (old / "cards").mkdir()
+        return old, {"LOCALAPPDATA": str(self.dir / "local"), "PATH": ""}
+
+    def test_windows_install_leaves_the_cache_alone(self):
+        old, env = self.old_windows_copy()
+        src = self.dir / "Downloads" / "audiolink"
+        (src / "_internal").mkdir(parents=True)
+        (src / "audiolink.exe").write_text("v1")
+        got = install.install(FakeRunner(), "win32", self.home, env, what=("frozen", src, "audiolink.exe"))
+        dest = self.dir / "local" / "Programs" / "audiolink"
+        self.assertEqual(got.argv, [str(dest / "audiolink.exe")])
+        self.assertEqual((dest / "audiolink.exe").read_text(), "v1")
+        self.assertFalse((old / "audiolink.exe").exists())          # the old copy is moved out
+        self.assertFalse((old / "_internal").exists())
+        self.assertTrue((old / "found.json").exists())              # the cache stays
+        self.assertTrue((old / "cards").is_dir())
+        (src / "audiolink.exe").write_text("v2")                    # replacing the install
+        install.install(FakeRunner(), "win32", self.home, env, what=("frozen", src, "audiolink.exe"))
+        self.assertTrue((old / "found.json").exists())
+
+    def test_windows_old_copy_running_is_left_for_later(self):
+        old, env = self.old_windows_copy()
+        got = install.install(FakeRunner(), "win32", self.home, env, what=("frozen", old, "audiolink.exe"))
+        self.assertTrue((old / "audiolink.exe").exists())           # can't delete a running .exe
+        self.assertTrue(any("old copy" in n for n in got.notes))
 
     def test_source_checkout_isnt_installed(self):
         got = install.install(FakeRunner(), "darwin", self.home, self.env, what=("source", Path("/src"), None),
