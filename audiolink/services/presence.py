@@ -3,8 +3,10 @@
 Asks the kernel rather than keeping count: a client is connected while there's an
 established TCP connection to one of the Pi's listening ports on its Wi-Fi address
 ("wifi") or the setup network's ("setup"), or one that came through the relay ("relay":
-from RELAY_SOURCE, see services/relay.py), from /proc/net/tcp. Whatever the
-connection is for (a forwarded port, the network endpoint, ssh), and however it ended
+from RELAY_SOURCE, see services/relay.py), from /proc/net/tcp. Streams to the host
+are connections to the endpoint too (`open`, services/streams.py), so they show up the
+same way, with their route in their addresses. Whatever the connection is for (a
+stream, a request, the Pi's own sshd), and however it ended
 (closed, reset, timed out by keepalive), the kernel's view is the truth; bookkeeping
 in the code that serves connections could miss a close. Short requests that come and
 go between two looks (the endpoint's) are reported with touch(), and the endpoint's
