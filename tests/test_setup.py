@@ -342,7 +342,7 @@ class SshBlock(TempConfig):
         self.assertEqual(text.count("BEGIN audiolink abcd1234"), 1)
         self.assertTrue(text.startswith("Host *\n  ServerAliveInterval 30\n\n# BEGIN"))
         self.assertIn("Host pantry\n  HostName pantry\n  Port 2200\n  HostKeyAlias audiolink-%s\n"
-                      "  ProxyCommand /bin/audiolink connect pantry %%p\n# END audiolink abcd1234\n" % ("ab" * 32), text)
+                      "  ServerAliveInterval 30\n  ProxyCommand /bin/audiolink connect pantry %%p\n# END audiolink abcd1234\n" % ("ab" * 32), text)
         self.assertNotIn("kitchen", text)
         self.assertTrue(text.endswith("Host other\n  Port 1\n"))
         self.assertEqual(sshconfig.current(path, "abcd1234"), b2)
@@ -526,7 +526,7 @@ class Setup(TempConfig):
         self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
         self.assertTrue(self.plist().exists())
         self.assertIn("Host green-rowan\n  HostName green-rowan\n  Port 2222\n  HostKeyAlias audiolink-%s\n"
-                      "  ProxyCommand /inst/audiolink " % keyring.pub_of(code_for(self.host.ident)) +
+                      "  ServerAliveInterval 30\n  ProxyCommand /inst/audiolink " % keyring.pub_of(code_for(self.host.ident)) +
                       "connect green-rowan %p", self.ssh_config())
         self.assertNotIn("Start it for this setup", out)                 # the Pi is here: no question
         self.assertEqual(self.banners, [("green-rowan", 2222)])

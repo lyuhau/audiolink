@@ -26,7 +26,8 @@ def ssh_default_path():
 def block(tag, alias, port, pub, proxy):
     """ssh ALIAS: whatever computer the Pi is plugged into (docs/state.md "The ssh side").
     No User (ssh's default login, or ssh user@ALIAS): the computer behind can change. The
-    host key is filed under the Pi's key, not the name or port. proxy: how to run
+    host key is filed under the Pi's key, not the name or port. ServerAliveInterval keeps an
+    idle session from being dropped (WSL dropped one after ~71 s). proxy: how to run
     audiolink in a ProxyCommand (already quoted)."""
     return "\n".join([
         BEGIN % tag,
@@ -35,6 +36,7 @@ def block(tag, alias, port, pub, proxy):
         "  HostName %s" % alias,
         "  Port %d" % port,
         "  HostKeyAlias audiolink-%s" % pub,
+        "  ServerAliveInterval 30",
         "  ProxyCommand %s connect %s %%p" % (proxy, alias),
         END % tag]) + "\n"
 

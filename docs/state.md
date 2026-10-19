@@ -243,6 +243,7 @@ Pi entries only: `ssh green-rowan` reaches whatever computer the Pi is plugged i
 | `Host green-rowan` | the Pi's name |
 | no `User` | ssh's default login, or `ssh user@green-rowan` |
 | `HostKeyAlias audiolink-<pi key>` | the host key is filed under the Pi's key, not the name or port |
+| `ServerAliveInterval 30` | an idle session isn't dropped (WSL dropped one after ~71 s) |
 | `ProxyCommand audiolink connect green-rowan %p` | as now |
 
 Moving the Pi to another of your computers gives ssh's "host key changed" warning,
