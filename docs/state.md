@@ -251,9 +251,8 @@ which is right: it is another computer. Fix it as ssh says, or keep one Pi per h
 `connect`: reach the Pi by cached LAN address, mDNS, or the relay, with TLS pinned to
 the Pi's key on every path; prove the computer key; refresh the Pi's record.
 
-The Pi's own sshd (dev images) is a different machine: its own entry
-(`green-rowan-pi`, `HostKeyAlias audiolink-<pi key>-pi`, so the two host keys don't
-collide), owners only.
+The Pi's own sshd (dev images) is reached on its Wi-Fi address directly, as today, not
+through audiolink; owners also have `audiolink shell`.
 
 ### Lifecycle
 

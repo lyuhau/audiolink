@@ -8,13 +8,15 @@ said once and not repeated. File references are to the code as of 9ffbf00.
 
 | Protocol | Today | v2 |
 |---|---|---|
-| USB link | SYNC byte 4 = `PROTOCOL_VERSION` 2 | **3**. Peers on 2 never parse each other's frames; `Session.request` already says "update the older one" |
-| Endpoint (TCP 47900) | no version; TLS vs plaintext only | hello reply carries `"v": 2`. A client finding no `v` says "update the Pi: plug it in and run `audiolink update`". A Pi getting an old-style request (`proof` field, or any op before `auth`) answers `{"code": "upgrade"}`, as for plaintext today |
+| USB link | SYNC byte 4 = `PROTOCOL_VERSION` 2 | **`PROTOCOL_VERSION = 3`**. Peers on 2 never parse each other's frames; `Session.request` already says "update the older one" |
+| Endpoint (TCP 47900) | no version; TLS vs plaintext only | **`ENDPOINT_VERSION = 2`** (auth.py): the hello reply carries `"v": 2`. A client finding no `v` says "update the Pi: plug it in and run `audiolink update`". A Pi getting an old-style request (`proof` field, or any op before `auth`) answers `{"code": "upgrade"}`, as for plaintext today |
 | Relay server | `"v": 1` | unchanged: it joins by Pi key and splices raw bytes |
 | Relay tunnel (inside the splice) | nonce, `{port, cnonce, proof}`, HMACs | **gone**: the splice goes straight to the endpoint (see Relay) |
 
 Moving a Pi over: the old Pi takes `audiolink update` over USB without a key (link v2
-with an old host), so the host updates it first, then claims it under v2.
+with an old host), so the host updates it first, then claims it under v2. A v2 Pi
+loading an old identity.json drops `secret`, `claimed` and `discoverable`: it comes up
+unclaimed, keeping its key and name, and the host claims it over USB.
 
 ## Keys
 
@@ -27,20 +29,23 @@ with an old host), so the host updates it first, then claims it under v2.
 A computer's name on a list is chosen by whoever invites it (`invite NAME`), or the
 hostname at claim.
 
-Every signature is ed25519 over `LABEL + fields`, each label ending in `\0`:
+One message proves a computer key, on the endpoint and on the USB link alike
+(`auth.auth_message`):
 
-| Label | Signed by | Over |
-|---|---|---|
-| `audiolink-auth-v2\0` | computer key | `nonce(16) + "\0tls:" + pi_pub(32)` (endpoint) |
-| `audiolink-link-v2\0` | computer key | `nonce(16) + pi_pub(32)` (USB link) |
-| `audiolink-relay-register-v1\0` | Pi key | unchanged |
+```
+ed25519 over  "audiolink-auth-v2\0" + nonce(16) + pi_pub(32)
+```
+
+The nonce is fresh from the Pi per connection or link-up, so a signature can't be
+replayed on another connection, channel or Pi. (The Pi's relay registration keeps its own
+`audiolink-relay-register-v1\0`.)
 
 ## The Pi's list
 
 In identity.json, replacing `secret` and `claimed`:
 
 ```json
-{"seed": "...", "name": "green-rowan", "discoverable": true,
+{"seed": "...", "name": "green-rowan",
  "members": [{"key": "<hex32>", "name": "macbook", "role": "owner", "added": 1760000000}]}
 ```
 
@@ -57,14 +62,17 @@ the Pi code), JSON lines and in-order replies: as now (endpoint.py, tls.py).
 ```
 C: {"op": "hello"}
 P: {"v": 2, "name", "tag", "pub", "claimed", "nonce"}
-C: {"op": "auth", "key": "<hex32>", "sig": "<hex64>"}        (sig: audiolink-auth-v2)
-P: {"ok": true, "name": "laptop", "role": "user"}  |  {"error", "code": "not_listed"}
+C: {"op": "auth", "key": "<hex32>", "sig": "<hex64>"}        (sig over auth_message)
+P: {"ok": true, "name": "laptop", "role": "user",
+    "record": {"name", "ts", "lan", "ssid", "ports"}}  |  {"error", "code": "not_listed"}
 ```
 
+The record (today's DHT record, unsealed) comes with every auth, so each connect
+refreshes the client's copy.
+
 `auth` is once per connection: from then on the connection has that key's role.
-(Replaces the per-op `proof` and the debug `key`/`sig`; also ends today's debug-key
-cache, which accepts one verified signature for any later op on the connection.)
-Without `auth`, only `hello` and `pair` work.
+(Replaces the per-op `proof` and the debug `key`/`sig`.) Without `auth`, only `hello`
+and `pair` work.
 
 ### Ops
 
@@ -74,12 +82,9 @@ Without `auth`, only `hello` and `pair` work.
 | auth | none | key, sig | above |
 | pair | none | SPAKE2 (see Invites) | — |
 | **open** | user | `port` | `{"ok": true}`, then the connection becomes the stream (see Streams) |
-| **record** | user | — | `{"name", "ts", "lan", "ssid", "ports"}` (today's DHT record, unsealed) |
-| **leave** | user | — | `{"ok": true}`: removes the caller's own key (not the last owner) |
-| **open** with `pi_port: 22` | owner | — | the Pi's own sshd (dev images), as `open` |
+| **remove** | owner: any key; anyone: their own | `key` or `name` | `{"ok": true}`  \|  `{"error", "code": "last_owner"}` (`forget` removes its own key) |
 | **members** | owner | — | `{"members": [{"key", "name", "role", "added"}]}` |
 | **invite** | owner | `name`, `role` | `{"code", "expires_in"}` (no sealing: TLS) |
-| **remove** | owner | `key` or `name` | `{"ok": true}`  \|  `{"error", "code": "last_owner"}` |
 | **reset** | owner | — | `{"ok": true}`; the Pi forgets everything and restarts (new key) |
 | change_wifi, change_status, wifi_status | owner | as now; `change_wifi`'s fields go in the clear (TLS), no `sealed` | as now |
 | logs, update, update_status, shell | owner | as now | as now |
@@ -109,6 +114,11 @@ P: {"ok": true}  |  {"error": "port 2222 isn't exposed", "code": "not_exposed"}
    listener does today (streams.py), and splices
 ```
 
+Once `open` succeeds the connection leaves the request loop: no IDLE timeout (an ssh
+session idles for minutes), not counted against the endpoint's request limits
+(MAX_CONNS, per-address unproven), counted instead against a stream cap like the relay's
+SESSIONS = 8.
+
 So a LAN client and a relay client do the same thing. `audiolink connect PI PORT`
 (the ssh ProxyCommand) is TLS to the endpoint plus `open`; its stdin/stdout are the
 stream inside TLS. The Pi's static `--forward` listeners go the same way (no plain
@@ -119,7 +129,10 @@ listeners on 0.0.0.0 at all). The host's `allow` check on T_OPEN stays.
 The relay server is unchanged. On the Pi, a data connection for a client is spliced to
 the local endpoint (127.0.0.1:47900, source 127.0.0.2) instead of running the tunnel
 handshake. The client then does TLS, hello, auth and `open` through the splice, exactly
-as on the LAN. relay/tunnel.py and the `allowed()` port list go.
+as on the LAN. relay/tunnel.py and the `allowed()` port list go. The relay's
+known/unknown client split goes with the tunnel (the proof is now in the endpoint); the
+per-client and overall open caps stay. The Pi's own sshd (dev images) is reached on its
+Wi-Fi address directly, as today; owners also have `shell`.
 
 `pis` checks "online over the relay" with a relay connect plus `hello` (no secret).
 
@@ -149,9 +162,12 @@ HELLO: the Pi's adds `nonce` (16 bytes hex, per link-up); its `identity` info dr
 The host proves its key once per link-up, before any owner request:
 
 ```
-host CTRL: {"op": "link.auth", "args": {"key": "<hex32>", "sig": "<hex64>"}}   (audiolink-link-v2)
+host CTRL: {"op": "link.auth", "args": {"key": "<hex32>", "sig": "<hex64>"}}   (sig over auth_message)
 Pi:        {"ok": true, "result": {"role": "owner"}}  |  {"ok": true, "result": {"role": null}}
 ```
+
+After `identity.claim` succeeds, that link's role is owner at once (no separate
+`link.auth`), so setup goes straight on to Wi-Fi.
 
 | CTRL op | Needs |
 |---|---|
@@ -198,10 +214,14 @@ refused anyway).
 | endpoint `auth`, roles, the ops above, `open` | `PiConn.auth`; `connect` = TLS + auth + `open` on every path |
 | relay data connection → local endpoint; tunnel removed | `pis` (with `find` folded in), relay online check without a secret |
 | link 3, `link.auth`, CTRL role checks | the host's `link.auth` at link-up; control token |
-| streams: no plain listeners | `invite`, `remove`, `forget`/`leave`, setup's claim |
+| streams: no plain listeners; streams leave the request loop | `invite`, `remove`, `forget`, setup's claim |
 | pairing redeem (Pi side); `pair` refused when unclaimed | pairing redeem (client side) |
 | removing the DHT publisher, debug switch, read secret on the Pi | removing the DHT lookup, `found.json`, `share`, `rotate-secret`, `pairing code` |
 
-Shared, written first and agreed before either side builds on it: the labels and
-message builders (a small `audiolink/auth.py`: `auth_message`, `link_message`, sign,
-verify), the op names and error codes above, and `PROTOCOL_VERSION = 3`.
+Shared, written first: `audiolink/auth.py` (`auth_message`, `verify`,
+`ENDPOINT_VERSION`; signing is `client/remote.py Key.sign`), the op names and error codes
+above, and `PROTOCOL_VERSION = 3`.
+
+Not fixed on main: today's debug-key cache (endpoint.py:156 accepts one verified
+signature for any later op on the connection). Debug is off on the only Pi and v2 deletes
+that path.
