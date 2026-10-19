@@ -68,7 +68,7 @@ class Loops(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.link = FakeLink()
         self.audio = alsa.AlsaAudio(self.link)
-        self.audio.format = mock.Mock(chunk=64, rate=48000, channels=2)
+        self.audio.format = mock.Mock(chunk=64, rate=48000, channels=2, frame_bytes=4)
         self.addCleanup(self.audio.stop)
 
     def test_waiting_for_the_host_isnt_a_fault(self):

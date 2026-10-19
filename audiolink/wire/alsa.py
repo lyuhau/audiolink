@@ -75,7 +75,8 @@ class AlsaAudio:
 
     def _player(self, gen):
         import fcntl
-        chunk = self.format.chunk
+        f = self.format
+        piece = max(f.frame_bytes, f.chunk // 4 // f.frame_bytes * f.frame_bytes)   # whole frames
         idle = 0                        # restarts in a row without the host streaming
         while gen == self.gen:
             p = self._spawn(gen, ["aplay", "-q"] + self._args(True) + ["-"], stdin=subprocess.PIPE)
@@ -83,12 +84,12 @@ class AlsaAudio:
                 return
             began = time.monotonic()
             try:
-                fcntl.fcntl(p.stdin.fileno(), 1031, max(4096, chunk))  # F_SETPIPE_SZ: keep latency low
+                fcntl.fcntl(p.stdin.fileno(), 1031, max(4096, piece))  # F_SETPIPE_SZ: a queue too
             except OSError:
                 pass
             try:
                 while gen == self.gen:
-                    p.stdin.write(self.link.pull(chunk))
+                    p.stdin.write(self.link.pull(piece))
             except (OSError, ValueError):
                 pass
             self._reap(p)
