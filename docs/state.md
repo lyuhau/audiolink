@@ -232,7 +232,23 @@ get through. Rotating the find secret hides that; it revokes nothing.
 
 Setup's last check runs real ssh (as now) and reports gate 2 plainly: "logged in", or
 "reached desktop's sshd; your key was refused. Add this key on desktop: ssh-ed25519 …".
-audiolink never edits `authorized_keys`.
+
+Gate 2 is set up the usual ssh way (`ssh-copy-id desktop` once gate 1 lets you
+through, or sending the public key to the host's owner), with one shortcut: when
+`invite` runs on a host, the redeemer's ssh public key comes back in the same
+exchange, and the host asks:
+
+```
+mom joined green-rowan as a user.
+Add mom's ssh key to this computer's authorized_keys (hau)?
+  ssh-ed25519 AAAA...  mom@mom-laptop
+[y/N]
+```
+
+Default no; nothing is stored beyond the line itself, which is then plain ssh (removing
+it is the host owner's, as with any key). From a computer that isn't the host, or if the
+redeemer has no ssh key (setup offers `ssh-keygen`), there's no prompt. This is the only
+place audiolink writes into gate 2.
 
 ### Lifecycle
 
@@ -244,7 +260,7 @@ audiolink never edits `authorized_keys`.
 | Remove someone | `remove NAME`; their line in `authorized_keys` is yours to remove |
 | Lose a laptop | `remove laptop` from another owner computer: every Pi it was on |
 | Pi moves between your hosts | nothing. Setup on the new host says who can now knock. `ssh macbook`: "no Pi now (green-rowan moved to desktop)" |
-| Second Pi on a host | claimed by the host: its list starts with just the host. Everyone else on the first Pi's list needs inviting to it too, or setup offers to copy the first Pi's entries onto it once |
+| Second Pi on a host | claimed by the host: its list starts with just the host. Anyone else who should pass through it is invited to it, as to the first |
 | Give away / sell | `reset` (or the pins): nothing carries over; the new owner claims it |
 | Reinstall a computer | a new key: invite it, remove the old name; ssh warns about the new host key as usual |
 | Backup / restore | owners only, encrypted with a passphrase. No custody |
@@ -282,7 +298,7 @@ In order, each step keeping one person's setup working (from the code draft):
 | 1 | computer keys; control port limited to its OS user | no | no |
 | 2 | the list on the Pi; USB claim puts the host's key on it as owner and user | yes | the host's key in the USB hello |
 | 3 | key proofs beside the read secret, on the endpoint and the relay tunnel | yes | new proof fields |
-| 4 | invites put keys on the list; `new_code` owner-only | yes | pairing payload |
+| 4 | invites put keys on the list (and carry the redeemer's ssh key back); `new_code` owner-only | yes | pairing payload |
 | 5 | today's `paired` split into owner and user ops | yes | no |
 | 6 | USB narrowed to host jobs; other link requests need an owner key | yes | key proof on link requests |
 | 7 | find secret seals the record; new Pi code | yes | record and code format |
@@ -310,10 +326,12 @@ In order, each step keeping one person's setup working (from the code draft):
 - `remove` on a Pi it can't reach fails, and says so. No queue, no retry service.
 - Two OS users running `audiolink host` on one computer: the second is refused (not
   for the first version).
+- Two Pis on one host: each has its own list; invite to each. No copying or syncing
+  for the first version.
+- `invite` on a host offers to add the redeemer's ssh key to `authorized_keys`, as a
+  default-no prompt.
 
 ## Open questions
 
-- **Two Pis on one host**: invite to each, copy the first Pi's entries once (then they
-  drift), or more?
-- **Invite and gate 2**: should an invite carry the redeemer's ssh public key back, so
-  the inviting host can offer to add it to `authorized_keys`?
+None open for the roles model. Next: review the whole Proposed section, then decide
+which steps of "Getting there" come first.
