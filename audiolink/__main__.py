@@ -78,11 +78,12 @@ def report(session, streams, interval):
 
 
 def list_devices():
-    from .wire import portaudio
-    from .wire.host_audio import DEVICE_HINTS
+    from .wire import portaudio, usb_audio
+    devs = usb_audio.annotate(portaudio.devices())
+    pis = usb_audio.pi_devices(devs)
     found = False
-    for d in portaudio.devices():
-        mark = "*" if any(h in d["name"].lower() for h in DEVICE_HINTS) else " "
+    for d in devs:
+        mark = "*" if d in pis else " "
         found = found or mark == "*"
         print("%s %3d  %-40s %-20s in=%d out=%d" % (mark, d["index"], d["name"], d["hostapi"],
                                                     d["inputs"], d["outputs"]))

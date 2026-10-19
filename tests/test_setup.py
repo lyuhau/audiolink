@@ -319,6 +319,10 @@ class CardUsb(unittest.TestCase):
         self.assertEqual(card.usb_state(runner, "darwin", hints=("audiopi",)), "rom")
         runner = FakeRunner({"ioreg": (0, self.IOREG.replace("BCM2710 Boot", "AudioPi"))})
         self.assertEqual(card.usb_state(runner, "darwin", hints=("audiopi",)), "pi")
+        # by its USB ID, whatever its name
+        runner = FakeRunner({"ioreg": (0, self.IOREG.replace("BCM2710 Boot", "My Link")
+                                       .replace("10084", "260").replace("2652", "7531"))})
+        self.assertEqual(card.usb_state(runner, "darwin"), "pi")
 
     def test_disks_from_diskutil(self):
         from audiolink import card

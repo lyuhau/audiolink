@@ -1,4 +1,5 @@
-"""macOS: know the instant an audio device goes away.
+"""macOS: know the instant an audio device goes away, and which USB device a
+sound device belongs to.
 
 When a device disappears, Core Audio moves streams that were playing to it over to
 the default output, so the link's frames would play on the speakers (as rhythmic
@@ -10,6 +11,7 @@ once keeps that to a fraction of a second instead of indefinitely.
 """
 import ctypes
 import logging
+import re
 import struct
 import threading
 
@@ -24,6 +26,10 @@ SYSTEM_OBJECT = 1
 DEVICES = _fourcc("dev#")
 IS_ALIVE = _fourcc("livn")
 NOMINAL_RATE = _fourcc("nsrt")
+NAME = _fourcc("lnam")
+TRANSPORT = _fourcc("tran")
+MODEL_UID = _fourcc("muid")
+USB = _fourcc("usb ")
 SCOPE_GLOBAL = _fourcc("glob")
 ELEMENT_MAIN = 0
 
@@ -35,6 +41,7 @@ class Address(ctypes.Structure):
 LISTENER = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_uint32, ctypes.c_uint32,
                             ctypes.POINTER(Address), ctypes.c_void_p)
 _ca = None
+_cf = None
 
 
 def _lib():
@@ -46,8 +53,74 @@ def _lib():
         ca.AudioObjectGetPropertyData.argtypes = [
             ctypes.c_uint32, ctypes.POINTER(Address), ctypes.c_uint32, ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        ca.AudioObjectGetPropertyDataSize.argtypes = [
+            ctypes.c_uint32, ctypes.POINTER(Address), ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32)]
         _ca = ca
     return _ca
+
+
+def _get(obj, selector, buf):
+    size = ctypes.c_uint32(ctypes.sizeof(buf))
+    addr = Address(selector, SCOPE_GLOBAL, ELEMENT_MAIN)
+    return _lib().AudioObjectGetPropertyData(obj, ctypes.byref(addr), 0, None, ctypes.byref(size),
+                                             ctypes.byref(buf)) == 0
+
+
+def _string(obj, selector):
+    """A CFString property as str, or None."""
+    global _cf
+    if _cf is None:
+        cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        _cf = cf
+    ref = ctypes.c_void_p()
+    if not _get(obj, selector, ref) or not ref.value:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(1024)
+        ok = _cf.CFStringGetCString(ref, buf, len(buf), 0x08000100)     # UTF-8
+        return buf.value.decode() if ok else None
+    finally:
+        _cf.CFRelease(ref)
+
+
+def devices():
+    """Core Audio's device ids."""
+    size = ctypes.c_uint32(0)
+    addr = Address(DEVICES, SCOPE_GLOBAL, ELEMENT_MAIN)
+    if _lib().AudioObjectGetPropertyDataSize(SYSTEM_OBJECT, ctypes.byref(addr), 0, None, ctypes.byref(size)):
+        return []
+    ids = (ctypes.c_uint32 * (size.value // 4))()
+    return list(ids) if _get(SYSTEM_OBJECT, DEVICES, ids) else []
+
+
+# A USB sound device's model UID ends in its vendor and product ID: "Topology Control:1D6B:0104"
+MODEL_IDS = re.compile(r":([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})$")
+
+
+def usb_id(dev):
+    """(vendor, product) of the USB device behind Core Audio device `dev`, or None."""
+    transport = ctypes.c_uint32(0)
+    if not _get(dev, TRANSPORT, transport) or transport.value != USB:
+        return None
+    m = MODEL_IDS.search(_string(dev, MODEL_UID) or "")
+    return (int(m.group(1), 16), int(m.group(2), 16)) if m else None
+
+
+def usb_ids():
+    """lookup(portaudio device) -> (vendor, product) or None. PortAudio's devices are
+    Core Audio's under the same names; a name that two devices with different IDs
+    share answers None (the name fallback then decides)."""
+    by_name = {}
+    for d in devices():
+        by_name.setdefault(_string(d, NAME), set()).add(usb_id(d))
+
+    def lookup(dev):
+        ids = by_name.get(dev["name"], set())
+        return next(iter(ids)) if len(ids) == 1 else None
+    return lookup
 
 
 def is_alive(dev):

@@ -20,8 +20,9 @@ id = "audio"
 function_name = "AudioPi"
 # macOS names the two sound devices after the streaming interfaces' alternate-setting
 # strings, "Playback Inactive" and "Capture Inactive". Stock f_uac2 hard-codes those
-# (only the platform's patched uac1 takes alt_names), so they stay; audiolink finds the
-# devices by them (wire/host_audio.py DEVICE_HINTS).
+# (only the platform's patched uac1 takes alt_names), so they stay. audiolink finds the
+# devices by the USB ID above (wire/usb_audio.py USB_IDS: add a new ID there), and
+# by these names (or, on Windows and Linux, the product) only as a fallback.
 
 [functions.host_to_device]
 channels = 2

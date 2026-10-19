@@ -70,12 +70,12 @@ def usb_devices(runner, platform=sys.platform):
 
 
 def usb_state(runner, platform=sys.platform, hints=None):
-    """The Pi as USB shows it: "pi" (running audiolink), "rom" (waiting in its boot mode),
-    "msd" (its card shown as a disk) or None."""
-    if hints is None:
-        from .wire.host_audio import DEVICE_HINTS as hints
+    """The Pi as USB shows it: "pi" (running audiolink: by its USB ID, or else its
+    name), "rom" (waiting in its boot mode), "msd" (its card shown as a disk) or None."""
+    from .wire.usb_audio import NAME_HINTS, USB_IDS
+    hints = NAME_HINTS if hints is None else hints
     devs = usb_devices(runner, platform)
-    if any(any(h in name.lower() for h in hints) for _, _, name in devs):
+    if any((int(v, 16), int(p, 16)) in USB_IDS or any(h in name.lower() for h in hints) for v, p, name in devs):
         return "pi"
     for state, (vid, pids) in (("rom", BOOT_ROM), ("msd", MSD)):
         if any(v == vid and p in pids for v, p, _ in devs):

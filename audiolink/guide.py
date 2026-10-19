@@ -109,9 +109,8 @@ def sshd_running(port=22):
 def pi_device_present():
     """Does this computer see the Pi's sound device (with no host running)?"""
     try:
-        from .wire import portaudio
-        from .wire.host_audio import DEVICE_HINTS
-        return any(any(h in d["name"].lower() for h in DEVICE_HINTS) for d in portaudio.devices())
+        from .wire import portaudio, usb_audio
+        return bool(usb_audio.pi_devices(usb_audio.annotate(portaudio.devices())))
     except Exception as e:              # no PortAudio here, ...
         detail("sound devices: %s", e)
         return False

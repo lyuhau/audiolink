@@ -8,11 +8,6 @@ from .fmt import AudioFormat
 
 log = logging.getLogger("audiolink")
 
-# Substrings that identify the AudioPi gadget's devices on different hosts.
-# macOS names them after the gadget's alt-setting strings; Windows includes the product name.
-DEVICE_HINTS = ("audiopi", "playback inactive", "capture inactive", "uac2")
-
-
 OUT_FRAMES = 256               # macOS: PortAudio's output buffer, written a buffer at a time
 
 
@@ -31,8 +26,9 @@ def host_buffer_frames(fmt, output):
 
 def find_devices(out_name=None, in_name=None):
     """Pick the gadget's output and input devices, preferring WASAPI on Windows."""
-    from . import portaudio
+    from . import portaudio, usb_audio
     devs = portaudio.devices()
+    pis = None if out_name and in_name else usb_audio.pi_devices(usb_audio.annotate(devs))
 
     def pick(name, kind):
         key = "outputs" if kind == "output" else "inputs"
@@ -40,7 +36,7 @@ def find_devices(out_name=None, in_name=None):
         if name:
             cands = [d for d in cands if name.lower() in d["name"].lower()]
         else:
-            cands = [d for d in cands if any(h in d["name"].lower() for h in DEVICE_HINTS)]
+            cands = [d for d in cands if d in pis]
         if not cands:
             raise LookupError("No %s audio device matching %r (see: audiolink list-devices)" % (kind, name)
                               if name else "no Pi %s audio device found" % kind)
