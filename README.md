@@ -130,6 +130,14 @@ the Pi is online. In Windows PowerShell, append with
 `audiolink ssh-config --user YOU | Out-File -Append -Encoding ascii $HOME\.ssh\config`
 (its `>>` writes UTF-16, which ssh can't read).
 
+Some ssh clients can't run the `ProxyCommand` those entries use (SSHFS-Win's own ssh,
+apps with their own ssh). For them, `audiolink forward NAME 2222` listens on
+`127.0.0.1:2222` (this computer only) and sends each connection to the Pi's port 2222;
+it prints the `ssh -p 2222 -o HostKeyAlias=... YOU@127.0.0.1` to use. Leave it running:
+each connection finds the Pi again, so a restart of the host ends only the connections
+open then (and a new one keeps trying for 20 s while the host comes back).
+`--local PORT` picks another port here.
+
 ### Browse as the Pi
 
 `audiolink host` also runs an HTTP proxy at `127.0.0.1:47801` (this computer only)
@@ -263,6 +271,7 @@ built-in values. Code alone updates without a new card: `audiolink update`.
 | `audiolink pairing code PI` | a one-time code for adding PI on another machine |
 | `audiolink find PI` | online or offline (on its relay, or this network), and where (its DHT record) |
 | `audiolink connect PI PORT` | pipe to a Pi port (ssh `ProxyCommand`): this network, then the relay |
+| `audiolink forward PI PORT [--local LPORT]` | listen on `127.0.0.1:LPORT`; each connection goes to the Pi's port (ssh clients without `ProxyCommand`) |
 | `audiolink ssh-config [--user NAME]` | `~/.ssh/config` entries for known Pis (logging in to the computer each is plugged into) |
 | `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap]` | the Pi's Wi-Fi; `join`, `status`, `check` also over the network (`--pi PI`); `check` exits 0 online, 3 sign-in page, 4 no internet |
 | `audiolink discovery [status\|enable\|disable\|publish\|code]` | whether the plugged-in Pi publishes where it is on the DHT (the relay works either way) |

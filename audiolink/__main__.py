@@ -29,6 +29,7 @@ Any computer:
   audiolink rename PI NEW [--on-pi]          rename here (or on the Pi itself)
   audiolink ssh-config                       ~/.ssh/config entries: then `ssh PI` (or user@PI)
   audiolink connect PI PORT                  ssh ProxyCommand: find the Pi, connect
+  audiolink forward PI PORT [--local LPORT]  127.0.0.1:LPORT here -> PI's port (ssh without a ProxyCommand)
   audiolink wifi join NAME --pi PI           over the network (checks the network first when it can)
   audiolink wifi status|check --pi PI        over the network, the relay included
   audiolink logs ... --pi PI                 the Pi's logs over the network (owners)
@@ -193,6 +194,17 @@ def build_parser():
     con = sub.add_parser("connect", help="pipe stdin/stdout to a Pi port (ssh ProxyCommand)")
     con.add_argument("pi", help="name (see: audiolink pis) or code")
     con.add_argument("port", type=argtypes.port, help="the Pi's port (one its host exposes, e.g. 2222)")
+    fwd = sub.add_parser("forward", help="listen on a port here; each connection goes to a Pi's port",
+                         formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+                             "Listen on 127.0.0.1:LPORT (this computer only); each connection goes to PI's\n"
+                             "port PORT, like `audiolink connect`. For ssh clients that can't run a\n"
+                             "ProxyCommand (SSHFS-Win, ...): ssh -p LPORT USER@127.0.0.1, with the\n"
+                             "HostKeyAlias it prints. Runs until Ctrl-C; a restart of the Pi's host only\n"
+                             "ends the connections open then."))
+    fwd.add_argument("pi", help="name (see: audiolink pis) or code")
+    fwd.add_argument("port", type=argtypes.port, help="the Pi's port (one its host exposes, e.g. 2222)")
+    fwd.add_argument("--local", type=argtypes.port, metavar="LPORT", help="the port here (default: PORT)")
+    fwd.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "The link's audio format: faster formats carry more data. The host picks the\n"
@@ -337,6 +349,9 @@ def main(argv=None):
     if a.cmd == "connect":
         from .client.find import connect_command
         return connect_command(a)
+    if a.cmd == "forward":
+        from .client.forward import forward_command
+        return forward_command(a)
     from .host import control
     port = getattr(a, "control_port", None) or control.DEFAULT_PORT
     if a.cmd == "wifi":
