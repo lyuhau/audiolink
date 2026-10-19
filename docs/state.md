@@ -1,7 +1,7 @@
 # What each machine stores
 
 What each machine keeps, when the data is made, and when it's used. First as it is now,
-then what the client-host model (reaching a computer, not a Pi) would add.
+then the roles model that replaces it ("Proposed").
 
 Roles: the **Pi**; the **host** (the computer the Pi is plugged into, running
 `audiolink host`); a **client** (any computer that runs `ssh NAME`; a host is usually one
@@ -15,11 +15,10 @@ login):
 - `ProxyCommand audiolink connect NAME %p`: "give me a byte stream to NAME". ssh never
   sees an address, so `HostName` and `Port` in the block are only labels. Finding a
   route (the Pi's LAN address, the relay, the DHT) is audiolink's job.
-- `KnownHostsCommand` (OpenSSH 8.5+; not used yet): "which host keys should NAME
-  have?". Only needed where NAME doesn't always mean the same computer (see Pi entries
-  below).
-- `HostKeyAlias` (not used yet): the name ssh files the host key under in known_hosts,
-  in place of `[NAME]:PORT`.
+- `HostKeyAlias` (not used yet; proposed): the name ssh files the host key under in
+  known_hosts, in place of `[NAME]:PORT`.
+- `KnownHostsCommand` (OpenSSH 8.5+): "which host keys should NAME have?". Not in the
+  first version (see "Not in the first version").
 
 ## Folders
 
@@ -27,6 +26,7 @@ login):
 |---|---|---|---|
 | config | ~/Library/Application Support/audiolink | %APPDATA%\audiolink | ~/.config/audiolink |
 | cache | ~/Library/Caches/audiolink | %LOCALAPPDATA%\audiolink | ~/.cache/audiolink |
+| installed app | ~/Applications/audiolink | %LOCALAPPDATA%\Programs\audiolink (before d3f5dcd: the cache folder, so a reinstall deleted the cache) | ~/.local/share/audiolink |
 
 `AUDIOLINK_CONFIG_DIR` moves config, not cache. The Pi keeps state in
 `/var/lib/audiolink` (the card's `audiolink/` folder; in RAM without a card), as two
@@ -42,7 +42,7 @@ alternating slots per file (`NAME.a`, `NAME.b`).
 | Wi-Fi networks: ssid, security, WPA2 psk (derived) or WPA3 password (plain), hidden, last used | networks.json | a join that gets an address; `audiolink wifi` from the host or remotely | every start, loaded into wpa_supplicant |
 | Debug switch: mode, allowed keys, expiry | debug.json (only if the host asks to keep it), else /run (tmpfs) | `debug.set` from the host | every start; each debug-level request |
 | Code update | audiolink.pyz (+ .bad after 3 quick crashes) | `audiolink update` | start-audiolink.sh at each start |
-| Card settings: relay, expose_setup | settings.txt (read only) | written by hand or by setup's card step | card-settings.sh at each start |
+| Card settings: relay, expose_setup | settings.txt (read only) | the card image's default; edited by hand (setup's card step only unzips the image) | card-settings.sh at each start |
 | Logs | /var/log/audiolink.log (+3 rotated) | always | reading by hand, `audiolink logs` |
 
 Not stored: pairing codes (memory, one use, 5 min), the TLS certificate (made from the
@@ -116,8 +116,8 @@ current record. An unclaimed Pi pairs with anyone who reaches it, with no code.
 
 ## Proposed
 
-The decoupled model. Built from four drafts (minimal, principled, UX first, from the
-code) and a critique; where they differ is in "Open questions".
+The first version, cut down after the Mac session's review. Later options are under
+"Not in the first version".
 
 ### Two gates
 
@@ -125,13 +125,12 @@ A client reaches a host when both hold:
 
 1. **The Pi**: the client's key is on this Pi's list. Decided by the Pi's owners. The
    Pi knows nothing about the host's people.
-2. **The host**: the host's own login (sshd and `authorized_keys`), as without
-   audiolink. The host knows nothing about the Pi's list.
+2. **The host**: its own login (sshd and `authorized_keys`), as without audiolink. The
+   host knows nothing about the Pi's list.
 
-The only thing the host tells its Pi is **what** it exposes (`expose`, as today), never
-**who**. Exposing a port through a Pi means "this Pi's people may knock", like opening a
-port on a LAN. Who gets in to which host is gate 2's job. No lists move between host and
-Pi.
+The host tells its Pi only **what** it exposes (`expose`, as today), never **who**.
+Exposing a port through a Pi is the host's choice, like opening it on the LAN; the
+service keeps its own auth. No lists move between host and Pi.
 
 Supported scope: every host a Pi is plugged into is its owner's or trusted. Lending a
 Pi to someone else's computer is at your own risk.
@@ -143,45 +142,37 @@ Pi to someone else's computer is at your own risk.
 | **Pi** | the Pi's ed25519 key (as now) | first start, or reset |
 | **Computer** | one audiolink key per OS user on a computer | first run of `audiolink` |
 
-A computer is a **host** while a Pi is on its USB, and a **client** when it runs `ssh`:
-the same key. People, the relay, the DHT and channels are not principals.
+A computer is a host while a Pi is on its USB and a client when it runs `ssh`: the same
+key. People, the relay and channels are not principals.
 
 ### The Pi's list
 
-One list on the Pi, kept by its owners, each entry a computer key, a name
-(`laptop`, `mom`) and its roles:
+One list on the Pi; each entry is a computer key, a name (`laptop`, `mom`) and a role:
 
 | Role | May |
 |---|---|
 | **user** | pass through the Pi to whatever its current host exposes |
-| **owner** | manage the Pi: Wi-Fi, name, logs, status, the list and invites, updates, the shell (being an owner is enough; no debug switch), the uplink proxy, backup and restore, reset |
+| **owner** | everything: pass through, and manage the Pi (Wi-Fi, name, logs, status, the list, invites, updates, the shell, the uplink proxy, reset) |
 
-The roles are separate (manage vs pass through): an owner passes through only if also a
-user, which an owner can make themselves at any time. Claiming makes the claimer both.
 The last owner can't be removed (reset instead). `claimed` becomes "the list has an
-owner".
+owner". Removing a key takes effect on that Pi at once, for every host behind it; no
+shared secret is rotated and nobody else is touched.
 
-Removing a key takes effect on that Pi at once, for every host behind it. No shared
-secret is rotated and nobody else is touched.
+No debug switch: owners have the shell and updates; lost every owner key: the reset
+pins.
 
 ### What the host does
 
-Over USB, with no key needed, a host does **host jobs** only: audio, `expose`, and the
-binding statement. Anything else on the Pi needs an owner key, over USB like any other
-channel. A reinstalled computer that isn't an owner yet can still be the host.
+Over USB, with no key needed, a host does **host jobs** only: audio and `expose`.
+Anything else on the Pi needs an owner key, over USB like any other channel. Claiming
+makes the host's key an owner, and the same exchange returns the list, so right after
+setup the host can do owner things over USB. A reinstalled computer that isn't an owner
+can still be the host, but can't change the Pi's Wi-Fi or anything else until it's
+invited as an owner; the error says so.
 
-- **Decides**: which ports it exposes; who logs in (gate 2).
-- **Never decides**: who is on the Pi's list, or the Pi's settings.
-- Its local control port answers only the OS user whose key it is, and carries no
-  authority of its own: owner requests are signed with that key.
-
-### Binding
-
-"Host H (its computer key, name and sshd host keys) is on Pi P, since t." The host
-states it over USB; the Pi publishes it in its record. It grants nothing. It says where
-the Pi's streams go, which computer a Pi entry means (and its host keys), and lets a
-client learn host entries: `ssh desktop` means "whichever of my Pis carries desktop's
-binding". So hosts need no code of their own, no record of their own and no list.
+The host's local control port requires a token from a file in the config folder,
+readable only by the OS user who runs `audiolink host`. It carries no authority on the
+Pi: owner requests are made with that computer's key.
 
 ### Channels and presence
 
@@ -196,142 +187,125 @@ list. Physical presence counts for two things:
 A Pi without saved state claims with a warning (the list lasts until it restarts). An
 unclaimed Pi no longer pairs with whoever reaches it first over the network.
 
-On the LAN, exposed ports stop being plain TCP on the Pi's Wi-Fi: streams go through
-the Pi's endpoint with a key, as relay streams do now. Without this, gate 1 doesn't
-exist on the LAN. Plain `ssh -p 2222 PI-ADDRESS` stops working.
+On the LAN, exposed ports stop listening on the Pi's Wi-Fi: streams go through the
+Pi's endpoint with a key, as relay streams do now, so LAN and relay are one path. Plain
+`ssh -p 2222 PI-ADDRESS` stops working. The endpoint knows each stream's route, so
+presence counts relay and LAN clients from there (today: from the source address).
 
 ### Context rules
 
-A separate axis that only narrows:
+A separate axis that only narrows: no Wi-Fi changes, shell port or uplink proxy over
+the relay; exposed ports refused on the setup network unless an owner allows it; the
+exposed-port range, set by owners.
 
-- relay: no Wi-Fi changes, no shell port, no uplink proxy;
-- setup network: exposed ports refused unless an owner allows it;
-- debug "anyone" (no key): LAN only, timed;
-- the exposed-port range, set by owners.
+### Finding a Pi
 
-### Codes and invites
+No DHT. The relay reaches a Pi from anywhere; on the LAN, the cached address or mDNS.
+The Pi's record (its LAN address, SSID, ports) comes over the keyed connection: at
+pairing, as now, and on each connect. `pis` shows "last seen on SSID X" from the last
+contact.
 
 | Thing | Contains | Gives |
 |---|---|---|
-| **Pi code** (`al1-`) | the Pi key + a find secret | finding the Pi (its record, sealed with the find secret) and checking it's the right one. No access |
-| **Invite** | a one-use 6-digit code (today's pairing code) | puts the redeemer's key on the list, as user or owner, and hands over the Pi code |
+| **Pi code** | the Pi's public key | finding it on the relay and checking it's the right Pi. No access, so it can be shown freely |
+| **Invite** | a one-use 6-digit code (today's pairing code) | puts the redeemer's key on the list, as user (or owner, `--owner`), and hands over the Pi code |
 
-Today's read secret does four jobs: sealing the record goes to the find secret; request
-proofs and the relay tunnel proof go to keys; sealing fields goes to the keyed
-connection. A removed key still knows the find secret: it can see where the Pi is, not
-get through. Rotating the find secret hides that; it revokes nothing.
+The read secret goes: request proofs and the relay tunnel proof become keys; the record
+seal goes with the DHT; field sealing goes to the keyed connection.
 
 ### Commands
 
 | Command | Does |
 |---|---|
 | `audiolink setup` | claims a new Pi on USB, makes this computer its host, or redeems an invite |
-| `audiolink invite NAME [--owner] [--user]` | a code that puts NAME on the list (user by default; on a host: on all its Pis) |
-| `audiolink remove NAME` | takes NAME off every Pi this computer owns; reminds about `authorized_keys`. A Pi it can't reach: fails, and says which |
+| `audiolink invite NAME [--owner]` | a one-use code that puts NAME on the list |
+| `audiolink remove NAME` | takes NAME off every Pi this computer owns; a Pi it can't reach: fails, and says which |
 | `audiolink reset PI` | the same as the pins, by an owner: giving away and selling are both this |
+| `audiolink forget PI` | this computer drops the Pi, and takes itself off the Pi's list when it can reach it |
 
-Setup's last check runs real ssh (as now) and reports gate 2 plainly: "logged in", or
-"reached desktop's sshd; your key was refused. Add this key on desktop: ssh-ed25519 …".
+Gone: `share` (the Pi code grants nothing: `pis` shows it), `rotate-secret` (`remove`
+instead), `pairing code` (`invite` instead), `debug`.
 
-Gate 2 is set up the usual ssh way (`ssh-copy-id desktop` once gate 1 lets you
-through, or sending the public key to the host's owner), with one shortcut: when
-`invite` runs on a host, the redeemer's ssh public key comes back in the same
-exchange, and the host asks:
+Setup's last check runs real ssh and reports gate 2 plainly: "logged in", or "reached
+desktop's sshd; your key was refused. On desktop, add your key; from here, if desktop
+allows a password: `ssh-copy-id green-rowan`". audiolink never edits `authorized_keys`.
 
-```
-mom joined green-rowan as a user.
-Add mom's ssh key to this computer's authorized_keys (hau)?
-  ssh-ed25519 AAAA...  mom@mom-laptop
-[y/N]
-```
+### The ssh side
 
-Default no; nothing is stored beyond the line itself, which is then plain ssh (removing
-it is the host owner's, as with any key). From a computer that isn't the host, or if the
-redeemer has no ssh key (setup offers `ssh-keygen`), there's no prompt. This is the only
-place audiolink writes into gate 2.
+Pi entries only: `ssh green-rowan` reaches whatever computer the Pi is plugged into.
+
+| Lines | Why |
+|---|---|
+| `Host green-rowan` | the Pi's name |
+| no `User` | ssh's default login, or `ssh user@green-rowan` |
+| `HostKeyAlias audiolink-<pi key>` | the host key is filed under the Pi's key, not the name or port |
+| `ProxyCommand audiolink connect green-rowan %p` | as now |
+
+Moving the Pi to another of your computers gives ssh's "host key changed" warning,
+which is right: it is another computer. Fix it as ssh says, or keep one Pi per host.
+
+`connect`: reach the Pi by cached LAN address, mDNS, or the relay, with TLS pinned to
+the Pi's key on every path; prove the computer key; refresh the Pi's record.
+
+The Pi's own sshd (dev images) is a different machine: its own entry
+(`green-rowan-pi`), owners only.
 
 ### Lifecycle
 
 | Event | What happens |
 |---|---|
-| Claim | `setup` with an unclaimed Pi on USB: first owner, and a user |
-| Add a computer | `invite NAME --owner --user` on an owner computer, `setup` on the new one |
+| Claim | `setup` with an unclaimed Pi on USB: first owner |
+| Add a computer | `invite NAME --owner` on an owner computer, `setup` on the new one |
 | Let a family member through | `invite NAME`; their key in the right hosts' `authorized_keys` |
 | Remove someone | `remove NAME`; their line in `authorized_keys` is yours to remove |
 | Lose a laptop | `remove laptop` from another owner computer: every Pi it was on |
-| Pi moves between your hosts | nothing. Setup on the new host says who can now knock. `ssh macbook`: "no Pi now (green-rowan moved to desktop)" |
-| Second Pi on a host | claimed by the host: its list starts with just the host. Anyone else who should pass through it is invited to it, as to the first |
-| Give away / sell | `reset` (or the pins): nothing carries over; the new owner claims it |
-| Reinstall a computer | a new key: invite it, remove the old name; ssh warns about the new host key as usual |
-| Backup / restore | owners only, encrypted with a passphrase. No custody |
-
-### The ssh side
-
-| Entry | Lines | Host key |
-|---|---|---|
-| Host entry (`ssh desktop`) | `User`, `HostKeyAlias audiolink-<host key>`, `ProxyCommand audiolink connect --host <key> %p` | from the binding, written to known_hosts |
-| Pi entry (`ssh green-rowan`) | no `User`, `KnownHostsCommand audiolink known-hosts %n`, `ProxyCommand audiolink connect green-rowan %p` | per host behind the Pi, from its binding |
-
-The Pi's own sshd (dev images) is a different machine: its own entry
-(`green-rowan-pi`), owners only.
-
-`connect`: find a Pi (host entry: one of my Pis carrying that host's binding; Pi entry:
-the Pi), reach it by cached LAN address, relay or DHT, with TLS pinned to the Pi's key
-on every path, prove the computer key, and refresh the Pi's record after going through
-the relay.
+| Pi moves between your hosts | nothing in audiolink; ssh warns once that the host key changed |
+| Second Pi on a host | claimed by the host; its own list, invited to separately |
+| Give away / sell | `reset` (or the pins): nothing carries over |
+| Reinstall a computer | a new key: invite it, remove the old name |
+| Dead card | reset (new card), claim, re-invite |
 
 ### What each machine stores, new
 
 | Machine | Adds | Drops |
 |---|---|---|
-| Pi | the list (key, name, roles); the find secret; the current binding | the read secret; "USB = everything"; `claimed`; debug `paired` mode |
-| Host | its computer key | custody |
-| Client | its computer key; Pi codes (pub + find secret) | per-Pi read secrets |
-| DHT | each Pi's record, sealed with the find secret, with its binding | records sealed with the read secret |
+| Pi | the list (key, name, role) | the read secret; DHT publishing; "USB = everything"; `claimed`; the debug switch |
+| Host | its computer key; the control-port token | custody |
+| Client | its computer key; Pi codes (the Pi's public key) and last records | per-Pi read secrets; found.json |
+| DHT | nothing | the Pi records |
 
 ### Getting there
 
-In order, each step keeping one person's setup working (from the code draft):
+A clean break: there's one deployment, so one protocol version replaces the read secret
+with keys; old peers get "update audiolink"; each Pi is claimed once more.
 
-| # | Step | Pi update | Wire change |
-|---|---|---|---|
-| 1 | computer keys; control port limited to its OS user | no | no |
-| 2 | the list on the Pi; USB claim puts the host's key on it as owner and user | yes | the host's key in the USB hello |
-| 3 | key proofs beside the read secret, on the endpoint and the relay tunnel | yes | new proof fields |
-| 4 | invites put keys on the list (and carry the redeemer's ssh key back); `new_code` owner-only | yes | pairing payload |
-| 5 | today's `paired` split into owner and user ops | yes | no |
-| 6 | USB narrowed to host jobs; other link requests need an owner key | yes | key proof on link requests |
-| 7 | find secret seals the record; new Pi code | yes | record and code format |
-| 8 | exposed ports gated on the LAN | yes | **yes, the big one** |
-| 9 | custody dropped; backup and restore | yes | `restore` changes |
-| 10 | binding statement; host and Pi ssh entries | binding only | binding |
-| 11 | read secret removed | yes | breaks old peers: last, behind a version check |
+| # | Step | Pi update |
+|---|---|---|
+| 1 | computer keys; the Pi's list; key proofs on the endpoint, the relay tunnel and LAN streams (exposed ports off the Wi-Fi); the read secret and the DHT removed; control-port token | yes |
+| 2 | `invite` and `remove`; `forget` removes itself; the gone commands removed | yes |
+| 3 | USB narrowed to host jobs; custody removed | yes |
+| 4 | Pi entries with `HostKeyAlias`; setup's gate-2 message | no |
+
+### Not in the first version
+
+- **Host entries** (`ssh desktop`, whichever Pi it's behind) with binding statements,
+  `KnownHostsCommand` and per-host host keys: when a real two-host case shows up.
+- **Backup and restore** (passphrase-encrypted): if re-inviting after a dead card
+  proves painful.
+- **An ssh-key prompt on invite** (the host offering to add the redeemer's key to
+  `authorized_keys`): setup's `ssh-copy-id` line covers it for now.
+- **Copying or syncing lists** between two Pis on one host.
 
 ## Decided
 
 - Two gates, decoupled: the Pi's list, then the host's own login. No lists between them.
 - Lending a Pi to someone else's computer is unsupported (at your own risk).
-- No "person": computers are the principals.
-- Host identity is per OS user.
-- One host, several Pis: any Pi is a route.
-- Managing a Pi is separate from passing through it: owner and user are separate roles
-  (an owner can add themselves as a user).
-- Pi entries have no `User`.
-- No custody; backup and restore as owner commands.
+- No "person": computers are the principals. Host identity is per OS user; a second OS
+  user's `audiolink host` on the same computer is refused.
+- Roles: user (pass through) and owner (everything).
+- No debug switch; no custody; no DHT.
+- Exposed services keep their own auth: no per-port roles.
+- Pi entries only, for now; ssh's host key warning when a Pi moves is accepted.
+- `remove` on a Pi it can't reach fails; no queue.
 - A Pi without saved state claims with a warning.
-- Exposed services keep their own auth: exposing one through a Pi is the host's choice,
-  like opening it on the LAN. No per-port role on `expose`.
-- Being an owner is enough for the shell and updates (no debug switch for owners).
-- The uplink proxy is owners only.
-- `remove` on a Pi it can't reach fails, and says so. No queue, no retry service.
-- Two OS users running `audiolink host` on one computer: the second is refused (not
-  for the first version).
-- Two Pis on one host: each has its own list; invite to each. No copying or syncing
-  for the first version.
-- `invite` on a host offers to add the redeemer's ssh key to `authorized_keys`, as a
-  default-no prompt.
-
-## Open questions
-
-None open for the roles model. Next: review the whole Proposed section, then decide
-which steps of "Getting there" come first.
+- A clean break, not a gradual migration.
