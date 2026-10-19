@@ -232,7 +232,8 @@ Gone: `find` (`pis`), `share` (the Pi code grants nothing: `pis` shows it),
 
 Setup's last check runs real ssh and reports gate 2 plainly: "logged in", or "reached
 desktop's sshd; your key was refused. On desktop, add your key; from here, if desktop
-allows a password: `ssh-copy-id green-rowan`". audiolink never edits `authorized_keys`.
+allows a password: `ssh-copy-id green-rowan`" (on Windows, which has no `ssh-copy-id`,
+the `.pub` file piped through ssh). audiolink never edits `authorized_keys`.
 
 ### The ssh side
 

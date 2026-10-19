@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -683,8 +684,20 @@ class Setup(TempConfig):
         self.assertIsNone(exit_code, out)
         self.assertIn("Trying ssh green-rowan... works", out)
         self.assertIn("didn't take this computer's key", out)
-        self.assertIn("ssh-copy-id green-rowan", out)
+        self.assertIn(guide.copy_id("green-rowan"), out)
         self.assertIn("Done: ssh green-rowan (once your key is let in)", out)
+
+    def test_copy_id_on_windows(self):                   # Windows' OpenSSH has no ssh-copy-id
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home)
+        with mock.patch.object(guide.sys, "platform", "win32"):
+            self.assertTrue(guide.copy_id("pi", home).startswith("ssh-keygen -t ed25519, then type "))
+            os.mkdir(os.path.join(home, ".ssh"))
+            open(os.path.join(home, ".ssh", "id_rsa.pub"), "w").close()
+            self.assertEqual(guide.copy_id("pi", home), 'type "%s" | ssh pi "mkdir -p .ssh && cat >> '
+                             '.ssh/authorized_keys"' % os.path.join(home, ".ssh", "id_rsa.pub"))
+        with mock.patch.object(guide.sys, "platform", "darwin"):
+            self.assertEqual(guide.copy_id("pi", home), "ssh-copy-id pi")
 
     def test_added_before_gets_its_current_record(self):
         self.host.running = False

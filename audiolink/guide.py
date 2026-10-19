@@ -69,6 +69,18 @@ def ran(cmd):
     print("  (%s)" % cmd)
 
 
+def copy_id(alias, home=None):
+    """How to send this computer's ssh key to ALIAS's host over a password login. Windows'
+    OpenSSH has no ssh-copy-id: pipe the .pub file (assumes a Mac or Linux host)."""
+    if sys.platform != "win32":
+        return "ssh-copy-id %s" % alias
+    folder = os.path.join(home or os.path.expanduser("~"), ".ssh")
+    pubs = [os.path.join(folder, n + ".pub") for n in ("id_ed25519", "id_ecdsa", "id_rsa")]
+    pub = next((p for p in pubs if os.path.exists(p)), None)
+    send = 'type "%s" | ssh %s "mkdir -p .ssh && cat >> .ssh/authorized_keys"' % (pub or pubs[0], alias)
+    return send if pub else "ssh-keygen -t ed25519, then " + send
+
+
 def _ssh_target(spec):
     """'2222:22' -> (2222, ('127.0.0.1', 22))."""
     from .services.streams import parse_forward
@@ -721,7 +733,7 @@ class Guide:
             # gate 2 is the host's own login (docs/state.md "Two gates"): audiolink got this far
             print("ssh %s reached its host's ssh server, which didn't take this computer's key. On that "
                   "computer, add your key to ~/.ssh/authorized_keys; or from here, if it allows a password: "
-                  "ssh-copy-id %s" % (self.name, self.name))
+                  "%s" % (self.name, copy_id(self.name)))
             print("Done: ssh %s (once your key is let in)" % self.name)
         elif ok:
             print("Done%s" % (": ssh %s" % self.name if client else ""))
