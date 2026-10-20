@@ -260,11 +260,29 @@ keep a copy of `settings.txt` and put it back). The Pi's state (`audiolink/`) an
 logs (`logs/`) stay. New settings the old `settings.txt` doesn't mention keep their
 built-in values. Code alone updates without a new card: `audiolink update`.
 
+### Back up a card
+
+`audiolink card backup [FILE]` saves everything on the card to one zip (by default
+`audiolink-card-DATE.zip` in the current folder): the image, `settings.txt`, logs, and
+the Pi's state in `audiolink/`, its keys and saved Wi-Fi passwords included, so keep the
+zip private. `audiolink card restore FILE` erases the card and unzips FILE onto it: a
+backup, or any card image. It keeps nothing of what was there, and asks first (`--yes`:
+don't ask). A backup also works as `audiolink setup --card-image FILE`.
+
+Both use a card in a card reader, or open it through the Pi: unplug the Pi, take its
+card out, plug the Pi back in, then put the card back in (needs `rpiboot`, as above).
+They say so when the card isn't ready. `--disk /dev/diskN` picks the card when there's
+more than one, or a blank one in a reader. macOS only so far; elsewhere, copy the
+card's files to a folder, and back onto a FAT32 card to restore.
+
+A restored card is the same Pi as the one backed up: don't use both in two Pis at once.
+
 ## Commands
 
 | Command | |
 |---|---|
 | `audiolink setup [host]` | start here: this computer (and the Pi, plugged in here): install, add, Wi-Fi, host, client (`ssh NAME`); `host`: just the host part |
+| `audiolink card backup [FILE]` / `card restore FILE` | the Pi's whole card to a zip, and back (macOS; see *Back up a card*) |
 | `audiolink host [--expose PIPORT:PORT] [--wifi NAME]` | run on the host; keeps the link up, reconnects on its own |
 | `audiolink add [CODE] [--at ADDR] [--pairing-code N]` | add a Pi: over USB, found on the network, or by connect code |
 | `audiolink pis` / `share PI` / `forget PI` / `rename PI NEW [--on-pi]` | the Pis this machine knows |

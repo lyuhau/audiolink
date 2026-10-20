@@ -334,29 +334,8 @@ class Guide:
         if state == "msd":
             print("The Pi is still in card mode from an earlier try: unplug the Pi and plug it back in")
             self.wait_usb("rom", "Waiting for the Pi", 180)
-        before = card.external_disks(self.runner)
-        step("Opening the card")
-        status, out = self.runner.run(cmd, timeout=90)
-        if status:
-            done("failed")
-            raise SystemExit("rpiboot failed: %s" % ((out.strip().splitlines() or ["no output"])[-1]))
-        end = time.monotonic() + 15            # its firmware shows up as a card reader first
-        while self.usb_state() != "msd" and time.monotonic() < end:
-            self.sleep(0.5)
-        disk = self.new_disk(before, 5)         # then the card, if there is one
-        if not disk:
-            done("no card detected")
-            step("Waiting for a card")
-            disk = self.new_disk(before, 180)
-            if not disk:
-                done("none")
-                raise SystemExit("No card detected; unplug the Pi, insert the card, plug the Pi back in, and run "
-                                 "audiolink setup again")
-        dev, size = disk
-        if size > card.MAX_CARD:
-            done("%s, %d GB" % (dev, size // 10 ** 9))
-            raise SystemExit("%s is too big to be the Pi's card; nothing written" % dev)
-        done("%.1f GB" % (size / 1e9))
+        dev, _ = card.open_through_pi(self.runner, self.usb_state, "run audiolink setup again", self.platform,
+                                      self.sleep, time)
         step("Writing the card")
         card.write(self.runner, dev, image, sleep=self.sleep)
         done("done")
@@ -376,17 +355,6 @@ class Guide:
             raise
         done("checked")
         return path
-
-    def new_disk(self, before, seconds):
-        """(device, bytes) of a disk that wasn't in `before`, waiting up to `seconds`."""
-        end = time.monotonic() + seconds
-        while True:
-            new = {d: n for d, n in card.external_disks(self.runner).items() if d not in before and n}
-            if new:
-                return sorted(new.items())[0]
-            if time.monotonic() >= end:
-                return None
-            self.sleep(1)
 
     def wait_usb(self, state, what, seconds):
         step(what)

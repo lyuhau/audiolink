@@ -1,4 +1,5 @@
-"""The Pi's card, written through the Pi itself (`audiolink setup`, with the Pi on USB).
+"""The Pi's card, written through the Pi itself (`audiolink setup`, with the Pi on USB),
+and backed up and restored (`audiolink card backup|restore`).
 
 A Pi whose card has no boot files (none in, blank, unreadable) waits in its USB boot mode
 ("BCM2710 Boot", 0a5c:2764). rpiboot (Raspberry Pi's usbboot, installed separately) sends
@@ -6,6 +7,10 @@ it a small firmware that shows its card to this computer as a disk ("msd" mode,
 0a5c:0001); setup erases that disk, unzips the card image onto it (the release's
 audiolink-pi-VER.zip, checked against its SHA256SUMS), ejects it, and the Pi starts from
 it once it's replugged.
+
+A backup is a zip of everything on the card (the image, settings.txt, the Pi's state in
+audiolink/, logs/), so it's also a card image: restoring it is erasing the card and
+unzipping it, the same as writing a release image.
 
 macOS only for now (diskutil). Elsewhere: write it by hand (README).
 """
@@ -19,7 +24,7 @@ import zipfile
 from pathlib import Path
 
 from . import __version__
-from .ui import detail
+from .ui import detail, done, step
 
 REPO = "lyuhau/audiolink"
 BOOT_ROM = ("0a5c", ("2763", "2764"))       # the Pi's boot ROM, waiting for rpiboot
@@ -188,3 +193,109 @@ def write(runner, disk, image, sleep=time.sleep):
             return
         sleep(5)
     raise CardError("Wrote the card, but couldn't eject the card (%s); eject the card, then go on" % out.strip())
+
+
+def mounted_cards(runner):
+    """[(disk, bytes, mount point)] for mounted external disks that hold a Pi card
+    (config.txt at the top: the Pi boots from that)."""
+    _, out = runner.run(["diskutil", "list", "external", "physical"])
+    found = []
+    for disk, size in sorted(external_disks(runner).items()):
+        parts = re.findall(r"\b(%s(?:s\d+)?)\s*$" % re.escape(disk[len("/dev/"):]), out, re.M)
+        for part in parts:
+            _, info = runner.run(["diskutil", "info", part])
+            m = re.search(r"^\s*Mount Point:\s*(\S.*?)\s*$", info, re.M)
+            if m and os.path.isfile(os.path.join(m.group(1), "config.txt")):
+                found.append((disk, size, m.group(1)))
+                break
+    return found
+
+
+# ---- opening the card through the Pi (rpiboot)
+def new_disk(runner, before, seconds, sleep=time.sleep, clock=time):
+    """(device, bytes) of a disk that wasn't in `before`, waiting up to `seconds`."""
+    end = clock.monotonic() + seconds
+    while True:
+        new = {d: n for d, n in external_disks(runner).items() if d not in before and n}
+        if new:
+            return sorted(new.items())[0]
+        if clock.monotonic() >= end:
+            return None
+        sleep(1)
+
+
+def open_through_pi(runner, usb_state, again, platform=sys.platform, sleep=time.sleep, clock=time):
+    """The Pi waiting in its USB boot mode: show its card as a disk -> (device, bytes).
+    again: how to try again, for the messages ("run audiolink setup again"). clock: what
+    tells the time (monotonic()), with sleep."""
+    if platform != "darwin":
+        raise CardError("Opening the card through the Pi works on macOS only so far")
+    cmd = rpiboot_command(platform)
+    if not cmd:
+        raise CardError("Opening the card through the Pi needs rpiboot: %s; then %s" % (install_hint(platform), again))
+    before = external_disks(runner)
+    step("Opening the card")
+    status, out = runner.run(cmd, timeout=90)
+    if status:
+        done("failed")
+        raise CardError("rpiboot failed: %s" % ((out.strip().splitlines() or ["no output"])[-1]))
+    end = clock.monotonic() + 15            # its firmware shows up as a card reader first
+    while usb_state() != "msd" and clock.monotonic() < end:
+        sleep(0.5)
+    disk = new_disk(runner, before, 5, sleep, clock)        # then the card, if there is one
+    if not disk:
+        done("no card detected")
+        step("Waiting for a card")
+        disk = new_disk(runner, before, 180, sleep, clock)
+        if not disk:
+            done("none")
+            raise CardError("No card detected; unplug the Pi, insert the card, plug the Pi back in, and %s" % again)
+    dev, size = disk
+    if size > MAX_CARD:
+        done("%s, %d GB" % (dev, size // 10 ** 9))
+        raise CardError("%s is too big to be the Pi's card; nothing changed" % dev)
+    done("%.1f GB" % (size / 1e9))
+    return disk
+
+
+def mount_of(runner, disk, sleep=time.sleep):
+    """Where disk's card is mounted (waiting a little: macOS mounts a new disk after it
+    appears), or None."""
+    for _ in range(10):
+        for d, _, mount in mounted_cards(runner):
+            if d == disk:
+                return mount
+        sleep(1)
+    return None
+
+
+# ---- backup
+SKIP = {".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems"}
+
+
+def backup(mount, out):
+    """Zip everything on the card at `mount` into `out` (private: it holds the Pi's keys
+    and saved Wi-Fi passwords), and check the zip. -> number of files."""
+    out = Path(out)
+    part = out.with_name(out.name + ".part")
+    fd = os.open(str(part), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    count = 0
+    try:
+        with os.fdopen(fd, "wb") as f, zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
+            for root, dirs, files in os.walk(mount):
+                dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("._"))
+                for name in sorted(files):
+                    if name.startswith("._") or name == ".DS_Store":
+                        continue                # macOS's, not the card's
+                    path = os.path.join(root, name)
+                    z.write(path, os.path.relpath(path, mount))
+                    count += 1
+        with zipfile.ZipFile(str(part)) as z:
+            bad = z.testzip()
+        if bad:
+            raise CardError("The backup didn't check out (%s); nothing kept" % bad)
+        os.replace(str(part), str(out))
+    finally:
+        if part.exists():
+            part.unlink()
+    return count

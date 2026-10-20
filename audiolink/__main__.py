@@ -20,6 +20,8 @@ On the computer the Pi is plugged into (the host):
 Start here:
   audiolink setup                            set up this computer (and the Pi, if it's plugged in)
   audiolink setup host                       just this computer's host part (exposed ports, autostart)
+  audiolink card backup [FILE]               the Pi's whole card to a zip (macOS)
+  audiolink card restore FILE                erase the card and put a backup (or card image) on it
 
 Any computer:
   audiolink pis [PI]                         the Pis this computer knows (PI: online?, its list)
@@ -206,6 +208,16 @@ def build_parser():
     fwd.add_argument("port", type=argtypes.port, help="the Pi's port (one its host exposes, e.g. 2222)")
     fwd.add_argument("--local", type=argtypes.port, metavar="LPORT", help="the port here (default: PORT)")
     fwd.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
+    crd = sub.add_parser("card", help="back up the Pi's card, or restore it (macOS)",
+                         formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+                             "The Pi's card, in a card reader or opened through the Pi (rpiboot).\n\n"
+                             "  backup [FILE]   everything on the card (the Pi's keys, Wi-Fi, settings, logs)\n"
+                             "                  to a zip, by default audiolink-card-DATE.zip here\n"
+                             "  restore FILE    erase the card and unzip FILE onto it: a backup, or a card image"))
+    crd.add_argument("action", choices=["backup", "restore"], help="see above")
+    crd.add_argument("file", nargs="?", help="the zip")
+    crd.add_argument("--disk", help="the card's disk, e.g. /dev/disk7 (when there's more than one, or it's blank)")
+    crd.add_argument("--yes", action="store_true", help="restore without asking")
     aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "The link's audio format: faster formats carry more data. The host picks the\n"
@@ -338,6 +350,11 @@ def main(argv=None):
     if a.cmd == "setup":
         from .guide import setup_command
         return setup_command(a)
+    if a.cmd == "card":
+        if a.action == "restore" and not a.file:
+            raise SystemExit("Restore what? audiolink card restore FILE")
+        from .card_cli import card_command
+        return card_command(a)
     if a.cmd == "shell":
         from .client.shell import shell_command
         return shell_command(a)
