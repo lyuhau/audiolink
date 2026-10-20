@@ -20,8 +20,9 @@ On the computer the Pi is plugged into (the host):
 Start here:
   audiolink setup                            set up this computer (and the Pi, if it's plugged in)
   audiolink setup host                       just this computer's host part (exposed ports, autostart)
-  audiolink card backup [FILE]               the Pi's whole card to a zip (macOS)
-  audiolink card restore FILE                erase the card and put a backup (or card image) on it
+  audiolink card write [IMAGE] [--wipe]      audiolink onto the Pi's card, keeping its state (macOS)
+  audiolink card backup [FILE]               the Pi's whole card to a zip
+  audiolink card restore FILE                erase the card and put a backup on it (= write FILE --wipe)
 
 Any computer:
   audiolink pis [PI]                         the Pis this computer knows (PI: online?, its list)
@@ -210,17 +211,22 @@ def build_parser():
     fwd.add_argument("port", type=argtypes.port, help="the Pi's port (one its host exposes, e.g. 2222)")
     fwd.add_argument("--local", type=argtypes.port, metavar="LPORT", help="the port here (default: PORT)")
     fwd.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
-    crd = sub.add_parser("card", help="back up the Pi's card, or restore it (macOS)",
+    crd = sub.add_parser("card", help="write, back up or restore the Pi's card (macOS)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
-                             "The Pi's card, in a card reader or opened through the Pi (rpiboot).\n\n"
-                             "  backup [FILE]   everything on the card (the Pi's keys, Wi-Fi, settings, logs)\n"
-                             "                  to a zip, by default audiolink-card-DATE.zip here\n"
-                             "  restore FILE    erase the card and unzip FILE onto it: a backup, or a card image"))
-    crd.add_argument("action", choices=["backup", "restore"], help="see above")
-    crd.add_argument("file", nargs="?", help="the zip")
+                             "The Pi's card, in a card reader or opened through the Pi (rpiboot). No questions:\n"
+                             "a card it shouldn't touch stops it, with the flag to give.\n\n"
+                             "  write [IMAGE]   audiolink onto the card: this version's release image, or IMAGE\n"
+                             "                  (a zip, or a build folder like build/card-pi). An audiolink card\n"
+                             "                  keeps the Pi's state (its keys, Wi-Fi, settings, logs); a blank one\n"
+                             "                  is written; anything else needs --wipe\n"
+                             "  backup [FILE]   everything on the card to a zip, by default\n"
+                             "                  audiolink-card-DATE.zip here (it holds the Pi's keys: keep it private)\n"
+                             "  restore FILE    erase the card and put FILE on it: write FILE --wipe"))
+    crd.add_argument("action", choices=["write", "backup", "restore"], help="see above")
+    crd.add_argument("file", nargs="?", help="the image or backup (a zip, or a folder)")
+    crd.add_argument("--wipe", action="store_true", help="write: erase the card first, keeping nothing")
     crd.add_argument("--disk", help="the card's disk, e.g. /dev/disk7 (when there's more than one, or it's blank)")
-    crd.add_argument("--yes", action="store_true", help="restore without asking")
-    crd.add_argument("--eject", action="store_true", help="backup: eject the card when done (restore always does)")
+    crd.add_argument("--eject", action="store_true", help="backup: eject the card when done (write and restore do)")
     aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "The link's audio format: faster formats carry more data. The host picks the\n"

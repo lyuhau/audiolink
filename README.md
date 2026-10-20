@@ -254,37 +254,49 @@ what differs between Pis is on the card (its state, and `settings.txt`).
    (macOS: `diskutil eject /Volumes/AUDIOPI`; if it says the disk is busy, Spotlight
    is looking at the new card: wait a few seconds and eject again) and put it in the Pi.
 
-**A newer image on a used card:** unzip over it without replacing `settings.txt`
+**A newer image on a used card:** on a Mac, `audiolink card write` (below). By hand:
+unzip over it without replacing `settings.txt`
 (`unzip -o audiolink-pi-VER.zip -x settings.txt -d /Volumes/AUDIOPI`; on Windows,
 keep a copy of `settings.txt` and put it back). The Pi's state (`audiolink/`) and
 logs (`logs/`) stay. New settings the old `settings.txt` doesn't mention keep their
 built-in values. Code alone updates without a new card: `audiolink update`.
 
-### Back up a card
+### Write, back up and restore the card (macOS)
 
-`audiolink card backup [FILE]` saves everything on the card to one zip (by default
-`audiolink-card-DATE.zip` in the current folder): the image, `settings.txt`, logs, and
-the Pi's state in `audiolink/`, its keys and saved Wi-Fi passwords included, so keep the
-zip private. `audiolink card restore FILE` erases the card and unzips FILE onto it: a
-backup, or any card image. It keeps nothing of what was there, and asks first (`--yes`:
-don't ask). A backup also works as `audiolink setup --card-image FILE`. Backup leaves
-the card open, for restoring or installing onto it next (`--eject`: eject it); restore
-ejects it, ready for the Pi.
+```
+audiolink card write [IMAGE] [--wipe]   audiolink onto the card
+audiolink card backup [FILE]            everything on the card to a zip
+audiolink card restore FILE             erase the card and put FILE on it (= write FILE --wipe)
+```
 
-Both use a card in a card reader, or open it through the Pi: unplug the Pi, take its
-card out, plug the Pi back in, then put the card back in (needs `rpiboot`, as above).
-They say so when the card isn't ready. `--disk /dev/diskN` picks the card when there's
-more than one, or a blank one in a reader. macOS only so far; elsewhere, copy the
-card's files to a folder, and back onto a FAT32 card to restore.
+`card write` puts this version's release image on the card (downloaded and checked),
+or IMAGE: a zip, or a build folder such as `build/card-pi`. On an audiolink card it
+replaces the image's files and keeps the Pi's: `audiolink/` (its keys, saved Wi-Fi,
+updates), `logs/`, `settings.txt` (new settings are added at its end, commented out)
+and `ssh_authorized_keys`. A blank card is written. Anything else (Raspberry Pi OS,
+another project's card) stops it, untouched: `--wipe` erases the card first, keeping
+nothing. Every file is checked after writing.
 
-A restored card is the same Pi as the one backed up: don't use both in two Pis at once.
+`card backup` saves everything on the card to one zip (by default
+`audiolink-card-DATE.zip` in the current folder), the Pi's keys and saved Wi-Fi
+passwords included: keep it private. A restored card is the same Pi as the one backed
+up: don't use both in two Pis at once. Backup leaves the card open, for writing onto
+it next (`--eject`: eject it); write and restore eject it, ready for the Pi.
+
+These commands don't ask questions (`audiolink setup` is the guided way): a card they
+shouldn't touch stops them with the flag to give. They use a card in a card reader, or
+open it through the Pi: unplug the Pi, take its card out, plug the Pi back in, then put
+the card back in (needs `rpiboot`, as above); they say so when the card isn't ready.
+`--disk /dev/diskN` picks the card when there's more than one, or a blank one in a
+reader. Elsewhere than macOS: copy the card's files to a folder to back it up, and
+see *Where card images come from* to write one.
 
 ## Commands
 
 | Command | |
 |---|---|
 | `audiolink setup [host]` | start here: this computer (and the Pi, plugged in here): install, add, Wi-Fi, host, client (`ssh NAME`); `host`: just the host part |
-| `audiolink card backup [FILE]` / `card restore FILE` | the Pi's whole card to a zip, and back (macOS; see *Back up a card*) |
+| `audiolink card write [IMAGE] [--wipe]` / `backup [FILE]` / `restore FILE` | the Pi's card: audiolink onto it keeping its state, to a zip, and back (macOS; see *Write, back up and restore the card*) |
 | `audiolink host [--expose PIPORT:PORT] [--wifi NAME]` | run on the host; keeps the link up, reconnects on its own |
 | `audiolink add [CODE] [--at ADDR] [--pairing-code N]` | add a Pi: over USB, found on the network, or by connect code |
 | `audiolink pis` / `share PI` / `forget PI` / `rename PI NEW [--on-pi]` | the Pis this machine knows |
@@ -467,8 +479,7 @@ the version audiolink was tested with: clone with `git clone --recursive`, or ru
 `platform/alpine-module/fetch.sh` downloads the prebuilt ones (no Docker; the release
 workflow does this too), `platform/alpine-module/build.sh` builds them (Docker). `PLATFORM` points the build at another
 checkout of the platform, e.g. one you're changing. A card
-for someone else: `tools/build_card.sh config/pi-release.toml --install /Volumes/CARD`
-(a FAT32-formatted microSD card, see the platform's README); the Pi boots from it. `config/` describes the card:
+for someone else: `make release-card`, then `audiolink card write dist/audiolink-pi-VER.zip`. `config/` describes the card:
 `pi-release.toml` (no USB ethernet, no SSH, the debug console off) and `pi.toml`, the
 dev image: it includes `pi-release.toml` and adds USB ethernet with the Pi at
 `10.55.0.2` (`device.toml`'s `dev = true` function, with `dev_functions`), SSH with
@@ -485,11 +496,9 @@ tools/hot.sh                          # just the daemon, no reboot (lost at the 
 tools/smoke.sh                        # end-to-end check of the host daemon and the Pi
 ```
 
-With a card reader: `tools/build_card.sh config/pi.toml --install /Volumes/CARD`
-(replaces the card's system files; its `audiolink/` state and `logs/` stay). Without one: a
-running dev Pi takes a new card over ssh (`tools/deploy.sh`); otherwise expose the
-card through the Pi with `rpiboot`'s mass-storage mode (the platform's README:
-*Build and install the card*) and install onto it the same way.
+A dev image onto a card: `audiolink card write build/card-pi` (a card reader, or
+through the Pi; the card's `audiolink/` state and `logs/` stay). A running dev Pi
+takes it over ssh instead: `make deploy`.
 State (identity, saved networks, updates) is in the card's `audiolink/`; logs
 in `logs/last` and `logs/prev`.
 

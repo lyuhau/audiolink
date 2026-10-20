@@ -8,9 +8,12 @@ it a small firmware that shows its card to this computer as a disk ("msd" mode,
 audiolink-pi-VER.zip, checked against its SHA256SUMS), ejects it, and the Pi starts from
 it once it's replugged.
 
-A backup is a zip of everything on the card (the image, settings.txt, the Pi's state in
-audiolink/, logs/), so it's also a card image: restoring it is erasing the card and
-unzipping it, the same as writing a release image.
+`audiolink card write` puts an image on the card: on an audiolink card it replaces the
+image's files and keeps the Pi's state (KEEP), adding new settings to its settings.txt;
+with --wipe, or on a blank card, it erases the card first. Anything else on the card (a
+Raspberry Pi OS, another project) is only ever erased, and only when asked (--wipe).
+A backup is a zip of everything on the card, so it's also an image: restoring it is
+writing it with --wipe.
 
 macOS only for now (diskutil). Elsewhere: write it by hand (README).
 """
@@ -155,15 +158,49 @@ def fetch_image(runner, folder, version=__version__):
     return zpath
 
 
+class Image:
+    """A card image: a zip (a release's, a backup) or a folder (a build, build/card-pi)."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.name = self.path.name
+        if self.path.is_dir():
+            self.names = sorted(os.path.relpath(os.path.join(r, n), str(self.path)).replace(os.sep, "/")
+                                for r, ds, ns in os.walk(str(self.path)) for n in ns
+                                if not _macos(n) and not any(_macos(p) or p in SKIP for p in
+                                                             os.path.relpath(r, str(self.path)).split(os.sep)))
+        else:
+            try:
+                with zipfile.ZipFile(str(self.path)) as z:
+                    self.names = sorted(n for n in z.namelist() if not n.endswith("/"))
+            except (OSError, zipfile.BadZipFile) as e:
+                raise CardError("%s isn't a card image (%s)" % (path, e))
+        if "config.txt" not in self.names or "settings.txt" not in self.names:
+            raise CardError("%s isn't an audiolink card image (no config.txt, settings.txt)" % path)
+
+    def read(self, name):
+        if self.path.is_dir():
+            return (self.path / name).read_bytes()
+        with zipfile.ZipFile(str(self.path)) as z:
+            return z.read(name)
+
+    def files(self):
+        """(name, bytes) for every file, reading the zip once."""
+        if self.path.is_dir():
+            for n in self.names:
+                yield n, (self.path / n).read_bytes()
+            return
+        with zipfile.ZipFile(str(self.path)) as z:
+            for n in self.names:
+                yield n, z.read(n)
+
+
 def check_image(path):
-    try:
-        with zipfile.ZipFile(str(path)) as z:
-            names = z.namelist()
-    except (OSError, zipfile.BadZipFile) as e:
-        raise CardError("%s isn't a card image (%s)" % (path, e))
-    if "config.txt" not in names or "settings.txt" not in names:
-        raise CardError("%s isn't an audiolink card image (no config.txt, settings.txt)" % path)
-    return Path(path)
+    return Image(path)
+
+
+def _macos(name):
+    return name.startswith("._") or name == ".DS_Store"
 
 
 # ---- disks (macOS)
@@ -179,21 +216,148 @@ def external_disks(runner):
 
 
 def write(runner, disk, image, sleep=time.sleep):
-    """Erase disk (FAT32, MBR) and unzip image onto it, then eject it."""
+    """Erase disk (FAT32, MBR), put image on it, check every file, eject it -> files."""
+    image = image if isinstance(image, Image) else Image(image)
     status, out = runner.run(["diskutil", "eraseDisk", "FAT32", LABEL, "MBRFormat", disk], timeout=300)
     if status:
         raise CardError("Couldn't erase the card: %s" % out.strip())
-    mount = Path("/Volumes") / LABEL
-    detail("erased %s; unzipping %s onto %s", disk, image, mount)
-    with zipfile.ZipFile(str(image)) as z:
-        z.extractall(str(mount))
+    mount = volume_of(runner, disk, sleep)
+    if not mount:
+        raise CardError("Erased the card, but it didn't come back as a disk; unplug it and try again")
+    detail("erased %s; writing %s onto %s", disk, image.path, mount)
+    put(mount, image)
+    n = check(mount, image)
+    eject(runner, disk, sleep)
+    return n
+
+
+def update(runner, disk, mount, image, sleep=time.sleep):
+    """An audiolink card in place: everything but KEEP replaced by image's files; new
+    settings added to the card's settings.txt (commented out); checked; ejected.
+    -> (files, new settings)."""
+    image = image if isinstance(image, Image) else Image(image)
+    kept = {n for n in os.listdir(mount) if n in KEEP}
+    for name in os.listdir(mount):
+        if name in kept or name in SKIP or _macos(name):
+            continue
+        p = os.path.join(mount, name)
+        try:
+            shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
+        except FileNotFoundError:
+            pass                        # a "._" file macOS removed with its file
+    skip = {n for n in image.names if n.split("/")[0] in kept}
+    put(mount, image, skip)
+    new = []
+    if "settings.txt" in kept:
+        path = os.path.join(mount, "settings.txt")
+        with open(path, encoding="utf-8", errors="replace") as f:
+            old = f.read()
+        text, new = merge_settings(old, image.read("settings.txt").decode("utf-8", "replace"))
+        if new:
+            _write(path, text.encode())
+    n = check(mount, image, skip | {"settings.txt"} if "settings.txt" in kept else skip)
+    eject(runner, disk, sleep)
+    return n, new
+
+
+def put(mount, image, skip=()):
+    for name, data in image.files():
+        if name not in skip:
+            _write(os.path.join(mount, *name.split("/")), data)
     os.sync()
+
+
+def _write(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def check(mount, image, skip=()):
+    """Every file of image on the card, byte for byte -> how many were checked."""
+    bad, n = [], 0
+    for name, data in image.files():
+        if name in skip:
+            continue
+        p = os.path.join(mount, *name.split("/"))
+        try:
+            with open(p, "rb") as f:
+                same = f.read() == data
+        except OSError:
+            same = False
+        if not same:
+            bad.append(name)
+        n += 1
+    if bad:
+        raise CardError("The card doesn't match the image (%s%s); write it again"
+                        % (", ".join(bad[:3]), ", ..." if len(bad) > 3 else ""))
+    return n
+
+
+SETTING = re.compile(r"^#?\s*([A-Za-z0-9_.-]+)\s*=", re.M)
+
+
+def merge_settings(old, new):
+    """The card's settings.txt (its users') plus the settings only the image's has, as
+    the image writes them (commented out, with their help) -> (text, their names)."""
+    have = set(SETTING.findall(old))
+    blocks = [b for b in re.split(r"\n\s*\n", new) if any(k not in have for k in SETTING.findall(b))]
+    added = [k for b in blocks for k in SETTING.findall(b) if k not in have]
+    if not added:
+        return old, []
+    text = old.rstrip("\n") + "\n\n# ---- new in this image (audiolink card write)\n" + "\n\n".join(b.strip("\n") for b in blocks) + "\n"
+    return text, added
+
+
+def eject(runner, disk, sleep=time.sleep):
     for _ in range(12):                 # Spotlight looks at a new disk first: it can refuse a while
         status, out = runner.run(["diskutil", "eject", disk])
         if not status:
             return
         sleep(5)
-    raise CardError("Wrote the card, but couldn't eject the card (%s); eject the card, then go on" % out.strip())
+    raise CardError("Wrote the card, but couldn't eject it (%s); eject it before unplugging" % out.strip())
+
+
+# The Pi's own, on its card: never replaced by an update
+KEEP = {"audiolink", "logs", "settings.txt", "ssh_authorized_keys"}
+
+
+def partitions(runner, disk):
+    _, out = runner.run(["diskutil", "list", disk])
+    return re.findall(r"\b(%ss\d+)\s*$" % re.escape(disk[len("/dev/"):]), out, re.M)
+
+
+def volume_of(runner, disk, sleep=time.sleep):
+    """Where disk's first partition is mounted (waiting a little: macOS mounts a new
+    disk a moment after it appears), or None."""
+    for _ in range(10):
+        for part in partitions(runner, disk)[:1]:
+            _, info = runner.run(["diskutil", "info", part])
+            m = re.search(r"^\s*Mount Point:\s*(\S.*?)\s*$", info, re.M)
+            if m:
+                return m.group(1)
+        sleep(1)
+    return None
+
+
+def classify(runner, disk, mount):
+    """("blank" | "audiolink" | "other", what it looks like, for people)."""
+    parts = len(partitions(runner, disk))
+    files = [n for n in os.listdir(mount) if not _macos(n) and n not in SKIP] if mount else []
+    if parts > 1:
+        return "other", "%d partitions%s" % (parts, ", a Raspberry Pi system?" if "config.txt" in files else "")
+    if not files:
+        return "blank", "blank" if mount else "blank or unreadable"
+    settings = os.path.join(mount, "settings.txt")
+    ours = os.path.isdir(os.path.join(mount, "audiolink"))
+    if not ours and os.path.isfile(settings):
+        with open(settings, encoding="utf-8", errors="replace") as f:
+            ours = "audiolink." in f.read()
+    if ours:
+        return "audiolink", "audiolink"
+    return "other", "a Raspberry Pi system?" if "config.txt" in files else "%d files, not a Pi card" % len(files)
 
 
 def mounted_cards(runner):
@@ -257,17 +421,6 @@ def open_through_pi(runner, usb_state, again, platform=sys.platform, sleep=time.
         raise CardError("%s is too big to be the Pi's card; nothing changed" % dev)
     done("%.1f GB" % (size / 1e9))
     return disk
-
-
-def mount_of(runner, disk, sleep=time.sleep):
-    """Where disk's card is mounted (waiting a little: macOS mounts a new disk after it
-    appears), or None."""
-    for _ in range(10):
-        for d, _, mount in mounted_cards(runner):
-            if d == disk:
-                return mount
-        sleep(1)
-    return None
 
 
 # ---- backup

@@ -1,66 +1,91 @@
-"""audiolink card backup|restore: the Pi's card to a zip and back (card.py).
+"""audiolink card write|backup|restore: the Pi's card (card.py). Plumbing: no questions;
+what to do is in the flags, and a card it shouldn't touch without one stops it with the
+flag to give (audiolink setup is the guided way, and asks).
 
 The card is opened where it is: already mounted (a card reader, or the Pi already
 showing it), or through the Pi (rpiboot), which needs the Pi started without its card.
 """
 import datetime
-import os
 import sys
 import time
 from pathlib import Path
 
 from . import card
 from .system import Runner
-from .ui import Prompter, done, step
+from .ui import done, step
 
 
 def card_command(a, runner=None, platform=sys.platform, usb_state=None, sleep=time.sleep, clock=time,
                  now=datetime.datetime.now):
     runner = runner or Runner()
     usb_state = usb_state or (lambda: card.usb_state(runner, platform))
-    ask = Prompter(a, "--yes")
     if platform != "darwin":
         raise SystemExit("audiolink card works on macOS only so far; copy the card's files by hand "
-                         "(README: Back up a card)")
+                         "(README: Write, back up and restore the card)")
     if a.action == "backup":
-        out = Path(a.file or "audiolink-card-%s.zip" % now().strftime("%Y-%m-%d-%H%M"))
-        if out.exists():
-            raise SystemExit("%s exists; nothing written" % out)
-        disk, _, mount, via_pi = open_card(a, runner, usb_state, sleep, clock)
-        if not mount:
-            raise SystemExit("The card in %s has nothing on it to back up" % disk)
-        step("Backing up the card")
-        try:
-            n = card.backup(mount, out)
-        except SystemExit:
-            done("failed")
-            raise
-        done("%d files" % n)
-        print("Saved %s" % out)
-        print("It holds the Pi's keys and Wi-Fi passwords: keep it private")
-        if not a.eject:
-            # Backing up is usually before restoring or installing onto the same card,
-            # and an ejected card means opening it all over again.
-            print("Card still open: restore or install onto it now, or eject it before unplugging: "
-                  "diskutil eject %s" % disk)
-            return 0
-        eject(runner, disk, sleep)
+        return backup(a, runner, usb_state, sleep, clock, now)
+    return write(a, runner, usb_state, sleep, clock, wipe=a.wipe or a.action == "restore")
+
+
+def backup(a, runner, usb_state, sleep, clock, now):
+    out = Path(a.file or "audiolink-card-%s.zip" % now().strftime("%Y-%m-%d-%H%M"))
+    if out.exists():
+        raise SystemExit("%s exists; nothing written" % out)
+    disk, size, mount, via_pi = open_card(a, runner, usb_state, sleep, clock)
+    if not mount:
+        raise SystemExit("The card in %s has nothing on it to back up" % disk)
+    step("Backing up the card")
+    try:
+        n = card.backup(mount, out)
+    except SystemExit:
+        done("failed")
+        raise
+    done("%d files" % n)
+    print("Saved %s" % out)
+    print("It holds the Pi's keys and Wi-Fi passwords: keep it private")
+    if not a.eject:
+        # Backing up is usually before writing onto the same card, and an ejected card
+        # means opening it all over again.
+        print("Card still open: write or restore onto it now, or eject it before unplugging: "
+              "diskutil eject %s" % disk)
+        return 0
+    card.eject(runner, disk, sleep)
+    print("Unplug the Pi and plug it back in" if via_pi else "Put the card back in the Pi")
+    return 0
+
+
+def write(a, runner, usb_state, sleep, clock, wipe):
+    if a.file:
+        image = card.Image(a.file)
+        label = image.name
     else:
-        image = card.check_image(a.file)
-        disk, size, mount, via_pi = open_card(a, runner, usb_state, sleep, clock)
-        what = "%s, %.1f GB%s" % (disk, size / 1e9, ", " + os.path.basename(mount) if mount else "")
-        question = "Erase the card (%s) and restore %s?" % (what, image.name)
-        if a.yes:
-            print(question, "yes")
-        elif not ask.yes(question, default=False):
-            raise SystemExit("Nothing changed")
-        step("Restoring the card")
+        from .paths import cache_dir
+        step("Downloading the card image (audiolink %s)" % card.__version__)
         try:
-            card.write(runner, disk, image, sleep=sleep)
+            image = card.Image(card.fetch_image(runner, cache_dir() / "cards"))
         except SystemExit:
             done("failed")
             raise
-        done("done")
+        done("checked")
+        label = "audiolink %s" % card.__version__
+    disk, size, mount, via_pi = open_card(a, runner, usb_state, sleep, clock)
+    kind, what = card.classify(runner, disk, mount)
+    print("Card: %s, %.1f GB, %s" % (disk, size / 1e9, what))
+    if kind == "other" and not wipe:
+        raise SystemExit("Not an audiolink card: nothing changed. To erase it and write %s: --wipe" % label)
+    try:
+        if wipe or kind == "blank":
+            step("Erasing it and writing %s" % label if kind != "blank" else "Writing %s" % label)
+            n, new = card.write(runner, disk, image, sleep=sleep), []
+        else:
+            step("Writing %s, keeping the Pi's state" % label)
+            n, new = card.update(runner, disk, mount, image, sleep=sleep)
+    except SystemExit:
+        done("failed")
+        raise
+    done("done, %d files checked" % n)
+    if new:
+        print("New settings in its settings.txt (commented out): %s" % ", ".join(new))
     print("Unplug the Pi and plug it back in" if via_pi else "Put the card back in the Pi")
     return 0
 
@@ -71,20 +96,19 @@ def open_card(a, runner, usb_state, sleep, clock):
         size = card.external_disks(runner).get(a.disk)
         if size is None:
             raise SystemExit("%s isn't an external disk (see: diskutil list external)" % a.disk)
-        return checked(a.disk, size), size, card.mount_of(runner, a.disk, sleep), False
+        return checked(a.disk, size), size, card.volume_of(runner, a.disk, sleep), False
     cards = card.mounted_cards(runner)
     if len(cards) > 1:
         raise SystemExit("More than one Pi card here (%s): eject the others, or pick one with --disk"
                          % ", ".join(d for d, _, _ in cards))
     if cards:
         disk, size, mount = cards[0]
-        print("Card: %s (%s)" % (mount, disk))
         return checked(disk, size), size, mount, usb_state() == "msd"
     state = usb_state()
     if state in ("pi", "msd", None):
         print({"pi": "The Pi is running from its card. To open the card through the Pi:",
                "msd": "The Pi is still in card mode from an earlier try. To open the card through the Pi:",
-               None: "No card here. Put it in a card reader, or open it through the Pi:"}[state])
+               None: "No card here. Put it in a card reader (a blank one: --disk), or open it through the Pi:"}[state])
         print("  unplug the Pi, take its card out, plug the Pi back in, then put the card back in")
         step("Waiting for the Pi without its card")
         end = clock.monotonic() + 300
@@ -101,19 +125,10 @@ def open_card(a, runner, usb_state, sleep, clock):
         if cards:
             return open_card(a, runner, usb_state, sleep, clock)
     disk, size = card.open_through_pi(runner, usb_state, "run it again", sleep=sleep, clock=clock)
-    return disk, size, card.mount_of(runner, disk, sleep), True
+    return disk, size, card.volume_of(runner, disk, sleep), True
 
 
 def checked(disk, size):
     if size > card.MAX_CARD:
         raise SystemExit("%s is too big to be the Pi's card; nothing changed" % disk)
     return disk
-
-
-def eject(runner, disk, sleep):
-    for _ in range(12):                 # Spotlight can hold a new disk for a while
-        status, _ = runner.run(["diskutil", "eject", disk])
-        if not status:
-            return
-        sleep(5)
-    print("Couldn't eject %s; eject it before unplugging" % disk)
