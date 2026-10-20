@@ -124,7 +124,7 @@ class Update(unittest.TestCase):
             image = image_dir(Path(tmp, "build"), dict(IMAGE, **{"audiolink/identity.json.a": "not mine"}))
             runner = Runner({})
             n, new, removed = card.update(runner, "/dev/disk7", str(mount), image, sleep=lambda s: None)
-            self.assertEqual((n, new, removed), (2, ["audiolink.fresh"], True))   # settings.txt kept, not checked
+            self.assertEqual((n, new, removed), (2, ["audiolink.fresh"], "unknown"))  # settings.txt kept, not checked
             self.assertFalse(Path(mount, "audiolink/audiolink.pyz").exists())    # the image's code runs
             self.assertFalse(Path(mount, "stale.txt").exists())
             self.assertEqual(Path(mount, "boot/initrd.img").read_text(), "new img")
@@ -185,7 +185,7 @@ class Command(unittest.TestCase):
         patches = [mock.patch.object(card, "mounted_cards", lambda r: list(cards)),
                    mock.patch.object(card, "write", lambda r, d, i, sleep: calls.append(("write", d, i.name)) or 3),
                    mock.patch.object(card, "update", lambda r, d, m, i, sleep, keep_update:
-                                     calls.append(("update", d, i.name)) or (3, ["audiolink.fresh"], True)),
+                                     calls.append(("update", d, i.name)) or (3, ["audiolink.fresh"], "0123456789ab")),
                    mock.patch.object(card, "classify", lambda r, d, m: kind),
                    mock.patch.object(card, "open_through_pi", through_pi or (lambda *x, **k: self.fail("opened"))),
                    mock.patch.object(card, "volume_of", lambda r, d, s: cards[0][2] if cards else None)]
@@ -213,7 +213,7 @@ class Command(unittest.TestCase):
         self.assertIn("Card: /dev/disk7, 31.9 GB, audiolink", out)
         self.assertIn("Writing build, keeping the Pi's state... done, 3 files checked", out)
         self.assertIn("New settings in its settings.txt (commented out): audiolink.fresh", out)
-        self.assertIn("Removed an earlier update from the card, so the Pi runs this image's code", out)
+        self.assertIn("Removed an earlier update (build 0123456789ab) from the card, so the Pi runs this image's code", out)
         self.assertEqual(calls, [("update", "/dev/disk7", "build")])
 
     def test_another_system_needs_wipe(self):

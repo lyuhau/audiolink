@@ -6,8 +6,10 @@ Windows; the Pi runs the same file (it uses ALSA and ignores PortAudio).
 
 Reproducible: the same sources give the same bytes (sorted entries, fixed
 timestamps and permissions), so the relay and the card's manifest only change
-when the code does.
+when the code does. Its build id (audiolink/_build.py, audiolink.BUILD) is a hash of
+those sources: two builds of one version say which they are.
 """
+import hashlib
 import os
 import zipfile
 from pathlib import Path
@@ -28,10 +30,25 @@ def sources(pkg):
     return out
 
 
+def build_id(entries):
+    h = hashlib.sha256()
+    for name in sorted(entries):
+        h.update(name.encode() + b"\0" + entries[name] + b"\0")
+    return h.hexdigest()[:12]
+
+
+def source_build_id(pkg=ROOT / "audiolink"):
+    """The build id of the package as it is now (what build() would stamp)."""
+    entries = {name: src.read_bytes() for name, src in sources(pkg).items() if name != "audiolink/_build.py"}
+    entries["__main__.py"] = MAIN.encode()
+    return build_id(entries)
+
+
 def build(out=OUT, pkg=ROOT / "audiolink"):
     out.parent.mkdir(parents=True, exist_ok=True)
-    entries = {name: src.read_bytes() for name, src in sources(pkg).items()}
+    entries = {name: src.read_bytes() for name, src in sources(pkg).items() if name != "audiolink/_build.py"}
     entries["__main__.py"] = MAIN.encode()
+    entries["audiolink/_build.py"] = ('BUILD = "%s"\n' % build_id(entries)).encode()
     tmp = out.with_name(out.name + ".tmp")
     with open(tmp, "wb") as f:
         f.write(SHEBANG)
@@ -49,7 +66,10 @@ def build(out=OUT, pkg=ROOT / "audiolink"):
 
 def main():
     out = build()
-    print("%s (%.0f KB)" % (out.relative_to(ROOT), out.stat().st_size / 1024))
+    from zipfile import ZipFile
+    with ZipFile(str(out)) as z:
+        bid = z.read("audiolink/_build.py").decode().split('"')[1]
+    print("%s (%.0f KB, build %s)" % (out.relative_to(ROOT), out.stat().st_size / 1024, bid))
 
 
 if __name__ == "__main__":

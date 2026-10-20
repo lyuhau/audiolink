@@ -215,13 +215,18 @@ def _on_card(st):
 
 
 def show_status(st):
-    mine = _this_pyz()
-    mine = mine and _file_hash(mine)
+    from .. import BUILD
+    from ..services.update import pyz_build
+    path = _this_pyz()
+    mine, theirs = (path and pyz_build(path)) or BUILD, st.get("running_build")
+    if not (mine and theirs):           # a pyz from before build ids: by file hash
+        mine, theirs = path and _file_hash(path), st.get("running_hash")
     same = ""
-    if mine and st.get("running_hash"):
-        same = ", the same as this computer's" if st["running_hash"] == mine else ", not this computer's"
+    if mine and theirs:
+        same = ", the same as this computer's" if theirs == mine else ", not this computer's"
     print("Running %s (%s%s)" % ("an update" if _on_card(st) else "the built-in code",
-                                _short(st.get("running_hash")), same))
+                                "build %s" % st["running_build"] if st.get("running_build")
+                                else _short(st.get("running_hash")), same))
     if st.get("set_aside"):
         print("The update on the card kept failing and is set aside")
     elif st.get("update") and not _on_card(st):

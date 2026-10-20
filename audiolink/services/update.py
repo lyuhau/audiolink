@@ -28,6 +28,16 @@ MAX_SIZE = 8 * 1024 * 1024
 RESTART = 75                    # exit status: "start me again now" (pi/start-audiolink.sh)
 
 
+def pyz_build(path):
+    """The build id a .pyz carries (audiolink/_build.py), or None (none, or not a pyz)."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            return z.read("audiolink/_build.py").decode().split('"')[1]
+    except (OSError, KeyError, IndexError, zipfile.BadZipFile, TypeError):
+        return None
+
+
 def pyz_hash(path):
     try:
         with open(path, "rb") as f:
@@ -58,7 +68,9 @@ class UpdateService(Service):
     def status(self):
         running = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else None
         return {"running": running, "running_hash": pyz_hash(running) if running else None,
+                "running_build": pyz_build(running) if running else None,
                 "update": os.path.exists(self.path), "update_hash": pyz_hash(self.path),
+                "update_build": pyz_build(self.path),
                 "set_aside": os.path.exists(self.path + ".bad")}
 
     def handle(self, op, args):

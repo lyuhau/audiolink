@@ -56,7 +56,7 @@ import sys
 import threading
 import time
 
-from . import __version__, argtypes
+from . import __version__, argtypes, version_text
 from .services.streams import Streams, parse_forward
 from .paths import PI_STATE_DIR
 from .relay import DEFAULT as RELAY_DEFAULT
@@ -99,7 +99,7 @@ def list_devices():
 def build_parser():
     ap = argparse.ArgumentParser(prog="audiolink", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--version", action="version", version="audiolink " + __version__)
+    ap.add_argument("--version", action="version", version="audiolink " + version_text())
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
     stp = sub.add_parser("setup", help="start here: set up this computer (and the Pi, if it's plugged in)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(

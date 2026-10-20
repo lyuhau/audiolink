@@ -22,3 +22,6 @@ usbboot/
 # audiolink card backup (the Pi's keys and Wi-Fi passwords)
 audiolink-card-*.zip
 audiolink-card-*.zip.part
+
+# build_bin.py's build id, in the package only while PyInstaller runs
+audiolink/_build.py

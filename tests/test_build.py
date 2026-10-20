@@ -30,6 +30,17 @@ class Pyz(unittest.TestCase):
             import audiolink
             self.assertIn(audiolink.__version__, v.stdout + v.stderr)
 
+    def test_build_id(self):
+        from audiolink.services.update import pyz_build
+        with tempfile.TemporaryDirectory() as d:
+            out = build_pyz.build(Path(d) / "audiolink.pyz")
+            bid = pyz_build(str(out))
+            self.assertRegex(bid, r"^[0-9a-f]{12}$")
+            self.assertEqual(bid, build_pyz.source_build_id())          # the app's, from the same sources
+            v = subprocess.run([sys.executable, str(out), "--version"], capture_output=True, text=True)
+            self.assertIn("(build %s)" % bid, v.stdout)
+        self.assertIsNone(pyz_build(__file__))                          # not a pyz
+
 
 if __name__ == "__main__":
     unittest.main()

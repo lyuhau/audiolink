@@ -240,16 +240,17 @@ def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
     """An audiolink card in place: everything but KEEP replaced by image's files; new
     settings added to the card's settings.txt (commented out); an earlier update removed
     (keep_update: kept), so the Pi runs the image's code; checked; ejected.
-    -> (files, new settings, removed an update?)."""
+    -> (files, new settings, the removed update's build id, or False)."""
     image = image if isinstance(image, Image) else Image(image)
     kept = {n for n in os.listdir(mount) if n in KEEP}
     removed = False
     if not keep_update:
+        from .services.update import pyz_build
         for rel in UPDATE:
             p = os.path.join(mount, *rel.split("/"))
             if os.path.exists(p):
+                removed = removed or pyz_build(p) or "unknown"
                 os.remove(p)
-                removed = True
     for name in os.listdir(mount):
         if name in kept or name in SKIP or _macos(name):
             continue
