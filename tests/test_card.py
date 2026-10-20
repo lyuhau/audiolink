@@ -120,16 +120,29 @@ class Update(unittest.TestCase):
             make_card(mount)
             Path(mount, "settings.txt").write_text("#hostname = audiopi\nusb.product = Mine\n")
             Path(mount, "stale.txt").write_text("old")
+            Path(mount, "audiolink/audiolink.pyz").write_text("older code")
             image = image_dir(Path(tmp, "build"), dict(IMAGE, **{"audiolink/identity.json.a": "not mine"}))
             runner = Runner({})
-            n, new = card.update(runner, "/dev/disk7", str(mount), image, sleep=lambda s: None)
-            self.assertEqual((n, new), (2, ["audiolink.fresh"]))           # settings.txt kept, not checked
+            n, new, removed = card.update(runner, "/dev/disk7", str(mount), image, sleep=lambda s: None)
+            self.assertEqual((n, new, removed), (2, ["audiolink.fresh"], True))   # settings.txt kept, not checked
+            self.assertFalse(Path(mount, "audiolink/audiolink.pyz").exists())    # the image's code runs
             self.assertFalse(Path(mount, "stale.txt").exists())
             self.assertEqual(Path(mount, "boot/initrd.img").read_text(), "new img")
             self.assertEqual(Path(mount, "audiolink/identity.json.a").read_text(), "{}")   # the Pi's, kept
             self.assertEqual(Path(mount, "logs/last/app.log").read_text(), "log")
             self.assertIn("usb.product = Mine", Path(mount, "settings.txt").read_text())
             self.assertIn("diskutil eject /dev/disk7", runner.cmds)
+
+    def test_keep_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp, "card")
+            make_card(mount)
+            Path(mount, "audiolink/audiolink.pyz").write_text("newer code")
+            image = image_dir(Path(tmp, "build"), IMAGE)
+            _, _, removed = card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None,
+                                        keep_update=True)
+            self.assertFalse(removed)
+            self.assertEqual(Path(mount, "audiolink/audiolink.pyz").read_text(), "newer code")
 
     def test_check_catches_a_bad_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -166,13 +179,13 @@ class Command(unittest.TestCase):
     def run_card(self, *argv, usb_state=lambda: None, cards=(), through_pi=None, wipe=False, eject=False,
                  kind=("audiolink", "audiolink")):
         a = SimpleNamespace(action=argv[0], file=argv[1] if len(argv) > 1 else None, disk=None, wipe=wipe,
-                            eject=eject)
+                            eject=eject, keep_update=False)
         runner, clock = Runner({}), Clock()
         calls = []
         patches = [mock.patch.object(card, "mounted_cards", lambda r: list(cards)),
                    mock.patch.object(card, "write", lambda r, d, i, sleep: calls.append(("write", d, i.name)) or 3),
-                   mock.patch.object(card, "update", lambda r, d, m, i, sleep: calls.append(("update", d, i.name))
-                                     or (3, ["audiolink.fresh"])),
+                   mock.patch.object(card, "update", lambda r, d, m, i, sleep, keep_update:
+                                     calls.append(("update", d, i.name)) or (3, ["audiolink.fresh"], True)),
                    mock.patch.object(card, "classify", lambda r, d, m: kind),
                    mock.patch.object(card, "open_through_pi", through_pi or (lambda *x, **k: self.fail("opened"))),
                    mock.patch.object(card, "volume_of", lambda r, d, s: cards[0][2] if cards else None)]
@@ -200,6 +213,7 @@ class Command(unittest.TestCase):
         self.assertIn("Card: /dev/disk7, 31.9 GB, audiolink", out)
         self.assertIn("Writing build, keeping the Pi's state... done, 3 files checked", out)
         self.assertIn("New settings in its settings.txt (commented out): audiolink.fresh", out)
+        self.assertIn("Removed an earlier update from the card, so the Pi runs this image's code", out)
         self.assertEqual(calls, [("update", "/dev/disk7", "build")])
 
     def test_another_system_needs_wipe(self):

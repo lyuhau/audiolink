@@ -76,16 +76,19 @@ def write(a, runner, usb_state, sleep, clock, wipe):
     try:
         if wipe or kind == "blank":
             step("Erasing it and writing %s" % label if kind != "blank" else "Writing %s" % label)
-            n, new = card.write(runner, disk, image, sleep=sleep), []
+            n, new, removed = card.write(runner, disk, image, sleep=sleep), [], False
         else:
             step("Writing %s, keeping the Pi's state" % label)
-            n, new = card.update(runner, disk, mount, image, sleep=sleep)
+            n, new, removed = card.update(runner, disk, mount, image, sleep=sleep, keep_update=a.keep_update)
     except SystemExit:
         done("failed")
         raise
     done("done, %d files checked" % n)
     if new:
         print("New settings in its settings.txt (commented out): %s" % ", ".join(new))
+    if removed:
+        print("Removed an earlier update from the card, so the Pi runs this image's code "
+              "(--keep-update: keep it)")
     print("Unplug the Pi and plug it back in" if via_pi else "Put the card back in the Pi")
     return 0
 

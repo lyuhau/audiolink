@@ -225,6 +225,8 @@ def build_parser():
     crd.add_argument("action", choices=["write", "backup", "restore"], help="see above")
     crd.add_argument("file", nargs="?", help="the image or backup (a zip, or a folder)")
     crd.add_argument("--wipe", action="store_true", help="write: erase the card first, keeping nothing")
+    crd.add_argument("--keep-update", action="store_true",
+                     help="write: keep an update on the card (audiolink update), which the Pi runs instead")
     crd.add_argument("--disk", help="the card's disk, e.g. /dev/disk7 (when there's more than one, or it's blank)")
     crd.add_argument("--eject", action="store_true", help="backup: eject the card when done (write and restore do)")
     aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)",

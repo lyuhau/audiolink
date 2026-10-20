@@ -231,12 +231,25 @@ def write(runner, disk, image, sleep=time.sleep):
     return n
 
 
-def update(runner, disk, mount, image, sleep=time.sleep):
+# An update `audiolink update` put on the card (services/update.py; its --revert removes
+# the same): the Pi runs it instead of its image's built-in code
+UPDATE = ("audiolink/audiolink.pyz", "audiolink/audiolink.pyz.bad", "audiolink/audiolink.pyz.new")
+
+
+def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
     """An audiolink card in place: everything but KEEP replaced by image's files; new
-    settings added to the card's settings.txt (commented out); checked; ejected.
-    -> (files, new settings)."""
+    settings added to the card's settings.txt (commented out); an earlier update removed
+    (keep_update: kept), so the Pi runs the image's code; checked; ejected.
+    -> (files, new settings, removed an update?)."""
     image = image if isinstance(image, Image) else Image(image)
     kept = {n for n in os.listdir(mount) if n in KEEP}
+    removed = False
+    if not keep_update:
+        for rel in UPDATE:
+            p = os.path.join(mount, *rel.split("/"))
+            if os.path.exists(p):
+                os.remove(p)
+                removed = True
     for name in os.listdir(mount):
         if name in kept or name in SKIP or _macos(name):
             continue
@@ -257,7 +270,7 @@ def update(runner, disk, mount, image, sleep=time.sleep):
             _write(path, text.encode())
     n = check(mount, image, skip | {"settings.txt"} if "settings.txt" in kept else skip)
     eject(runner, disk, sleep)
-    return n, new
+    return n, new, removed
 
 
 def put(mount, image, skip=()):
