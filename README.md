@@ -272,8 +272,8 @@ audiolink card restore FILE             erase the card and put FILE on it (= wri
 `card write` puts this version's release image on the card (downloaded and checked),
 or IMAGE: a zip, or a build folder such as `build/card-pi`. On an audiolink card it
 replaces the image's files and keeps the Pi's: `audiolink/` (its keys, saved Wi-Fi),
-`logs/`, `settings.txt` (new settings are added at its end, commented out) and
-`ssh_authorized_keys`. An earlier `audiolink update` on the card is removed, so the
+`logs/`, `settings.txt` (renewed from the image's, with the settings someone set
+carried over) and `ssh_authorized_keys`. An earlier `audiolink update` on the card is removed, so the
 Pi runs the code of the image just written (`--keep-update`: keep it). A blank card is written. Anything else (Raspberry Pi OS,
 another project's card) stops it, untouched: `--wipe` erases the card first, keeping
 nothing. Every file is checked after writing.

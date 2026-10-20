@@ -85,7 +85,7 @@ def write(a, runner, usb_state, sleep, clock, wipe):
         raise
     done("done, %d files checked" % n)
     if new:
-        print("New settings in its settings.txt (commented out): %s" % ", ".join(new))
+        print("New settings in its settings.txt: %s" % ", ".join(new))
     if removed:
         print("Removed an earlier update%s from the card, so the Pi runs this image's code "
               "(--keep-update: keep it)" % ("" if removed in (True, "unknown") else " (build %s)" % removed))

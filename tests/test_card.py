@@ -104,13 +104,15 @@ class Images(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 card.Image(Path(tmp, "build", "boot"))            # no config.txt, settings.txt
 
-    def test_merge_settings_adds_only_new_ones(self):
-        old = "#hostname = audiopi\nusb.product = Mine\n"
+    def test_settings_renewed_keeping_what_was_set(self):
+        old = "# Old help.\n#hostname = usb-gadget\n\nhostname = kitchen\nusb.product = Mine\n"
         text, new = card.merge_settings(old, IMAGE["settings.txt"])
         self.assertEqual(new, ["audiolink.fresh"])
-        self.assertTrue(text.startswith(old))                        # theirs untouched
+        self.assertIn("# The Pi's name.\nhostname = kitchen\n", text)          # set: carried over, in place
+        self.assertNotIn("usb-gadget", text)                                     # stale examples: gone
         self.assertIn("# New one.\n#audiolink.fresh = on", text)
-        self.assertEqual(card.merge_settings(text, IMAGE["settings.txt"]), (text, []))
+        self.assertTrue(text.endswith("(kept as they were)\nusb.product = Mine\n"))   # not this image's: kept
+        self.assertEqual(card.merge_settings(text, IMAGE["settings.txt"]), (text, []))  # stable
 
 
 class Update(unittest.TestCase):
@@ -212,7 +214,7 @@ class Command(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("Card: /dev/disk7, 31.9 GB, audiolink", out)
         self.assertIn("Writing build, keeping the Pi's state... done, 3 files checked", out)
-        self.assertIn("New settings in its settings.txt (commented out): audiolink.fresh", out)
+        self.assertIn("New settings in its settings.txt: audiolink.fresh", out)
         self.assertIn("Removed an earlier update (build 0123456789ab) from the card, so the Pi runs this image's code", out)
         self.assertEqual(calls, [("update", "/dev/disk7", "build")])
 

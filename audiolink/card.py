@@ -9,7 +9,7 @@ audiolink-pi-VER.zip, checked against its SHA256SUMS), ejects it, and the Pi sta
 it once it's replugged.
 
 `audiolink card write` puts an image on the card: on an audiolink card it replaces the
-image's files and keeps the Pi's state (KEEP), adding new settings to its settings.txt;
+image's files and keeps the Pi's state (KEEP), with its settings.txt renewed from the image's;
 with --wipe, or on a blank card, it erases the card first. Anything else on the card (a
 Raspberry Pi OS, another project) is only ever erased, and only when asked (--wipe).
 A backup is a zip of everything on the card, so it's also an image: restoring it is
@@ -237,8 +237,8 @@ UPDATE = ("audiolink/audiolink.pyz", "audiolink/audiolink.pyz.bad", "audiolink/a
 
 
 def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
-    """An audiolink card in place: everything but KEEP replaced by image's files; new
-    settings added to the card's settings.txt (commented out); an earlier update removed
+    """An audiolink card in place: everything but KEEP replaced by image's files; its
+    settings.txt rewritten from the image's, keeping what its users set; an earlier update removed
     (keep_update: kept), so the Pi runs the image's code; checked; ejected.
     -> (files, new settings, the removed update's build id, or False)."""
     image = image if isinstance(image, Image) else Image(image)
@@ -267,7 +267,7 @@ def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
         with open(path, encoding="utf-8", errors="replace") as f:
             old = f.read()
         text, new = merge_settings(old, image.read("settings.txt").decode("utf-8", "replace"))
-        if new:
+        if text != old:
             _write(path, text.encode())
     n = check(mount, image, skip | {"settings.txt"} if "settings.txt" in kept else skip)
     eject(runner, disk, sleep)
@@ -311,17 +311,26 @@ def check(mount, image, skip=()):
 
 
 SETTING = re.compile(r"^#?\s*([A-Za-z0-9_.-]+)\s*=", re.M)
+SET = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*=.*$", re.M)          # a line someone set (no #)
 
 
 def merge_settings(old, new):
-    """The card's settings.txt (its users') plus the settings only the image's has, as
-    the image writes them (commented out, with their help) -> (text, their names)."""
-    have = set(SETTING.findall(old))
-    blocks = [b for b in re.split(r"\n\s*\n", new) if any(k not in have for k in SETTING.findall(b))]
-    added = [k for b in blocks for k in SETTING.findall(b) if k not in have]
-    if not added:
-        return old, []
-    text = old.rstrip("\n") + "\n\n# ---- new in this image (audiolink card write)\n" + "\n\n".join(b.strip("\n") for b in blocks) + "\n"
+    """The image's settings.txt (every setting, commented out with its help and built-in
+    value), with the lines the card's users set carried over in place of the commented
+    ones; set lines the image doesn't know (a setting since removed, a typo) are kept at
+    the end, not lost. -> (text, settings new in this image)."""
+    mine = {}
+    for m in SET.finditer(old):
+        mine.setdefault(m.group(1), m.group(0).strip())
+    text, left = new, []
+    for key, line in mine.items():
+        text, n = re.subn(r"^#\s*%s\s*=.*$" % re.escape(key), lambda _: line, text, count=1, flags=re.M)
+        if not n:
+            left.append(line)
+    if left:
+        text = text.rstrip("\n") + ("\n\n# ---- set on this card, not settings of this image (kept as they were)\n"
+                                    + "\n".join(left) + "\n")
+    added = [k for k in dict.fromkeys(SETTING.findall(new)) if k not in set(SETTING.findall(old))]
     return text, added
 
 
