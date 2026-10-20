@@ -76,8 +76,9 @@ class Backup(unittest.TestCase):
 
 
 class Command(unittest.TestCase):
-    def run_card(self, *argv, usb_state=lambda: None, cards=(), through_pi=None, yes=False):
-        a = SimpleNamespace(action=argv[0], file=argv[1] if len(argv) > 1 else None, disk=None, yes=yes)
+    def run_card(self, *argv, usb_state=lambda: None, cards=(), through_pi=None, yes=False, eject=False):
+        a = SimpleNamespace(action=argv[0], file=argv[1] if len(argv) > 1 else None, disk=None, yes=yes,
+                            eject=eject)
         runner, clock = Runner({}), Clock()
         written = []
         patches = [mock.patch.object(card, "mounted_cards", lambda r: list(cards)),
@@ -103,8 +104,15 @@ class Command(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertIn("Backing up the card... 5 files", out)
             self.assertIn("keep it private", out)
-            self.assertIn("diskutil eject /dev/disk7", runner.cmds)
+            self.assertIn("Card still open: restore or install onto it now", out)   # left open for that
+            self.assertNotIn("diskutil eject /dev/disk7", runner.cmds)
+            self.assertNotIn("Put the card back", out)
             self.assertTrue(dest.exists())
+            dest.unlink()
+            out, code, runner, _ = self.run_card("backup", str(dest), eject=True,
+                                                 cards=[("/dev/disk7", 32e9, str(Path(tmp, "card")))])
+            self.assertIn("diskutil eject /dev/disk7", runner.cmds)
+            self.assertIn("Put the card back in the Pi", out)
             out, code, _, _ = self.run_card("backup", str(dest), cards=[("/dev/disk7", 32e9, "/x")])
             self.assertIn("exists; nothing written", code)               # never over an old backup
 

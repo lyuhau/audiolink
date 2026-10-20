@@ -267,7 +267,9 @@ built-in values. Code alone updates without a new card: `audiolink update`.
 the Pi's state in `audiolink/`, its keys and saved Wi-Fi passwords included, so keep the
 zip private. `audiolink card restore FILE` erases the card and unzips FILE onto it: a
 backup, or any card image. It keeps nothing of what was there, and asks first (`--yes`:
-don't ask). A backup also works as `audiolink setup --card-image FILE`.
+don't ask). A backup also works as `audiolink setup --card-image FILE`. Backup leaves
+the card open, for restoring or installing onto it next (`--eject`: eject it); restore
+ejects it, ready for the Pi.
 
 Both use a card in a card reader, or open it through the Pi: unplug the Pi, take its
 card out, plug the Pi back in, then put the card back in (needs `rpiboot`, as above).

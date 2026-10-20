@@ -36,9 +36,15 @@ def card_command(a, runner=None, platform=sys.platform, usb_state=None, sleep=ti
             done("failed")
             raise
         done("%d files" % n)
-        eject(runner, disk, sleep)
         print("Saved %s" % out)
         print("It holds the Pi's keys and Wi-Fi passwords: keep it private")
+        if not a.eject:
+            # Backing up is usually before restoring or installing onto the same card,
+            # and an ejected card means opening it all over again.
+            print("Card still open: restore or install onto it now, or eject it before unplugging: "
+                  "diskutil eject %s" % disk)
+            return 0
+        eject(runner, disk, sleep)
     else:
         image = card.check_image(a.file)
         disk, size, mount, via_pi = open_card(a, runner, usb_state, sleep, clock)

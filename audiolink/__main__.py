@@ -218,6 +218,7 @@ def build_parser():
     crd.add_argument("file", nargs="?", help="the zip")
     crd.add_argument("--disk", help="the card's disk, e.g. /dev/disk7 (when there's more than one, or it's blank)")
     crd.add_argument("--yes", action="store_true", help="restore without asking")
+    crd.add_argument("--eject", action="store_true", help="backup: eject the card when done (restore always does)")
     aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "The link's audio format: faster formats carry more data. The host picks the\n"
