@@ -461,7 +461,7 @@ Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
 ```
 make pyz            # dist/audiolink.pyz (python3 build_pyz.py)
 make app            # dist/audiolink-OS-ARCH.zip for this OS (needs pyinstaller)
-make test           # python3 -m unittest discover -s tests -t .
+make test           # the tests in parallel (tools/test.py); serially: python3 -m unittest discover -s tests -t .
 make card           # the dev card image, build/card-pi/
 make release-card   # the release card image and its zip, as CI makes them
 make deploy         # make card, then onto the running dev Pi

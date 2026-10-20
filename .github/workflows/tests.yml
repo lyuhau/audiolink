@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: {python-version: "${{ matrix.python }}"}
-      - run: python3 -m unittest discover -s tests -t . -v
+      - run: python3 tools/test.py              # in parallel, one process per module
 
   lint:
     runs-on: ubuntu-latest

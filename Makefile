@@ -31,8 +31,8 @@ release-card:  ## the release card image, as CI builds it: build/card-pi-release
 	$(PYTHON) tools/card_zip.py build/card-pi-release dist/audiolink-pi-$(VERSION).zip
 
 # ---- test
-test:          ## the test suite (no Pi needed)
-	$(PYTHON) -m unittest discover -s tests -t .
+test:          ## the test suite, in parallel (no Pi needed; tools/test.py)
+	$(PYTHON) tools/test.py
 
 # ---- dev loops: a dev Pi plugged in (the dev card), reached over USB ethernet
 deploy: card   ## the dev card onto the running dev Pi, then reboot it
