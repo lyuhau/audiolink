@@ -319,6 +319,11 @@ Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
   cable? On a Mac, look for an "Allow accessory" prompt (it comes back when the Pi
   shows up as a new kind of USB device, e.g. after a new card). Then unplug and replug.
   `audiolink list-devices` shows whether the computer sees the Pi's sound devices.
+- **A Pi with its own USB ID** (built from a fork, or a card whose `settings.txt`
+  changes `usb.vendor_id`/`usb.product_id`): audiolink finds the Pi's sound devices
+  by USB ID, and by name only when none has a known ID. `audiolink list-devices` shows
+  each device's ID; tell the host about it with `audiolink host --usb-id VID:PID`, or
+  for good with `"usb_ids": ["VID:PID"]` in `host.json` (audiolink's settings folder).
 - **"The Pi's sound device dropped off USB."** Unplug it and plug it back in.
 - **Slow, or the link keeps dropping.** Back to the starting audio format:
   `audiolink audio set baseline` (`audiolink host --audio-format baseline` keeps it

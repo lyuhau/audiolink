@@ -52,6 +52,14 @@ def allow(text):
     return text
 
 
+def usb_id(text):
+    """--usb-id VID:PID, 4 hex digits each: kept as lowercase text ("1209:abcd")."""
+    import re
+    if not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{4}", text.strip()):
+        raise argparse.ArgumentTypeError("wants VENDOR:PRODUCT in hex, e.g. 1209:abcd")
+    return text.strip().lower()
+
+
 def audio_format(text):
     """--audio-format auto|baseline|RATExCH: kept as text; only formats the link can run."""
     if text in ("auto", "baseline"):

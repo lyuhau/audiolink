@@ -4,9 +4,10 @@ Device names are up to each OS: macOS names the gadget's devices after its
 alternate-setting strings, Windows and Linux after the product string. Matching
 on names ties detection to whatever the gadget is called. Instead, each OS is
 asked which USB device (vendor:product ID) a sound device belongs to, and the
-Pi's are the ones with an ID in USB_IDS. Where that can't be told (Windows, for
-now), or no device has one of these IDs (a card's settings.txt can change them),
-detection falls back to the name hints.
+Pi's are the ones with a known ID: USB_IDS, plus the host's usb_ids (host.json, or
+`audiolink host --usb-id`) for Pis that present others, such as a fork's. Where that
+can't be told (Windows, for now), or no device has a known ID (a card's settings.txt
+can change them), detection falls back to the name hints.
 """
 import glob
 import logging
@@ -20,6 +21,28 @@ log = logging.getLogger("audiolink")
 # step). Add the old ID here when changing it, so hosts
 # still find Pis with older cards.
 USB_IDS = {(0x1d6b, 0x0104)}
+
+_extra = None                       # `audiolink host --usb-id`: wins over host.json
+
+
+def set_extra_ids(ids):
+    """The host's usb_ids, as `audiolink host` resolved them (flag, else host.json)."""
+    global _extra
+    _extra = None if ids is None else {parse_id(i) for i in ids}
+
+
+def parse_id(text):
+    vid, pid = text.split(":")
+    return int(vid, 16), int(pid, 16)
+
+
+def known_ids():
+    """USB_IDS, plus the host's usb_ids: set by `audiolink host`, else host.json's."""
+    if _extra is not None:
+        return USB_IDS | _extra
+    from ..host import config
+    return USB_IDS | {parse_id(i) for i in config.load(strict=False).get("usb_ids", [])}
+
 
 # Name fallback. macOS: the alternate-setting strings stock f_uac2 fixes; Windows
 # and Linux: the product string.
@@ -45,7 +68,8 @@ def annotate(devs):
 
 def pi_devices(devs):
     """The Pi's devices among annotated ones: by USB ID, or else by name."""
-    mine = [d for d in devs if d.get("usb") in USB_IDS]
+    known = known_ids()
+    mine = [d for d in devs if d.get("usb") in known]
     return mine or [d for d in devs if by_name(d)]
 
 

@@ -5,7 +5,10 @@ value (a list flag such as --expose replaces the saved list).
 
   {"expose": ["2222:22"], "forward": [], "allow": [], "audio_format": "auto",
    "proxy_port": 47801, "shell_port": 47802, "control_port": 47800,
-   "out_device": null, "in_device": null}
+   "out_device": null, "in_device": null, "usb_ids": []}
+
+usb_ids: more USB IDs (VID:PID) whose sound devices are the Pi's, next to the built-in
+ones (wire/usb_audio.py): a Pi from a fork that presents its own.
 """
 import argparse
 import json
@@ -25,6 +28,7 @@ FIELDS = {
     "control_port": (None, argtypes.port, False),
     "out_device": (None, str, False),
     "in_device": (None, str, False),
+    "usb_ids": ([], argtypes.usb_id, True),
 }
 
 

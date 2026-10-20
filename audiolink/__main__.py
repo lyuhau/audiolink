@@ -87,9 +87,11 @@ def list_devices():
     for d in devs:
         mark = "*" if d in pis else " "
         found = found or mark == "*"
-        print("%s %3d  %-40s %-20s in=%d out=%d" % (mark, d["index"], d["name"], d["hostapi"],
-                                                    d["inputs"], d["outputs"]))
-    print("\n* = Pi audio device" if found else "\nNo Pi audio device found (plugged in?)")
+        usb = "  usb %04x:%04x" % d["usb"] if d.get("usb") else ""
+        print("%s %3d  %-40s %-20s in=%d out=%d%s" % (mark, d["index"], d["name"], d["hostapi"],
+                                                      d["inputs"], d["outputs"], usb))
+    print("\n* = Pi audio device" if found else "\nNo Pi audio device found (plugged in? A Pi with its own "
+          "USB ID: audiolink host --usb-id VID:PID)")
     return 0                    # the listing worked; a missing Pi is shown, not an error
 
 
@@ -305,6 +307,9 @@ def build_parser():
                        help="the port other audiolink commands reach this on (default 47800)" if p is roles["host"]
                        else "audiolink host's control port (default 47800), if it runs with another")
     roles["host"].add_argument("--in-device", metavar="NAME", help="likewise, its input sound device")
+    roles["host"].add_argument("--usb-id", dest="usb_ids", action="append", type=argtypes.usb_id, metavar="VID:PID",
+                               help="a Pi with these USB IDs too (repeatable; replaces the saved usb_ids), "
+                                    "e.g. one from a fork: see audiolink list-devices"),
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
     roles["pi"].add_argument("--state-dir", default=PI_STATE_DIR, help="where the Pi keeps its identity")
     roles["pi"].add_argument("--wifi-store", default=PI_STATE_DIR + "/networks.json",
@@ -548,6 +553,8 @@ def run_host(a, allow, port, gate):
     if not a.verbose:
         from .wire.portaudio import quiet_stdout
         quiet_stdout()
+    from .wire import usb_audio
+    usb_audio.set_extra_ids(a.usb_ids)
     run_portaudio(session.link, a.out_device, a.in_device, expected=lambda: negotiator.running)
     local_ops = {"peer": lambda args: {"connected": session.peer_alive, "peer": session.peer_info,
                                        "link": identity.local_ops(),

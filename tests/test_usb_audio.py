@@ -46,6 +46,42 @@ class PiDevices(unittest.TestCase):
             self.assertIn((vid, pid), usb_audio.USB_IDS, "config/%s: add its ID to USB_IDS" % name)
 
 
+class ExtraIds(unittest.TestCase):
+    """A fork's Pi with its own USB ID: host.json's usb_ids, or audiolink host --usb-id."""
+    FORK = (0x1209, 0xabcd)
+
+    def tearDown(self):
+        usb_audio.set_extra_ids(None)
+
+    def test_saved_ids(self):
+        from unittest import mock
+        from audiolink.host import config
+        fork = dev("Speakers (My Link)", self.FORK)
+        with mock.patch.object(config, "load", lambda strict=True: {"usb_ids": ["1209:abcd"]}):
+            self.assertIn(self.FORK, usb_audio.known_ids())
+            self.assertEqual(usb_audio.pi_devices([fork, dev("Speakers (USB DAC)", (0x1234, 1))]), [fork])
+        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | set())    # nothing saved: the built-in ones
+
+    def test_flag_wins_over_saved(self):
+        from unittest import mock
+        from audiolink.host import config
+        usb_audio.set_extra_ids(["1209:abcd"])
+        with mock.patch.object(config, "load", lambda strict=True: {"usb_ids": ["1209:0001"]}):
+            self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK})
+
+    def test_flag_and_config_values(self):
+        import argparse
+        from audiolink import argtypes
+        from audiolink.host import config
+        self.assertEqual(argtypes.usb_id("1209:ABCD"), "1209:abcd")
+        for bad in ("1209", "1209:abcde", "xyz:0001"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                argtypes.usb_id(bad)
+        self.assertEqual(config.check({"usb_ids": ["1209:ABCD"]}), {"usb_ids": ["1209:abcd"]})
+        with self.assertRaises(ValueError):
+            config.check({"usb_ids": "1209:abcd"})                         # a list
+
+
 class Mac(unittest.TestCase):
     def test_by_name_unless_ambiguous(self):
         from unittest import mock
