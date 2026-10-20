@@ -18,3 +18,7 @@ firmware/
 firmware-nonfree/
 usbboot/
 .claude/
+
+# audiolink card backup (the Pi's keys and Wi-Fi passwords)
+audiolink-card-*.zip
+audiolink-card-*.zip.part

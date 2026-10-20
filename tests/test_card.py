@@ -56,6 +56,7 @@ class Backup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             mount, out = Path(tmp, "card"), Path(tmp, "backup.zip")
             make_card(mount)
+            os.utime(str(mount / "logs/last/app.log"), (0, 0))       # the Pi before it knew the time
             self.assertEqual(card.backup(str(mount), out), 5)
             with zipfile.ZipFile(str(out)) as z:
                 self.assertEqual(sorted(z.namelist()), ["audiolink/identity.json.a", "boot/initrd.img",

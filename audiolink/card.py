@@ -281,7 +281,9 @@ def backup(mount, out):
     fd = os.open(str(part), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     count = 0
     try:
-        with os.fdopen(fd, "wb") as f, zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
+        # strict_timestamps=False: files the Pi wrote before it knew the time (no clock:
+        # 1970) are stored as 1980, the earliest a zip can say
+        with os.fdopen(fd, "wb") as f, zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as z:
             for root, dirs, files in os.walk(mount):
                 dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("._"))
                 for name in sorted(files):
