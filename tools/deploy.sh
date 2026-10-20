@@ -21,13 +21,14 @@ for a in "$@"; do
 done
 MANIFEST=$CARD.manifest
 [ -f "$MANIFEST" ] || { echo "no $MANIFEST: tools/build_card.sh first" >&2; exit 1; }
-if ! gzip -dc "$CARD/boot/initrd.img" | cpio -it 2>/dev/null | grep -qx root/.ssh/authorized_keys && [ -z "$RELEASE" ]; then
+. tools/pi_code.sh
+INITRD=$(card_initrd "$CARD") || exit 1
+if ! gzip -dc "$INITRD" | cpio -it 2>/dev/null | grep -qx root/.ssh/authorized_keys && [ -z "$RELEASE" ]; then
     echo "$CARD has no SSH (a release image); --release to write it anyway" >&2
     exit 1
 fi
 PI=${PI:-root@10.55.0.2}
 SSH="ssh -i keys/id_ed25519 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ConnectTimeout=5"
-. tools/pi_code.sh
 pi_reachable
 
 # The card's files as NAME.new, plus the manifest (.deploy.manifest), in one tar.

@@ -1,4 +1,4 @@
-# Sourced by tools/hot.sh and tools/deploy.sh (needs $SSH and $PI).
+# Sourced by tools/hot.sh, tools/deploy.sh and tools/build_card.sh (the Pi's: needs $SSH and $PI).
 
 # pi_reachable: fail with a plain message when the Pi doesn't answer SSH.
 pi_reachable() {
@@ -37,5 +37,15 @@ pi_code_check() {
         esac
     fi
     echo "to run this code: audiolink update --revert" >&2
+    return 1
+}
+
+# card_initrd CARD: a built card's initramfs (in its slot, a/; boot/ before slots),
+# or fail saying so: a check that can't find it mustn't pass.
+card_initrd() {
+    for f in "$1/a/boot/initrd.img" "$1/boot/initrd.img"; do
+        [ -f "$f" ] && { echo "$f"; return 0; }
+    done
+    echo "no initramfs in $1 (a/boot/initrd.img)" >&2
     return 1
 }

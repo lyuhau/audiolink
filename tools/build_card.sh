@@ -47,7 +47,9 @@ cp -R "$SRC" "build/card-$NAME"
 cp "$PLATFORM/$MANIFEST" "build/card-$NAME.manifest"
 # A release card must not let anyone in over SSH.
 case "$NAME" in *release*)
-    if gzip -dc "build/card-$NAME/boot/initrd.img" | cpio -it 2>/dev/null | grep -qx root/.ssh/authorized_keys; then
+    . tools/pi_code.sh
+    INITRD=$(card_initrd "build/card-$NAME") || { rm -rf "build/card-$NAME" "build/card-$NAME.manifest"; exit 1; }
+    if gzip -dc "$INITRD" | cpio -it 2>/dev/null | grep -qx root/.ssh/authorized_keys; then
         rm -rf "build/card-$NAME" "build/card-$NAME.manifest"
         echo "$SRC has root/.ssh/authorized_keys: not a release card (nothing kept in build/)" >&2
         exit 1
