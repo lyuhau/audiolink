@@ -238,11 +238,22 @@ UPDATE = ("audiolink/audiolink.pyz", "audiolink/audiolink.pyz.bad", "audiolink/a
 
 def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
     """An audiolink card in place: everything but KEEP replaced by image's files; its
-    settings.txt rewritten from the image's, keeping what its users set; an earlier update removed
-    (keep_update: kept), so the Pi runs the image's code; checked; ejected.
-    -> (files, new settings, the removed update's build id, or False)."""
+    settings.txt renewed from the image's, keeping what its users set; an earlier update
+    removed (keep_update: kept), so the Pi runs the image's code; checked; ejected.
+    The new files go next to the old ones first (NAME.new) and are checked there, then
+    renamed into place: a card pulled out before that keeps its old system whole, and
+    running it again picks up from there. -> (files, new settings, the removed
+    update's build id, or False)."""
     image = image if isinstance(image, Image) else Image(image)
     kept = {n for n in os.listdir(mount) if n in KEEP}
+    skip = {n for n in image.names if n.split("/")[0] in kept}
+    want = [n for n in image.names if n not in skip]
+    for rel in _system_files(mount, kept):              # leftovers of an interrupted write
+        if rel.endswith(NEW):
+            os.remove(os.path.join(mount, *rel.split("/")))
+    put(mount, image, skip, NEW)
+    check(mount, image, skip, NEW)
+    # The switch: renames only, so it's quick
     removed = False
     if not keep_update:
         from .services.update import pyz_build
@@ -251,16 +262,17 @@ def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
             if os.path.exists(p):
                 removed = removed or pyz_build(p) or "unknown"
                 os.remove(p)
-    for name in os.listdir(mount):
-        if name in kept or name in SKIP or _macos(name):
-            continue
-        p = os.path.join(mount, name)
-        try:
-            shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
-        except FileNotFoundError:
-            pass                        # a "._" file macOS removed with its file
-    skip = {n for n in image.names if n.split("/")[0] in kept}
-    put(mount, image, skip)
+    for rel in _system_files(mount, kept):
+        if not rel.endswith(NEW) and rel not in want:
+            try:
+                os.remove(os.path.join(mount, *rel.split("/")))
+            except FileNotFoundError:
+                pass                    # a "._" file macOS removed with its file
+    for rel in want:
+        p = os.path.join(mount, *rel.split("/"))
+        os.replace(p + NEW, p)
+    _drop_empty_dirs(mount, kept)
+    os.sync()
     new = []
     if "settings.txt" in kept:
         path = os.path.join(mount, "settings.txt")
@@ -268,16 +280,45 @@ def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
             old = f.read()
         text, new = merge_settings(old, image.read("settings.txt").decode("utf-8", "replace"))
         if text != old:
-            _write(path, text.encode())
+            _write(path + NEW, text.encode())
+            os.replace(path + NEW, path)
     n = check(mount, image, skip | {"settings.txt"} if "settings.txt" in kept else skip)
     eject(runner, disk, sleep)
     return n, new, removed
 
 
-def put(mount, image, skip=()):
+NEW = ".new"
+
+
+def _system_files(mount, kept):
+    """The card's files outside the Pi's own (KEEP) and macOS's, relative, with /."""
+    out = []
+    for name in os.listdir(mount):
+        if name in kept or name in SKIP or _macos(name):
+            continue
+        p = os.path.join(mount, name)
+        if os.path.isdir(p) and not os.path.islink(p):
+            for r, ds, fs in os.walk(p):
+                out += [os.path.relpath(os.path.join(r, f), mount).replace(os.sep, "/") for f in fs if not _macos(f)]
+        else:
+            out.append(name)
+    return out
+
+
+def _drop_empty_dirs(mount, kept):
+    for name in os.listdir(mount):
+        p = os.path.join(mount, name)
+        if name in kept or name in SKIP or not os.path.isdir(p):
+            continue
+        for r, ds, fs in os.walk(p, topdown=False):
+            if not [f for f in os.listdir(r) if not _macos(f)]:
+                shutil.rmtree(r, ignore_errors=True)
+
+
+def put(mount, image, skip=(), suffix=""):
     for name, data in image.files():
         if name not in skip:
-            _write(os.path.join(mount, *name.split("/")), data)
+            _write(os.path.join(mount, *name.split("/")) + suffix, data)
     os.sync()
 
 
@@ -289,13 +330,13 @@ def _write(path, data):
         os.fsync(f.fileno())
 
 
-def check(mount, image, skip=()):
+def check(mount, image, skip=(), suffix=""):
     """Every file of image on the card, byte for byte -> how many were checked."""
     bad, n = [], 0
     for name, data in image.files():
         if name in skip:
             continue
-        p = os.path.join(mount, *name.split("/"))
+        p = os.path.join(mount, *name.split("/")) + suffix
         try:
             with open(p, "rb") as f:
                 same = f.read() == data

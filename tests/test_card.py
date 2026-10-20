@@ -135,6 +135,28 @@ class Update(unittest.TestCase):
             self.assertIn("usb.product = Mine", Path(mount, "settings.txt").read_text())
             self.assertIn("diskutil eject /dev/disk7", runner.cmds)
 
+    def test_interrupted_write_keeps_the_old_system_and_resumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp, "card")
+            make_card(mount)
+            image = image_dir(Path(tmp, "build"), IMAGE)
+            real = card.Image.files
+
+            def pulled_out(self):                        # the card goes away after one file
+                for i, item in enumerate(real(self)):
+                    if i == 1:
+                        raise OSError("card removed")
+                    yield item
+            with mock.patch.object(card.Image, "files", pulled_out), self.assertRaises(OSError):
+                card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)
+            self.assertEqual(Path(mount, "config.txt").read_text(), "boot")          # the old system, whole
+            self.assertEqual(Path(mount, "boot/initrd.img").read_text(), "img")
+            n, _, _ = card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)
+            self.assertEqual(n, 2)
+            self.assertEqual(Path(mount, "boot/initrd.img").read_text(), "new img")
+            leftovers = [str(p) for p in mount.rglob("*.new")]
+            self.assertEqual(leftovers, [])
+
     def test_keep_update(self):
         with tempfile.TemporaryDirectory() as tmp:
             mount = Path(tmp, "card")
