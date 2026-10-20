@@ -443,11 +443,18 @@ Code layout: `audiolink/{wire, session.py, services, host, client, discovery}`;
 
 ## Development
 
+`make help` lists the developer commands; each runs one of the scripts below.
+
 ```
-python3 build_pyz.py                  # dist/audiolink.pyz
-python3 build_bin.py                  # dist/audiolink-OS-ARCH.zip for this OS (needs pyinstaller)
-python3 -m unittest discover -s tests -t .
+make pyz            # dist/audiolink.pyz (python3 build_pyz.py)
+make app            # dist/audiolink-OS-ARCH.zip for this OS (needs pyinstaller)
+make test           # python3 -m unittest discover -s tests -t .
+make card           # the dev card image, build/card-pi/
+make release-card   # the release card image and its zip, as CI makes them
+make deploy         # make card, then onto the running dev Pi
 ```
+
+Make stops at images and the dev Pi: putting an image on a card is `audiolink card`.
 
 `build_pyz.py` is reproducible: the same sources give the same bytes. Under macOS's
 `/usr/bin/python3` the tests that need TLS 1.3 with Ed25519 are skipped.
