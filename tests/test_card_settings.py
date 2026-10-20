@@ -1,5 +1,5 @@
 """pi/card-settings.sh: the card's settings.txt (through the platform's
-settings files) as `audiolink pi` arguments; config/pi.toml's defaults."""
+settings files) as `audiolink pi` arguments; config/pi-release.toml's defaults."""
 import os
 import shutil
 import subprocess
@@ -71,7 +71,7 @@ class Config(unittest.TestCase):
                 import tomli as tomllib
             except ImportError:
                 self.skipTest("no tomllib (Python 3.11+) or tomli")
-        with open(os.path.join(REPO, "config", "pi.toml"), "rb") as f:
+        with open(os.path.join(REPO, "config", "pi-release.toml"), "rb") as f:
             cfg = tomllib.load(f)
         self.assertEqual(cfg["app"]["settings"]["relay"]["default"], DEFAULT)
         self.assertEqual(build_parser().parse_args(["pi"]).relay, DEFAULT)

@@ -457,11 +457,12 @@ workflow does this too), `platform/alpine-module/build.sh` builds them (Docker).
 checkout of the platform, e.g. one you're changing. A card
 for someone else: `tools/build_card.sh config/pi-release.toml --install /Volumes/CARD`
 (a FAT32-formatted microSD card, see the platform's README); the Pi boots from it. `config/` describes the card:
-`pi.toml` (dev: USB ethernet with the Pi at `10.55.0.2`, SSH with
-`keys/id_ed25519.pub`, the debug console) and `pi-release.toml` (no USB
-ethernet, no SSH, the debug console off). `pi/app-start.sh` is the app's start: USB ethernet, the
+`pi-release.toml` (no USB ethernet, no SSH, the debug console off) and `pi.toml`, the
+dev image: it includes `pi-release.toml` and adds USB ethernet with the Pi at
+`10.55.0.2` (`device.toml`'s `dev = true` function, with `dev_functions`), SSH with
+`keys/id_ed25519.pub` and the debug console. `device.toml` is the USB device for both. `pi/app-start.sh` is the app's start: USB ethernet, the
 daemon's respawn loop (`pi/start-audiolink.sh`), mDNS, Wi-Fi, the clock.
-`pi.toml`'s `[app.settings]` are the card's `audiolink.*` settings (*The card's
+`pi-release.toml`'s `[app.settings]` are the card's `audiolink.*` settings (*The card's
 settings*); `pi/card-settings.sh` checks them and turns them into `audiolink pi`
 arguments, after `/etc/audiolink.args` (the build's).
 

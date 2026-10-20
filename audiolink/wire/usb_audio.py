@@ -16,8 +16,8 @@ import sys
 
 log = logging.getLogger("audiolink")
 
-# The gadget's vendor:product IDs: config/device.toml and device-release.toml (a
-# test keeps them in step). Add the old ID here when changing it, so hosts
+# The gadget's vendor:product IDs: config/device.toml's (a test keeps them in
+# step). Add the old ID here when changing it, so hosts
 # still find Pis with older cards.
 USB_IDS = {(0x1d6b, 0x0104)}
 

@@ -38,7 +38,7 @@ class PiDevices(unittest.TestCase):
             usb_audio._lookup = orig
 
     def test_device_files_use_known_ids(self):
-        for name in ("device.toml", "device-release.toml"):
+        for name in ("device.toml",):
             with open(os.path.join(REPO, "config", name)) as f:
                 text = f.read()
             vid = int(re.search(r"^idVendor = (0x[0-9a-fA-F]+)", text, re.M).group(1), 16)

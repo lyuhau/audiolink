@@ -1,7 +1,7 @@
-# audiolink's USB device (dev): UAC2 audio both ways, in the baseline format
+# audiolink's USB device: UAC2 audio both ways, in the baseline format
 # (wire/fmt.py BASELINE; audiolink switches it at runtime with gadget.sh set
-# audio ...), and ECM ethernet for development (the Pi at 10.55.0.2).
-# device-release.toml is the same without ECM: keep the two in step.
+# audio ...), and, in dev images only (pi.toml: dev_functions), ECM ethernet
+# (the Pi at 10.55.0.2).
 speed = "high-speed"
 
 [device]
@@ -21,6 +21,7 @@ max_power_ma = 250
 [[functions]]
 kind = "ecm"
 id = "net"
+dev = true            # dev images only: SSH, tools/deploy.sh
 dev_addr = "02:a0:00:00:00:01"
 host_addr = "02:a0:00:00:00:02"
 

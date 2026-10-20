@@ -1,11 +1,73 @@
-# audiolink, release image: pi.toml without USB ethernet, SSH or the debug console
-# (which the card's settings.txt can turn on: console = on).
-include = "pi.toml"
+# audiolink on pi-gadget-kit (its README: Apps; tools/build_card.sh finds it), release
+# image (CI builds it for each release):
+#   tools/build_card.sh config/pi-release.toml
+# No SSH, no USB ethernet; the debug console is in the device but off unless the
+# card's settings.txt says console = on. pi.toml, the dev image, is this plus the
+# ways in.
+
+[image]
+type = "initramfs"
+
+[alpine]
+version = "3.24.2"
+arch = "aarch64"
+sha256 = "60e6b9f49ec3d2c9660f2ef775f5af3a98cfd2f939c8f55b6f215d00e5ffcb87"
+
+[system]
+hostname = "audiopi"
+# The platform brings busybox, wpa_supplicant (wpa_cli), dosfstools and, with
+# ssh_public_key, openssh-server.
+packages = [
+  "alpine-base",
+  "python3",         # audiolink
+  "alsa-utils",      # aplay/arecord on the UAC2 gadget
+  "iw", "hostapd",   # Wi-Fi scans, the setup network
+  "busybox-extras",  # udhcpd: DHCP on usb0 and on the setup network
+  "avahi",           # audiopi.local, _audiolink._tcp
+]
+repositories = [
+  "https://dl-cdn.alpinelinux.org/alpine/v3.24/main",
+  "https://dl-cdn.alpinelinux.org/alpine/v3.24/community",
+]
 
 [access]
-ssh_public_key = ""
-debug_console = false
+wifi = ""                                 # audiolink owns Wi-Fi (saved networks on the card)
+ssh_public_key = ""                       # no sshd
+debug_console = false                     # the card's settings.txt can turn it on: console = on
 
 [device]
-description = "device-release.toml"
-console = true            # room for it in the device; off unless the card says console = on
+description = "device.toml"
+start_at_boot = true
+console = true                            # room for it in the device, next to the audio
+
+[app]
+name = "audiolink"
+run = "/opt/audiolink/app-start.sh"
+owns = ["wifi", "time"]
+state = true                       # /var/lib/audiolink is the card's audiolink/
+keep_logs = true                   # /var/log on the card: logs/last, logs/prev
+config_txt = ["gpio=21=ip,pu"]     # the reset pins: GPIO21 an input with its pull-up
+
+# On the card's settings.txt as audiolink.KEY, for users to change without a
+# rebuild (the platform's README: Card settings); pi/card-settings.sh checks
+# them and passes them to `audiolink pi`.
+[app.settings.relay]
+default = "relay.lyuhau.com:443"   # audiolink/relay/__init__.py DEFAULT
+help = """The relay the Pi stays reachable through from anywhere: HOST:PORT, or
+HOST:PORT#PIN for a relay with another certificate (PIN: the sha256 of its
+certificate), or off."""
+
+[app.settings.expose_setup]
+default = "off"
+help = """on: ports the host exposes take connections from the Pi's open setup network
+too, not only from its Wi-Fi network."""
+
+[app.files]
+"opt/audiolink/audiolink.pyz" = "../dist/audiolink.pyz"
+"opt/audiolink/start-audiolink.sh" = "../pi/start-audiolink.sh"
+"opt/audiolink/app-start.sh" = "../pi/app-start.sh"
+"opt/audiolink/card-settings.sh" = "../pi/card-settings.sh"
+"etc/audiolink.args" = "../pi/audiolink.args"
+"etc/wpa_supplicant/wpa_supplicant.conf" = "../pi/wpa_supplicant.conf"
+"etc/avahi/avahi-daemon.conf" = "../pi/avahi/avahi-daemon.conf"
+"etc/avahi/services/audiolink.service" = "../pi/avahi/audiolink.service"

@@ -13,7 +13,7 @@ pi_reachable
 # Restart at the baseline audio format: a daemon that dies mid-stream at a high rate
 # can leave macOS unable to use that format until the Pi is replugged.
 python3 dist/audiolink.pyz audio set baseline >/dev/null 2>&1 || true
-D=/opt/audiolink         # the built-in code (config/pi.toml's [app.files])
+D=/opt/audiolink         # the built-in code (config/pi-release.toml's [app.files])
 $SSH $PI "cat > $D/audiolink.pyz.new && mv $D/audiolink.pyz.new $D/audiolink.pyz" < dist/audiolink.pyz
 $SSH $PI "cat > $D/start-audiolink.sh && chmod +x $D/start-audiolink.sh" < pi/start-audiolink.sh
 $SSH $PI "cat > $D/card-settings.sh" < pi/card-settings.sh
