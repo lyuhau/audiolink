@@ -177,6 +177,8 @@ class Image:
                 raise CardError("%s isn't a card image (%s)" % (path, e))
         if "config.txt" not in self.names or "settings.txt" not in self.names:
             raise CardError("%s isn't an audiolink card image (no config.txt, settings.txt)" % path)
+        # a backup (card backup): a Pi's state with its image(s), for card restore only
+        self.is_backup = any(n.startswith(("audiolink/", "logs/")) for n in self.names)
 
     def read(self, name):
         if self.path.is_dir():

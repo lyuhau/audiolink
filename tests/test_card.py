@@ -283,6 +283,15 @@ class Command(unittest.TestCase):
         self.assertIn("Writing build... done", out)
         self.assertEqual(calls, [("write", "/dev/disk7", "build")])
 
+    def test_write_refuses_a_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_card(Path(tmp, "card"))
+            card.backup(str(Path(tmp, "card")), Path(tmp, "b.zip"))
+            out, code, _, calls = self.run_card("write", str(Path(tmp, "b.zip")), cards=self.CARD)
+        self.assertIn("is a card backup", code)
+        self.assertIn("audiolink card restore", code)
+        self.assertEqual(calls, [])
+
     def test_restore_is_write_wipe_without_questions(self):
         with tempfile.TemporaryDirectory() as tmp:
             make_card(Path(tmp, "card"))

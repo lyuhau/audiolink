@@ -135,6 +135,9 @@ def write(a, runner, usb_state, sleep, clock, wipe):
     if a.file:
         image = card.Image(a.file)
         label = image.name
+        if image.is_backup and not wipe:
+            raise SystemExit("%s is a card backup (a Pi's keys, its images), not an image: put it back with "
+                             "audiolink card restore %s" % (image.name, a.file))
     else:
         from .paths import cache_dir
         step("Downloading the card image (audiolink %s)" % card.__version__)
