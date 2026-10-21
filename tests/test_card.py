@@ -212,7 +212,8 @@ class Command(unittest.TestCase):
                                      calls.append(("update", d, i.name)) or (3, ["audiolink.fresh"], "0123456789ab")),
                    mock.patch.object(card, "classify", lambda r, d, m: kind),
                    mock.patch.object(card, "open_through_pi", through_pi or (lambda *x, **k: self.fail("opened"))),
-                   mock.patch.object(card, "volume_of", lambda r, d, s: cards[0][2] if cards else None)]
+                   mock.patch.object(card, "volume_of", lambda r, d, s: cards[0][2] if cards else None),
+                   mock.patch("audiolink.host.pi_call.pi_connected", lambda a, cap: False)]   # never the real host
         out = io.StringIO()
         with contextlib.ExitStack() as stack, contextlib.redirect_stdout(out):
             for p in patches:

@@ -206,7 +206,10 @@ WantedBy=default.target
 ### The card's settings
 
 A few things can change without a new card image: `settings.txt` at the top of the
-Pi's card. Put the card in any computer (Mac, Windows, Linux: it's a plain FAT32
+Pi's card. With the Pi connected, `audiolink settings` lists them and
+`audiolink settings KEY=VALUE` changes them (`--unset KEY`: back to the built-in value;
+`--reboot`: now, instead of at the next start; `--pi PI`: over the network; owners
+only). Or put the card in any computer (Mac, Windows, Linux: it's a plain FAT32
 card), edit the file in a text editor, and put it back in the Pi. Each setting is
 there commented out (`#`), with its built-in value and what it does; remove the `#`
 to change it:
@@ -224,8 +227,8 @@ A setting that's misspelt or not valid is ignored: the Pi starts with the built-
 value and says why in `/var/log/settings.log` (`audiolink logs settings.log`). New
 USB IDs or strings make the computer see a new device (on a Mac: "Allow accessory"
 again). The release card has no SSH server, so it ignores an `ssh_authorized_keys`
-file; dev cards add its keys to root's. Installing a new image onto the card keeps
-`settings.txt` as it is and adds any new settings at its end.
+file; dev cards add its keys to root's. Installing a new image keeps the settings
+someone set, and renews the rest from the new image.
 
 ### Where card images come from
 
@@ -261,6 +264,16 @@ keep a copy of `settings.txt` and put it back). The Pi's state (`audiolink/`) an
 logs (`logs/`) stay. New settings the old `settings.txt` doesn't mention keep their
 built-in values. Code alone updates without a new card: `audiolink update`.
 
+**A newer image without touching the card:** `audiolink update --image` sends this
+version's release image (or `--image IMAGE`: a zip, or a build folder) over the link,
+or the network with `--pi PI`. The card holds two images (`a/`, `b/`); the new one
+goes in the one that isn't running and boots once on trial. It stays if audiolink on
+it reaches this computer or its relay within 3 minutes; otherwise the Pi goes back to
+the image it had, by itself. `audiolink update --image --revert` switches back to the
+other image; `audiolink update --status` shows both. The Pi's state and settings are
+shared by the two. A card written before image slots needs one `audiolink card write`
+first; the firmware files (`bootcode.bin`, `start.elf`) only change with a card write.
+
 ### Write, back up and restore the card (macOS)
 
 ```
@@ -280,7 +293,9 @@ nothing. Every file is checked after writing.
 
 `card backup` saves everything on the card to one zip (by default
 `audiolink-card-DATE.zip` in the current folder), the Pi's keys and saved Wi-Fi
-passwords included: keep it private. A restored card is the same Pi as the one backed
+passwords included: keep it private. With the Pi connected and no card open here, the
+Pi backs up its own card over the link (any OS; `--pi PI`: over the network; owners
+only), so the card stays in the Pi. A restored card is the same Pi as the one backed
 up: don't use both in two Pis at once. Backup leaves the card open, for writing onto
 it next (`--eject`: eject it); write and restore eject it, ready for the Pi.
 
@@ -310,6 +325,8 @@ see *Where card images come from* to write one.
 | `audiolink discovery [status\|enable\|disable\|publish\|code]` | whether the plugged-in Pi publishes where it is on the DHT (the relay works either way) |
 | `audiolink audio [status\|sweep\|set RATExCH\|forget]` | the link's audio format (see *How it works*) |
 | `audiolink update [PYZ] [--revert\|--status] [--pi PI]` | new code for the plugged-in Pi, over the link (kept on its card); `--pi`: over the network |
+| `audiolink update --image [IMAGE] [--revert]` | a whole new image, tried before it's kept (see *A newer image without touching the card*) |
+| `audiolink settings [KEY=VALUE ...] [--unset KEY] [--reboot]` | the Pi's card settings, over the link |
 | `audiolink logs [FILE] [-n N] [--list] [--pi PI] [--key FILE]` | the plugged-in Pi's logs, over the link; `--pi`: over the network |
 | `audiolink shell [PI] [--key FILE] [-- CMD]` | a root shell: the plugged-in Pi, or PI over the network (see *Access*); `-- CMD` runs one command |
 | `audiolink debug [on\|off\|status]` | the plugged-in Pi's debug switch: root access over the network |

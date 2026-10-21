@@ -489,6 +489,7 @@ def open_through_pi(runner, usb_state, again, platform=sys.platform, sleep=time.
 
 # ---- backup
 SKIP = {".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems"}
+BACKUP_ON_CARD = ".audiolink-backup.zip"      # the Pi's own backup of its card, while it sends it (services/card.py)
 
 
 def backup(mount, out):
@@ -505,8 +506,8 @@ def backup(mount, out):
             for root, dirs, files in os.walk(mount):
                 dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("._"))
                 for name in sorted(files):
-                    if name.startswith("._") or name == ".DS_Store":
-                        continue                # macOS's, not the card's
+                    if name.startswith("._") or name == ".DS_Store" or name.startswith(BACKUP_ON_CARD):
+                        continue                # macOS's, or a backup being made: not the card's
                     path = os.path.join(root, name)
                     z.write(path, os.path.relpath(path, mount))
                     count += 1

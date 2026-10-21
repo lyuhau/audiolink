@@ -19,6 +19,12 @@ def card_command(a, runner=None, platform=sys.platform, usb_state=None, sleep=ti
                  now=datetime.datetime.now):
     runner = runner or Runner()
     usb_state = usb_state or (lambda: card.usb_state(runner, platform))
+    if a.action == "backup" and getattr(a, "pi", None):
+        return backup_from_pi(a, sleep)
+    if a.action == "backup" and (platform != "darwin" or not card.mounted_cards(runner)):
+        from .host.pi_call import pi_connected
+        if pi_connected(a, "card"):                 # the running Pi backs itself up: no card swap
+            return backup_from_pi(a, sleep)
     if platform != "darwin":
         raise SystemExit("audiolink card works on macOS only so far; copy the card's files by hand "
                          "(README: Write, back up and restore the card)")
@@ -27,10 +33,81 @@ def card_command(a, runner=None, platform=sys.platform, usb_state=None, sleep=ti
     return write(a, runner, usb_state, sleep, clock, wipe=a.wipe or a.action == "restore")
 
 
-def backup(a, runner, usb_state, sleep, clock, now):
+def backup_out(a, now=datetime.datetime.now):
     out = Path(a.file or "audiolink-card-%s.zip" % now().strftime("%Y-%m-%d-%H%M"))
     if out.exists():
         raise SystemExit("%s exists; nothing written" % out)
+    return out
+
+
+READ = 1024 * 1024
+IN_FLIGHT = 4
+
+
+def backup_from_pi(a, sleep=time.sleep, now=datetime.datetime.now):
+    """The Pi backs up its own card (services/card.py) and this reads it, over the link or
+    the network (--pi): the same zip as from the card itself."""
+    import base64
+    import hashlib
+    import os
+    from .host.pi_call import pi_caller
+    out = backup_out(a, now)
+    call, over_network = pi_caller(a, "card")
+    step("Backing up the Pi's card, on the Pi")
+    st = call("card.backup")
+    while st.get("state") == "running":
+        sleep(2)
+        st = call("card.progress")
+    if st.get("state") != "done":
+        done("failed")
+        raise SystemExit("The Pi couldn't back up its card: %s" % st.get("error", st))
+    done("%d files, %.1f MB" % (st["files"], st["size"] / 1e6))
+    step("Copying it here")
+    start = time.monotonic()
+    part = out.with_name(out.name + ".part")
+    fd = os.open(str(part), os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "r+b") as f:
+            def get(off):
+                return off, base64.b64decode(call("card.read", {"offset": off, "size": READ})["data"])
+            offsets = range(0, st["size"], READ)
+            if over_network:
+                pieces = map(get, offsets)
+            else:
+                from concurrent.futures import ThreadPoolExecutor
+                pool = ThreadPoolExecutor(IN_FLIGHT)
+                pieces = pool.map(get, offsets)
+            for off, data in pieces:
+                f.seek(off)
+                f.write(data)
+            f.truncate(st["size"])
+            f.flush()
+            f.seek(0)
+            h = hashlib.sha256()
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+        if h.hexdigest() != st["sha256"]:
+            raise SystemExit("The backup arrived damaged; nothing kept (run it again)")
+        os.replace(str(part), str(out))
+    except BaseException:
+        done("failed")
+        raise
+    finally:
+        if part.exists():
+            part.unlink()
+    secs = time.monotonic() - start
+    done("%ds (%.1f MB/s)" % (secs, st["size"] / 1e6 / max(secs, 0.1)))
+    try:
+        call("card.done")                       # the Pi removes its copy
+    except (SystemExit, OSError, ValueError):
+        pass
+    print("Saved %s" % out)
+    print("It holds the Pi's keys and Wi-Fi passwords: keep it private")
+    return 0
+
+
+def backup(a, runner, usb_state, sleep, clock, now):
+    out = backup_out(a, now)
     disk, size, mount, via_pi = open_card(a, runner, usb_state, sleep, clock)
     if not mount:
         raise SystemExit("The card in %s has nothing on it to back up" % disk)
