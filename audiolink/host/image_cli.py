@@ -128,9 +128,13 @@ def show_image_status(st):
         print("Image: the card has no slots yet (an image from before them)")
         return
     images = st.get("images") or {}
+    name = lambda s: (images.get(s) or {}).get("name") or "as written"     # noqa: E731
+    current = st.get("current")
+    print("Running: %s %s%s" % (current, name(current),
+                                " (on trial: kept once it's back online)" if st.get("trial") and not st.get("committed")
+                                else ""))
     for s in st["slots"]:
-        name = (images.get(s) or {}).get("name") or "as written"
-        mark = "running" if s == st["current"] else "spare"
-        if s == st["current"] and st.get("trial"):
-            mark += ", on trial" if not st.get("committed") else ""
-        print("Image in %s: %s (%s)" % (s, name, mark))
+        if s != current:
+            print("Spare:   %s %s (switch to it: audiolink update --image --revert)" % (s, name(s)))
+    if len(st["slots"]) < 2:
+        print("Spare:   none yet (the next audiolink update --image goes there)")

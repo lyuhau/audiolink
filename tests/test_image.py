@@ -133,6 +133,22 @@ class Service(unittest.TestCase):
         self.assertIn(["commit"], self.slot.calls)
 
 
+class Status(unittest.TestCase):
+    def test_roles_and_letters(self):
+        import contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            image_cli.show_image_status({"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
+                                         "images": {"a/": {"name": "clone"}, "b/": {"name": "card-pi"}}})
+            image_cli.show_image_status({"current": "b/", "trial": True, "committed": False, "slots": ["b/"],
+                                         "images": {}})
+        self.assertEqual(out.getvalue().splitlines(), [
+            "Running: a/ clone",
+            "Spare:   b/ card-pi (switch to it: audiolink update --image --revert)",
+            "Running: b/ as written (on trial: kept once it's back online)",
+            "Spare:   none yet (the next audiolink update --image goes there)"])
+
+
 class Command(unittest.TestCase):
     def test_build_folder_becomes_a_zip(self):
         with tempfile.TemporaryDirectory() as d:
