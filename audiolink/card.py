@@ -492,9 +492,28 @@ SKIP = {".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems"}
 BACKUP_ON_CARD = ".audiolink-backup.zip"      # the Pi's own backup of its card, while it sends it (services/card.py)
 
 
-def backup(mount, out):
-    """Zip everything on the card at `mount` into `out` (private: it holds the Pi's keys
-    and saved Wi-Fi passwords), and check the zip. -> number of files."""
+def slots(mount):
+    """The card's image slots (folders with a config.txt: a/, b/), and the one its
+    config.txt boots (None: a card from before slots)."""
+    found = sorted(d for d in os.listdir(mount)
+                   if os.path.isfile(os.path.join(mount, d, "config.txt")) and not d.startswith("."))
+    booted = None
+    try:
+        with open(os.path.join(mount, "config.txt"), encoding="utf-8", errors="replace") as f:
+            m = re.search(r"^os_prefix=(\S+?)/?\s*$", f.read(), re.M)
+            booted = m and m.group(1)
+    except OSError:
+        pass
+    return found, booted if booted in found else None
+
+
+def backup(mount, out, all_images=False):
+    """Zip the card at `mount` into `out` (private: it holds the Pi's keys and saved
+    Wi-Fi passwords), and check the zip: the Pi as it runs, its state and the image
+    its config.txt boots; all_images: the other slots too (a Pi carrying several
+    images, not just a fallback). -> number of files."""
+    found, booted = slots(mount)
+    skip = set(found) - {booted} if booted and not all_images else set()
     out = Path(out)
     part = out.with_name(out.name + ".part")
     fd = os.open(str(part), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -504,10 +523,13 @@ def backup(mount, out):
         # 1970) are stored as 1980, the earliest a zip can say
         with os.fdopen(fd, "wb") as f, zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as z:
             for root, dirs, files in os.walk(mount):
-                dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("._"))
+                dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("._")
+                                 and not (root == mount and d in skip))
                 for name in sorted(files):
                     if name.startswith("._") or name == ".DS_Store" or name.startswith(BACKUP_ON_CARD):
                         continue                # macOS's, or a backup being made: not the card's
+                    if root == mount and name == "tryboot.txt":
+                        continue                # a trial in progress: the backup boots what's committed
                     path = os.path.join(root, name)
                     z.write(path, os.path.relpath(path, mount))
                     count += 1

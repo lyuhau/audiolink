@@ -77,7 +77,8 @@ class CardService(Service):
             with self.lock:
                 if self.job["state"] != "running":
                     self.job = {"state": "running"}
-                    threading.Thread(target=self._backup, name="card-backup", daemon=True).start()
+                    threading.Thread(target=self._backup, args=(bool(args.get("all_images")),),
+                                     name="card-backup", daemon=True).start()
             return dict(self.job)
         if op == "progress":
             return dict(self.job)
@@ -99,14 +100,14 @@ class CardService(Service):
         return super().handle(op, args)
 
     # ---- backup
-    def _backup(self):
+    def _backup(self, all_images=False):
         from ..card import backup
         try:
             for p in (self.backup_path, self.backup_path + ".part"):
                 if os.path.exists(p):
                     os.remove(p)
             start = time.monotonic()
-            n = backup(self.card, self.backup_path)
+            n = backup(self.card, self.backup_path, all_images)
             h = hashlib.sha256()
             with open(self.backup_path, "rb") as f:
                 for block in iter(lambda: f.read(1 << 20), b""):

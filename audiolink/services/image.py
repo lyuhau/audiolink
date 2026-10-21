@@ -63,6 +63,9 @@ def check_image(path):
         raise ValueError("not a card image (%s)" % e)
     if bad:
         raise ValueError("the image is damaged (%s)" % bad)
+    if any(n.startswith(("audiolink/", "logs/")) for n in names):
+        raise ValueError("that's a card backup (a Pi's keys, its images), not an image: put it back with "
+                         "audiolink card restore")
     if "config.txt" not in names or IMAGE_SLOT + "config.txt" not in names:
         raise ValueError("not an image with slots (no %sconfig.txt): put it on the card with "
                          "audiolink card write" % IMAGE_SLOT)

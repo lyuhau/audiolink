@@ -65,6 +65,30 @@ class Backup(unittest.TestCase):
             self.assertEqual(card.check_image(out).path, out)   # a backup is a card image too
             self.assertFalse(Path(tmp, "backup.zip.part").exists())
 
+    def test_the_running_image_or_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp, "card")
+            make_card(mount)
+            for p, t in {"config.txt": "os_prefix=b/\ninclude b/config.txt\n", "a/config.txt": "old",
+                         "a/boot/initrd.img": "old", "b/config.txt": "new", "b/boot/initrd.img": "new",
+                         "tryboot.txt": "os_prefix=a/\n"}.items():
+                Path(mount, p).parent.mkdir(parents=True, exist_ok=True)
+                Path(mount, p).write_text(t)
+            self.assertEqual(card.slots(str(mount)), (["a", "b"], "b"))
+            card.backup(str(mount), Path(tmp, "one.zip"))
+            with zipfile.ZipFile(str(Path(tmp, "one.zip"))) as z:
+                names = z.namelist()
+            self.assertIn("b/boot/initrd.img", names)                    # the image it runs
+            self.assertFalse(any(n.startswith("a/") for n in names))     # not the other
+            self.assertNotIn("tryboot.txt", names)                       # a trial in progress isn't kept
+            self.assertIn("audiolink/identity.json.a", names)            # the Pi itself, always
+            card.backup(str(mount), Path(tmp, "all.zip"), all_images=True)
+            with zipfile.ZipFile(str(Path(tmp, "all.zip"))) as z:
+                self.assertIn("a/boot/initrd.img", z.namelist())
+            from audiolink.services.image import check_image
+            with self.assertRaisesRegex(ValueError, "card backup"):
+                check_image(str(Path(tmp, "one.zip")))                   # not something update --image takes
+
     def test_mounted_cards(self):
         with tempfile.TemporaryDirectory() as mount:
             Path(mount, "config.txt").write_text("")

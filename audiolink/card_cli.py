@@ -54,7 +54,7 @@ def backup_from_pi(a, sleep=time.sleep, now=datetime.datetime.now):
     out = backup_out(a, now)
     call, over_network = pi_caller(a, "card")
     step("Backing up the Pi's card, on the Pi")
-    st = call("card.backup")
+    st = call("card.backup", {"all_images": bool(getattr(a, "all_images", False))})
     while st.get("state") == "running":
         sleep(2)
         st = call("card.progress")
@@ -113,7 +113,7 @@ def backup(a, runner, usb_state, sleep, clock, now):
         raise SystemExit("The card in %s has nothing on it to back up" % disk)
     step("Backing up the card")
     try:
-        n = card.backup(mount, out)
+        n = card.backup(mount, out, bool(getattr(a, "all_images", False)))
     except SystemExit:
         done("failed")
         raise

@@ -291,9 +291,12 @@ Pi runs the code of the image just written (`--keep-update`: keep it). A blank c
 another project's card) stops it, untouched: `--wipe` erases the card first, keeping
 nothing. Every file is checked after writing.
 
-`card backup` saves everything on the card to one zip (by default
-`audiolink-card-DATE.zip` in the current folder), the Pi's keys and saved Wi-Fi
-passwords included: keep it private. With the Pi connected and no card open here, the
+`card backup` saves the Pi as it runs to one zip (by default
+`audiolink-card-DATE.zip` in the current folder): its state (`audiolink/`: its keys and
+saved Wi-Fi passwords, so keep the zip private; `settings.txt`; logs) and the image it
+runs. `--all-images` adds the card's other image (a Pi carrying two, say). Restoring a
+backup gives a card that boots as that Pi; its other image slot fills with the next
+`audiolink update --image`. A backup isn't an image: `update --image` refuses it. With the Pi connected and no card open here, the
 Pi backs up its own card over the link (any OS; `--pi PI`: over the network; owners
 only), so the card stays in the Pi. A restored card is the same Pi as the one backed
 up: don't use both in two Pis at once. Backup leaves the card open, for writing onto

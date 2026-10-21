@@ -220,7 +220,8 @@ def build_parser():
                              "                  (a zip, or a build folder like build/card-pi). An audiolink card\n"
                              "                  keeps the Pi's state (its keys, Wi-Fi, settings, logs); a blank one\n"
                              "                  is written; anything else needs --wipe\n"
-                             "  backup [FILE]   everything on the card to a zip, by default\n"
+                             "  backup [FILE]   the Pi as it runs to a zip: its keys, Wi-Fi, settings and logs, and\n"
+                             "                  the image it runs (--all-images: every one); by default\n"
                              "                  audiolink-card-DATE.zip here (it holds the Pi's keys: keep it private)\n"
                              "  restore FILE    erase the card and put FILE on it: write FILE --wipe"))
     crd.add_argument("action", choices=["write", "backup", "restore"], help="see above")
@@ -230,6 +231,8 @@ def build_parser():
                      help="write: keep an update on the card (audiolink update), which the Pi runs instead")
     crd.add_argument("--disk", help="the card's disk, e.g. /dev/disk7 (when there's more than one, or it's blank)")
     crd.add_argument("--eject", action="store_true", help="backup: eject the card when done (write and restore do)")
+    crd.add_argument("--all-images", action="store_true",
+                     help="backup: every image on the card, not just the one it runs (a Pi with several)")
     aud = sub.add_parser("audio", help="the link's audio format (needs a running `audiolink host`)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "The link's audio format: faster formats carry more data. The host picks the\n"
