@@ -168,7 +168,8 @@ def update_command(a):
         if "update" not in caps:
             raise SystemExit("The Pi's audiolink can't take updates over the link; put a new image on its card")
         if code is None and not a.status and "image" not in caps:
-            raise SystemExit("The Pi's audiolink is older than image updates: audiolink update --code first, then this")
+            raise SystemExit("The Pi's card is from before versions went over the link: put this one on it "
+                             "once with audiolink card write (it keeps the Pi's state); after that, audiolink update")
     if a.status:
         try:
             st = call("image.status", port=port)
