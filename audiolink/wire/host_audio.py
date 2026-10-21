@@ -48,14 +48,12 @@ def find_devices(out_name=None, in_name=None):
     return pick(out_name, "output"), pick(in_name, "input")
 
 
-def device_format(out_dev, in_dev):
-    """The format the gadget presents. It offers exactly one rate and channel count,
-    the same both ways, so the devices themselves say what the Pi is running."""
-    fmt = AudioFormat(round(out_dev["rate"]), out_dev["outputs"])
-    if (round(in_dev["rate"]), in_dev["inputs"]) != (fmt.rate, fmt.channels):
-        raise LookupError("The Pi's audio input (%d Hz x%d) and output (%r) disagree"
-                          % (in_dev["rate"], in_dev["inputs"], fmt))
-    return fmt
+def device_formats(out_dev, in_dev):
+    """(output, input) formats the gadget presents: the devices themselves say what the
+    Pi runs. Usually the same both ways (audiolink's device); a device cloned from
+    another can differ (stereo out, mono in), and each direction runs in its own."""
+    return (AudioFormat(round(out_dev["rate"]), out_dev["outputs"]),
+            AudioFormat(round(in_dev["rate"]), in_dev["inputs"]))
 
 
 def hears_the_link(inp, fmt, seconds=LISTEN, clock=time.monotonic, sleep=time.sleep):
@@ -94,24 +92,25 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
         out_dev, in_dev = find_devices(out_name, in_name)
         if time.monotonic() - not_the_pi.get(in_dev["name"], -NOT_THE_PI) < NOT_THE_PI:
             raise LookupError("%s isn't sending the link (listening again shortly)" % in_dev["name"])
-        fmt = device_format(out_dev, in_dev)
+        ofmt, ifmt = device_formats(out_dev, in_dev)
         # Input first, and only then output, once the Pi is heard on it (hears_the_link)
-        inp = portaudio.Stream(in_dev, False, fmt.rate, fmt.channels, host_buffer_frames(fmt, False))
+        inp = portaudio.Stream(in_dev, False, ifmt.rate, ifmt.channels, host_buffer_frames(ifmt, False))
         try:
-            if not hears_the_link(inp, fmt):
+            if not hears_the_link(inp, ifmt):
                 not_the_pi[in_dev["name"]] = time.monotonic()
                 raise LookupError("%s isn't sending the link: not the Pi, so nothing is played to it"
                                   % in_dev["name"])
-            out = portaudio.Stream(out_dev, True, fmt.rate, fmt.channels, host_buffer_frames(fmt, True))
+            out = portaudio.Stream(out_dev, True, ofmt.rate, ofmt.channels, host_buffer_frames(ofmt, True))
         except Exception:
             inp.close()
             raise
-        link.set_format(fmt)
-        log.debug("audio out: %s [%s]", out_dev["name"], out_dev["hostapi"])
-        log.debug("audio in:  %s [%s], %r", in_dev["name"], in_dev["hostapi"], fmt)
-        return out, inp, fmt
+        link.set_format(ofmt)               # what this side sends in
+        log.debug("audio out: %s [%s], %r", out_dev["name"], out_dev["hostapi"], ofmt)
+        log.debug("audio in:  %s [%s], %r", in_dev["name"], in_dev["hostapi"], ifmt)
+        return out, inp, (ofmt, ifmt)
 
-    def run_session(out, inp, fmt):
+    def run_session(out, inp, fmts):
+        ofmt, ifmt = fmts
         state = {"ok": True, "last_read": time.monotonic(), "err": "stalled"}
 
         def lost(reason):
@@ -130,8 +129,8 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
         # Neither thread blocks inside PortAudio: they wait for room/data here, so they
         # notice state["ok"] going false and exit before the streams are closed (closing
         # or re-initializing under a blocked read corrupts memory).
-        piece = host_buffer_frames(fmt, True)      # frames per write: PortAudio's buffer
-        piece_bytes = piece * fmt.frame_bytes
+        piece = host_buffer_frames(ofmt, True)     # frames per write: PortAudio's buffer
+        piece_bytes = piece * ofmt.frame_bytes
 
         def player():
             try:
@@ -152,10 +151,10 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
         def recorder():
             try:
                 while state["ok"]:
-                    if inp.available() < fmt.chunk_frames:
+                    if inp.available() < ifmt.chunk_frames:
                         time.sleep(0.002)
                         continue
-                    data, overflowed = inp.read(fmt.chunk_frames)
+                    data, overflowed = inp.read(ifmt.chunk_frames)
                     state["last_read"] = time.monotonic()
                     if overflowed:
                         link.stats["in_overflows"] += 1
@@ -190,7 +189,7 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
         waiting = False
         while True:
             try:
-                out, inp, fmt = open_streams()
+                out, inp, fmts = open_streams()
             except (LookupError, portaudio.PortAudioError) as e:
                 if not waiting:
                     log.debug("audio: %s", e)
@@ -202,7 +201,7 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
                 time.sleep(2)
                 continue
             waiting = False
-            run_session(out, inp, fmt)
+            run_session(out, inp, fmts)
             link.stats["audio_restarts"] += 1
             time.sleep(1)
 

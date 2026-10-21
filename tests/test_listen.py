@@ -50,5 +50,40 @@ class Listen(unittest.TestCase):
         self.assertFalse(listen(bytes(frame)))
 
 
+class Directions(unittest.TestCase):
+    """Each direction in its own format: a device cloned from headphones with a mono mic."""
+
+    def test_device_formats(self):
+        from audiolink.wire.fmt import AudioFormat
+        out = {"rate": 48000.0, "outputs": 2}
+        inp = {"rate": 48000.0, "inputs": 1}
+        self.assertEqual(host_audio.device_formats(out, inp), (AudioFormat(48000, 2), AudioFormat(48000, 1)))
+
+    def test_pi_plays_and_records_in_its_own(self):
+        from audiolink.wire import alsa
+        from audiolink.wire.fmt import AudioFormat
+
+        class Link:
+            def set_format(self, fmt):
+                self.fmt = fmt
+        a = alsa.AlsaAudio(Link())
+        a.start = alsa.AlsaAudio.start.__get__(a)
+        orig = alsa.threading.Thread
+        alsa.threading.Thread = lambda **kw: type("T", (), {"start": lambda self: None})()
+        try:
+            a.start(AudioFormat(48000, 1), AudioFormat(48000, 2))      # sends mono, receives stereo
+        finally:
+            alsa.threading.Thread = orig
+        self.assertEqual(a.link.fmt, AudioFormat(48000, 1))            # the link: what the Pi sends
+        self.assertIn("1", a._args(True)[a._args(True).index("-c") + 1])
+        self.assertEqual(a._args(False)[a._args(False).index("-c") + 1], "2")
+        alsa.threading.Thread = lambda **kw: type("T", (), {"start": lambda self: None})()
+        try:
+            a.start(AudioFormat(96000, 4))                              # a switch: both the same again
+        finally:
+            alsa.threading.Thread = orig
+        self.assertEqual(a._args(False)[a._args(False).index("-r") + 1], "96000")
+
+
 if __name__ == "__main__":
     unittest.main()

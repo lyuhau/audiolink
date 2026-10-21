@@ -31,15 +31,18 @@ class AlsaAudio:
     def __init__(self, link, device="hw:0,0"):
         self.link = link
         self.device = device
-        self.format = BASELINE
+        self.format = BASELINE          # aplay's: what the Pi sends (the gadget's p_*)
+        self.record_format = None       # arecord's (c_*), if not the same (a device cloned from another)
         self.gen = 0                    # bumped by stop(): loops of older generations exit
         self.procs = set()
         self.lock = threading.Lock()
         self.heard = 0.0                # monotonic time arecord last got data from the host
 
-    def start(self, fmt=None):
-        self.format = fmt or self.format
-        self.link.set_format(self.format)
+    def start(self, fmt=None, record_fmt=None):
+        """Run in `fmt` both ways, or `fmt` out and `record_fmt` in."""
+        if fmt is not None:
+            self.format, self.record_format = fmt, record_fmt
+        self.link.set_format(self.format)       # what this side sends in
         gen = self.gen
         threading.Thread(target=self._player, args=(gen,), daemon=True).start()
         threading.Thread(target=self._recorder, args=(gen,), daemon=True).start()
@@ -54,7 +57,7 @@ class AlsaAudio:
             p.wait()
 
     def _args(self, play):
-        f = self.format
+        f = self.format if play else (self.record_format or self.format)
         buffer_us, period_us = PLAY_US if play else RECORD_US
         return ["-D", self.device, "-f", "S16_LE", "-r", str(f.rate), "-c", str(f.channels),
                 "-t", "raw", "--buffer-time=%d" % buffer_us, "--period-time=%d" % period_us]
