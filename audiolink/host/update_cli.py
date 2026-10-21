@@ -62,17 +62,17 @@ class NetCaller:
         self.remote = remote
 
     def __call__(self, op, args=None, port=None):
-        action = op.split(".", 1)[1]
+        service, action = op.split(".", 1)          # update.* or image.*
         for attempt in (0, 1):
             try:
                 if self.remote.conn is None:
                     self.remote.open(quiet=True)
                 if action == "status":
-                    r = self.remote.ask("update_status")
+                    r = self.remote.ask("%s_status" % service)
                     if "error" in r:
                         raise SystemExit(self.remote.refusal(r))
                     return r["result"]
-                return self.remote.call("update", dict(args or {}, action=action))["result"]
+                return self.remote.call(service, dict(args or {}, action=action))["result"]
             except (OSError, ValueError, ConnectionError):
                 self.remote.close()
                 if attempt:
@@ -139,12 +139,15 @@ def restore(call, port, tries=2, wait=180):
 def update_command(a):
     line_buffered()
     port = a.control_port
+    image = getattr(a, "image", None)
+    if image is not None and a.pyz is not None:
+        raise SystemExit("Pick one: a .pyz (new code) or --image (a whole image)")
     if (a.pyz is not None) + a.revert + a.status > 1:
         raise SystemExit("Pick one: a .pyz to send, --revert or --status")
     if a.at and not a.pi:
         raise SystemExit("--at goes with --pi PI (over the network)")
     data = path = None
-    if not (a.status or a.revert):
+    if not (a.status or a.revert or image is not None):
         path = a.pyz or _this_pyz()
         if not path:
             raise SystemExit("Which .pyz? (audiolink update PATH)")
@@ -157,10 +160,23 @@ def update_command(a):
         peer = call("peer", port=port)
         if not peer.get("connected"):
             raise SystemExit("No Pi plugged in (or over the network: --pi PI)")
-        if "update" not in (peer.get("peer") or {}).get("caps", []):
+        caps = (peer.get("peer") or {}).get("caps", [])
+        if "update" not in caps:
             raise SystemExit("The Pi's audiolink can't take updates over the link; put a new image on its card")
+        if image is not None and "image" not in caps:
+            raise SystemExit("The Pi's audiolink is older than image updates: audiolink update (new code) first, "
+                             "then this")
+    if image is not None and not a.status:
+        from .image_cli import image_command
+        return image_command(a, call, port, bool(a.pi))
     if a.status:
-        return show_status(call("update.status", port=port))
+        show_status(call("update.status", port=port))
+        try:
+            st = call("image.status", port=port)
+        except (SystemExit, KeyError, ValueError):
+            return                              # a Pi from before image updates
+        from .image_cli import show_image_status
+        return show_image_status(st)
     if a.revert:
         r = call("update.revert", port=port)
         print("The Pi already runs its built-in code" if r.get("already") else "Back to the built-in code (restarting)")

@@ -241,10 +241,14 @@ def build_parser():
     aud.add_argument("action", nargs="?", default="status", choices=["status", "sweep", "set", "forget"],
                      help="see above")
     aud.add_argument("format", nargs="?", help="set: RATExCHANNELS (e.g. 96000x8) or baseline")
-    upd = sub.add_parser("update", help="new code for the plugged-in Pi, over the link")
+    upd = sub.add_parser("update", help="new code (or a whole image) for the plugged-in Pi, over the link")
     upd.add_argument("pyz", nargs="?", help="the .pyz to send (default: this one)")
-    upd.add_argument("--revert", action="store_true", help="back to the code in the Pi's image")
-    upd.add_argument("--status", action="store_true", help="which code the Pi runs")
+    upd.add_argument("--image", nargs="?", const="release", metavar="IMAGE",
+                     help="a whole new image instead: this version's release image, or IMAGE (a zip, or a "
+                          "build folder like build/card-pi); tried once, kept if it comes back online")
+    upd.add_argument("--revert", action="store_true",
+                     help="back to the code in the Pi's image (with --image: back to its other image)")
+    upd.add_argument("--status", action="store_true", help="which code (and image) the Pi runs")
     lg = sub.add_parser("logs", help="the plugged-in Pi's logs (works when USB networking doesn't)")
     lg.add_argument("file", nargs="?", help="which log (default audiolink.log; --list shows them)")
     lg.add_argument("-n", "--lines", type=argtypes.positive_int, default=200,
@@ -477,6 +481,10 @@ def run_pi(a, allow, port, gate):
     from .services.relay import RelayAgent
     relay = RelayAgent(identity, wifi, [] if a.relay == "off" else [a.relay])
     update = UpdateService(endpoint=endpoint)
+    from .services.image import ImageService
+    # A new image on trial stays once it gets through: to its host, or to its relay
+    image = ImageService(endpoint=endpoint,
+                         healthy=lambda: session.peer_alive or relay.status().get("relay") == "up")
 
     def revert():
         update.handle("revert", {"restart": True})     # the pins always restart
@@ -492,7 +500,7 @@ def run_pi(a, allow, port, gate):
     identity.serve(endpoint, reset)
     session = Session("pi", [streams, wifi, proxy, identity, link, setup_ap,
                              WifiRemoteService(wifi, setup_ap, endpoint, radio), relay,
-                             LogsService(endpoint=endpoint), update, NetworkShells(endpoint)])
+                             LogsService(endpoint=endpoint), update, image, NetworkShells(endpoint)])
     session.gate = link.check
     audio = AlsaAudio(session.link, a.device)
     audio.start()
@@ -504,6 +512,7 @@ def run_pi(a, allow, port, gate):
         streams.serve(*parse_forward(spec))
     setup_ap.run()
     relay.run()
+    image.run()
     try:
         ShellServer().run()
     except OSError as e:
