@@ -430,7 +430,7 @@ def eject(runner, disk, sleep=time.sleep):
 
 
 # The Pi's own, on its card: never replaced by an update
-KEEP = {"audiolink", "logs", "settings.txt", "ssh_authorized_keys"}
+KEEP = {"audiolink", "flavors", "logs", "settings.txt", "ssh_authorized_keys"}     # the Pi's, on its card
 
 
 def partitions(runner, disk):

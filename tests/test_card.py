@@ -147,6 +147,8 @@ class Update(unittest.TestCase):
             Path(mount, "settings.txt").write_text("#hostname = audiopi\nusb.product = Mine\n")
             Path(mount, "stale.txt").write_text("old")
             Path(mount, "audiolink/audiolink.pyz").write_text("older code")
+            Path(mount, "flavors").mkdir()
+            Path(mount, "flavors/gamebuds.toml").write_text("added")
             image = image_dir(Path(tmp, "build"), dict(IMAGE, **{"audiolink/identity.json.a": "not mine"}))
             runner = Runner({})
             n, new, removed, _ = card.update(runner, "/dev/disk7", str(mount), image, sleep=lambda s: None)
@@ -156,6 +158,7 @@ class Update(unittest.TestCase):
             self.assertEqual(Path(mount, "boot/initrd.img").read_text(), "new img")
             self.assertEqual(Path(mount, "audiolink/identity.json.a").read_text(), "{}")   # the Pi's, kept
             self.assertEqual(Path(mount, "logs/last/app.log").read_text(), "log")
+            self.assertEqual(Path(mount, "flavors/gamebuds.toml").read_text(), "added")   # flavors added: kept
             self.assertIn("usb.product = Mine", Path(mount, "settings.txt").read_text())
             self.assertIn("diskutil eject /dev/disk7", runner.cmds)
 
