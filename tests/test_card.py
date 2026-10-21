@@ -149,7 +149,7 @@ class Update(unittest.TestCase):
             Path(mount, "audiolink/audiolink.pyz").write_text("older code")
             image = image_dir(Path(tmp, "build"), dict(IMAGE, **{"audiolink/identity.json.a": "not mine"}))
             runner = Runner({})
-            n, new, removed = card.update(runner, "/dev/disk7", str(mount), image, sleep=lambda s: None)
+            n, new, removed, _ = card.update(runner, "/dev/disk7", str(mount), image, sleep=lambda s: None)
             self.assertEqual((n, new, removed), (2, ["audiolink.fresh"], "unknown"))  # settings.txt kept, not checked
             self.assertFalse(Path(mount, "audiolink/audiolink.pyz").exists())    # the image's code runs
             self.assertFalse(Path(mount, "stale.txt").exists())
@@ -175,11 +175,39 @@ class Update(unittest.TestCase):
                 card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)
             self.assertEqual(Path(mount, "config.txt").read_text(), "boot")          # the old system, whole
             self.assertEqual(Path(mount, "boot/initrd.img").read_text(), "img")
-            n, _, _ = card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)
+            n, _, _, _ = card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)
             self.assertEqual(n, 2)
             self.assertEqual(Path(mount, "boot/initrd.img").read_text(), "new img")
             leftovers = [str(p) for p in mount.rglob("*.new")]
             self.assertEqual(leftovers, [])
+
+    def test_keeps_the_image_it_boots(self):
+        slotted = {"config.txt": "os_prefix=a/\ninclude a/config.txt\n", "settings.txt": IMAGE["settings.txt"],
+                   "bootcode.bin": "new fw", "a/config.txt": "kernel", "a/boot/initrd.img": "new img"}
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp, "card")
+            make_card(mount)
+            for p in ("config.txt", "boot/initrd.img"):
+                Path(mount, p).unlink()
+            for p, t in {"config.txt": "os_prefix=b/\ninclude b/config.txt\n", "tryboot.txt": "os_prefix=a/\n",
+                         "bootcode.bin": "fw", "b/config.txt": "kernel", "b/boot/initrd.img": "running",
+                         "a/config.txt": "kernel", "a/boot/initrd.img": "older", "a/stale": "x"}.items():
+                Path(mount, p).parent.mkdir(parents=True, exist_ok=True)
+                Path(mount, p).write_text(t)
+            image = image_dir(Path(tmp, "build"), slotted)
+            _, _, _, into = card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)
+            self.assertEqual(into, ("a/", "b/"))
+            self.assertEqual(Path(mount, "a/boot/initrd.img").read_text(), "new img")
+            self.assertFalse(Path(mount, "a/stale").exists())
+            self.assertEqual(Path(mount, "b/boot/initrd.img").read_text(), "running")      # kept, to go back to
+            self.assertEqual(card.slots(str(mount)), (["a", "b"], "a"))                     # the new one boots
+            self.assertEqual(Path(mount, "bootcode.bin").read_text(), "new fw")
+            self.assertFalse(Path(mount, "tryboot.txt").exists())
+            self.assertIn('"name": "build"', Path(mount, "a", card.SLOT_INFO).read_text())
+            # again: into b/ now, a/ kept
+            self.assertEqual(card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)[3],
+                             ("b/", "a/"))
+            self.assertEqual(Path(mount, "b/boot/initrd.img").read_text(), "new img")
 
     def test_keep_update(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,7 +215,7 @@ class Update(unittest.TestCase):
             make_card(mount)
             Path(mount, "audiolink/audiolink.pyz").write_text("newer code")
             image = image_dir(Path(tmp, "build"), IMAGE)
-            _, _, removed = card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None,
+            _, _, removed, _ = card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None,
                                         keep_update=True)
             self.assertFalse(removed)
             self.assertEqual(Path(mount, "audiolink/audiolink.pyz").read_text(), "newer code")
@@ -225,7 +253,7 @@ class Classify(unittest.TestCase):
 
 class Command(unittest.TestCase):
     def run_card(self, *argv, usb_state=lambda: None, cards=(), through_pi=None, wipe=False, eject=False,
-                 kind=("audiolink", "audiolink")):
+                 kind=("audiolink", "audiolink"), into=None):
         a = SimpleNamespace(action=argv[0], file=argv[1] if len(argv) > 1 else None, disk=None, wipe=wipe,
                             eject=eject, keep_update=False)
         runner, clock = Runner({}), Clock()
@@ -233,7 +261,7 @@ class Command(unittest.TestCase):
         patches = [mock.patch.object(card, "mounted_cards", lambda r: list(cards)),
                    mock.patch.object(card, "write", lambda r, d, i, sleep: calls.append(("write", d, i.name)) or 3),
                    mock.patch.object(card, "update", lambda r, d, m, i, sleep, keep_update:
-                                     calls.append(("update", d, i.name)) or (3, ["audiolink.fresh"], "0123456789ab")),
+                                     calls.append(("update", d, i.name)) or (3, ["audiolink.fresh"], "0123456789ab", into)),
                    mock.patch.object(card, "classify", lambda r, d, m: kind),
                    mock.patch.object(card, "open_through_pi", through_pi or (lambda *x, **k: self.fail("opened"))),
                    mock.patch.object(card, "volume_of", lambda r, d, s: cards[0][2] if cards else None),
@@ -288,9 +316,25 @@ class Command(unittest.TestCase):
             make_card(Path(tmp, "card"))
             card.backup(str(Path(tmp, "card")), Path(tmp, "b.zip"))
             out, code, _, calls = self.run_card("write", str(Path(tmp, "b.zip")), cards=self.CARD)
-        self.assertIn("is a card backup", code)
-        self.assertIn("audiolink card restore", code)
+            self.assertIn("is a card backup", code)
+            self.assertIn("audiolink card restore", code)
+            out, code, _, calls = self.run_card("write", str(Path(tmp, "b.zip")), cards=self.CARD, wipe=True)
+            self.assertIn("is a card backup", code)                     # --wipe too: restore is for backups
         self.assertEqual(calls, [])
+
+    def test_restore_takes_only_backups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out, code, _, calls = self.run_card("restore", self.image(tmp), cards=self.CARD)
+            self.assertIn("is an image, not a card backup: write it with audiolink card write", code)
+            out, code, _, calls = self.run_card("restore", cards=self.CARD)
+            self.assertIn("Which backup?", code)
+        self.assertEqual(calls, [])
+
+    def test_says_the_other_image_stays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out, code, _, _ = self.run_card("write", self.image(tmp), cards=self.CARD, into=("b/", "a/"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("the one it had stays on the card (back to it: audiolink update --back)", out)
 
     def test_restore_is_write_wipe_without_questions(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import card
 from .system import Runner
-from .ui import done, step
+from .ui import detail, done, step
 
 
 def card_command(a, runner=None, platform=sys.platform, usb_state=None, sleep=time.sleep, clock=time,
@@ -135,9 +135,14 @@ def write(a, runner, usb_state, sleep, clock, wipe):
     if a.file:
         image = card.Image(a.file)
         label = image.name
-        if image.is_backup and not wipe:
+        if a.action == "restore" and not image.is_backup:
+            raise SystemExit("%s is an image, not a card backup: write it with audiolink card write %s "
+                             "(--wipe: erasing the card first)" % (image.name, a.file))
+        if a.action != "restore" and image.is_backup:
             raise SystemExit("%s is a card backup (a Pi's keys, its images), not an image: put it back with "
                              "audiolink card restore %s" % (image.name, a.file))
+    elif a.action == "restore":
+        raise SystemExit("Which backup? audiolink card restore FILE")
     else:
         from .paths import cache_dir
         step("Downloading the card image (audiolink %s)" % card.__version__)
@@ -156,14 +161,17 @@ def write(a, runner, usb_state, sleep, clock, wipe):
     try:
         if wipe or kind == "blank":
             step("Erasing it and writing %s" % label if kind != "blank" else "Writing %s" % label)
-            n, new, removed = card.write(runner, disk, image, sleep=sleep), [], False
+            n, new, removed, into = card.write(runner, disk, image, sleep=sleep), [], False, None
         else:
             step("Writing %s, keeping the Pi's state" % label)
-            n, new, removed = card.update(runner, disk, mount, image, sleep=sleep, keep_update=a.keep_update)
+            n, new, removed, into = card.update(runner, disk, mount, image, sleep=sleep, keep_update=a.keep_update)
     except SystemExit:
         done("failed")
         raise
     done("done, %d files checked" % n)
+    if into:
+        print("The Pi starts this one from now on; the one it had stays on the card (back to it: audiolink update --back)")
+        detail("into %s, kept %s", *into)
     if new:
         print("New settings in its settings.txt: %s" % ", ".join(new))
     if removed:

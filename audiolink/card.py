@@ -10,7 +10,8 @@ it once it's replugged.
 
 `audiolink card write` puts an image on the card: on an audiolink card it replaces the
 image's files and keeps the Pi's state (KEEP), with its settings.txt renewed from the image's;
-with --wipe, or on a blank card, it erases the card first. Anything else on the card (a
+a card with image slots keeps the image it boots, too (the new one goes in the other
+slot and boots from then on: like `audiolink update`, without the trial); with --wipe, or on a blank card, it erases the card first. Anything else on the card (a
 Raspberry Pi OS, another project) is only ever erased, and only when asked (--wipe).
 A backup is a zip of everything on the card, so it's also an image: restoring it is
 writing it with --wipe.
@@ -18,6 +19,7 @@ writing it with --wipe.
 macOS only for now (diskutil). Elsewhere: write it by hand (README).
 """
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -201,6 +203,39 @@ def check_image(path):
     return Image(path)
 
 
+IMAGE_SLOT = "a/"               # where a built image has its slot (pi-gadget-kit image_initramfs.SLOT)
+SLOT_INFO = ".image.json"       # in a slot: which image it holds (services/image.py)
+
+
+def slot_config(slot):
+    """The card's config.txt booting `slot` (as pi-gadget-kit's slot.sh writes it)."""
+    return ("# The image in %s boots: its own settings are in %sconfig.txt\nos_prefix=%s\ninclude %sconfig.txt\n"
+            % (slot, slot, slot, slot)).encode()
+
+
+class InSlot:
+    """An Image with its slot moved to `slot` (b/, say) and the card's config.txt booting it."""
+
+    def __init__(self, image, slot):
+        self.image, self.slot, self.name, self.is_backup = image, slot, image.name, image.is_backup
+        self.map = {slot + n[len(IMAGE_SLOT):] if n.startswith(IMAGE_SLOT) else n: n for n in image.names}
+        self.names = sorted(list(self.map) + [slot + SLOT_INFO])
+
+    def _data(self, name, data):
+        return slot_config(self.slot) if name == "config.txt" else data
+
+    def read(self, name):
+        if name == self.slot + SLOT_INFO:
+            return json.dumps({"name": self.name}).encode()
+        return self._data(name, self.image.read(self.map[name]))
+
+    def files(self):
+        back = {v: k for k, v in self.map.items()}
+        for n, data in self.image.files():
+            yield back[n], self._data(back[n], data)
+        yield self.slot + SLOT_INFO, self.read(self.slot + SLOT_INFO)
+
+
 def _macos(name):
     return name.startswith("._") or name == ".DS_Store"
 
@@ -241,13 +276,21 @@ UPDATE = ("audiolink/audiolink.pyz", "audiolink/audiolink.pyz.bad", "audiolink/a
 def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
     """An audiolink card in place: everything but KEEP replaced by image's files; its
     settings.txt renewed from the image's, keeping what its users set; an earlier update
-    removed (keep_update: kept), so the Pi runs the image's code; checked; ejected.
+    removed (keep_update: kept), so the Pi runs the image's code; checked; ejected. A card
+    with image slots keeps the one it boots: the image goes in the other and boots from
+    then on (firmware updated too; slot: which one, else None).
     The new files go next to the old ones first (NAME.new) and are checked there, then
     renamed into place: a card pulled out before that keeps its old system whole, and
     running it again picks up from there. -> (files, new settings, the removed
-    update's build id, or False)."""
+    update's build id, or False, the slot it went in and the one kept, or None)."""
     image = image if isinstance(image, Image) else Image(image)
     kept = {n for n in os.listdir(mount) if n in KEEP}
+    _, booted = slots(mount)
+    into = None
+    if booted and IMAGE_SLOT + "config.txt" in image.names:
+        target = "b/" if booted == "a" else "a/"
+        image, into = InSlot(image, target), (target, booted + "/")
+        kept.add(booted)
     skip = {n for n in image.names if n.split("/")[0] in kept}
     want = [n for n in image.names if n not in skip]
     for rel in _system_files(mount, kept):              # leftovers of an interrupted write
@@ -286,7 +329,7 @@ def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
             os.replace(path + NEW, path)
     n = check(mount, image, skip | {"settings.txt"} if "settings.txt" in kept else skip)
     eject(runner, disk, sleep)
-    return n, new, removed
+    return n, new, removed, into
 
 
 NEW = ".new"

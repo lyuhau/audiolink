@@ -345,7 +345,11 @@ class Guide:
 
     def card_image(self):
         if self.a.card_image:
-            return card.check_image(self.a.card_image)
+            image = card.check_image(self.a.card_image)
+            if image.is_backup:
+                raise SystemExit("%s is a card backup, not an image: put it back with audiolink card restore %s"
+                                 % (image.name, self.a.card_image))
+            return image
         from .paths import cache_dir
         step("Downloading the card image (audiolink %s)" % card.__version__)
         try:

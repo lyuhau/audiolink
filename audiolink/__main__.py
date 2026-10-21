@@ -22,7 +22,7 @@ Start here:
   audiolink setup host                       just this computer's host part (exposed ports, autostart)
   audiolink card write [IMAGE] [--wipe]      audiolink onto the Pi's card, keeping its state (macOS)
   audiolink card backup [FILE]               the Pi's whole card to a zip
-  audiolink card restore FILE                erase the card and put a backup on it (= write FILE --wipe)
+  audiolink card restore FILE                erase the card and put a backup (card backup) on it
   audiolink settings [KEY=VALUE ...]         the plugged-in Pi's card settings (--pi PI: over the network)
   audiolink flavor [use NAME]                what the Pi presents on USB, and what it could (add, remove, try)
 
@@ -224,7 +224,7 @@ def build_parser():
                              "  backup [FILE]   the Pi as it runs to a zip: its keys, Wi-Fi, settings and logs, and\n"
                              "                  the image it runs (--all-images: every one); by default\n"
                              "                  audiolink-card-DATE.zip here (it holds the Pi's keys: keep it private)\n"
-                             "  restore FILE    erase the card and put FILE on it: write FILE --wipe"))
+                             "  restore FILE    erase the card and put a backup (FILE, from card backup) on it"))
     crd.add_argument("action", choices=["write", "backup", "restore"], help="see above")
     crd.add_argument("file", nargs="?", help="the image or backup (a zip, or a folder)")
     crd.add_argument("--wipe", action="store_true", help="write: erase the card first, keeping nothing")
