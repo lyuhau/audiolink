@@ -109,17 +109,31 @@ def usb_id(dev):
     return (int(m.group(1), 16), int(m.group(2), 16)) if m else None
 
 
-def usb_ids():
-    """lookup(portaudio device) -> (vendor, product) or None. PortAudio's devices are
-    Core Audio's under the same names; a name that two devices with different IDs
-    share answers None (the name fallback then decides)."""
-    by_name = {}
-    for d in devices():
-        by_name.setdefault(_string(d, NAME), set()).add(usb_id(d))
+UID = _fourcc("uid ")
 
-    def lookup(dev):
+
+def usb_ids():
+    """lookup(portaudio device, its position among PortAudio's Core Audio devices) ->
+    ((vendor, product) or None, the USB device it's part of or None). PortAudio lists
+    Core Audio's devices in Core Audio's order (two USB devices can share a name, real
+    headphones and a Pi cloned from them): by position, its name checked; else by name,
+    and a name that devices with different IDs share answers None (names decide then).
+    The USB device: a USB sound device's UID less its last part
+    ("AppleUSBAudioEngine:SteelSeries:Arctis GameBuds:1100000:1": its location)."""
+    listed = []
+    for d in devices():
+        uid, uid_usb = _string(d, UID) or "", usb_id(d)
+        part = uid.rsplit(":", 1)[0] if uid_usb and uid.startswith("AppleUSBAudioEngine:") else None
+        listed.append((_string(d, NAME), uid_usb, part))
+    by_name = {}
+    for name, uid_usb, _ in listed:
+        by_name.setdefault(name, set()).add(uid_usb)
+
+    def lookup(dev, pos=None):
+        if pos is not None and pos < len(listed) and listed[pos][0] == dev["name"]:
+            return listed[pos][1], listed[pos][2]
         ids = by_name.get(dev["name"], set())
-        return next(iter(ids)) if len(ids) == 1 else None
+        return (next(iter(ids)) if len(ids) == 1 else None), None
     return lookup
 
 

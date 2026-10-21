@@ -64,7 +64,8 @@ class Directions(unittest.TestCase):
         devs = [{"name": "Arctis GameBuds", "outputs": 2, "inputs": 0, "hostapi_type": 5, "rate": 48000.0},
                 {"name": "Arctis GameBuds", "outputs": 0, "inputs": 1, "hostapi_type": 5, "rate": 48000.0}]
         with mock.patch("audiolink.wire.portaudio.devices", lambda: [dict(d) for d in devs]), \
-                mock.patch("audiolink.wire.usb_audio._lookup", lambda: (lambda d: (0x1038, 0x230a))), \
+                mock.patch("audiolink.wire.usb_audio._lookup",
+                           lambda: (lambda d, pos=None: ((0x1038, 0x230a), "clone"))), \
                 mock.patch("audiolink.wire.usb_audio.known_ids", lambda: {(0x1038, 0x230a)}):
             out, inp = host_audio.find_devices()
         self.assertEqual((out["outputs"], inp["inputs"]), (2, 1))

@@ -83,26 +83,57 @@ class ExtraIds(unittest.TestCase):
 
 
 class Mac(unittest.TestCase):
-    def test_by_name_unless_ambiguous(self):
+    def lookup(self, names, ids, uids):
         from unittest import mock
         from audiolink.wire import coreaudio
+        strings = {**{(d, coreaudio.NAME): n for d, n in names.items()},
+                   **{(d, coreaudio.UID): u for d, u in uids.items()}}
+        with mock.patch.object(coreaudio, "devices", lambda: list(names)), \
+                mock.patch.object(coreaudio, "_string", lambda d, sel: strings.get((d, sel))), \
+                mock.patch.object(coreaudio, "usb_id", lambda d: ids.get(d)):
+            return coreaudio.usb_ids()
+
+    def test_by_position_then_name(self):
         names = {93: "Playback Inactive", 91: "Capture Inactive", 76: "MacBook Air Speakers",
                  10: "USB Audio", 11: "USB Audio"}
         ids = {93: (0x1d6b, 0x0104), 91: (0x1d6b, 0x0104), 10: (0x1234, 1), 11: (0x5678, 2)}
-        with mock.patch.object(coreaudio, "devices", lambda: list(names)), \
-                mock.patch.object(coreaudio, "_string", lambda d, sel: names[d]), \
-                mock.patch.object(coreaudio, "usb_id", lambda d: ids.get(d)):
-            lookup = coreaudio.usb_ids()
-        self.assertEqual(lookup(dev("Capture Inactive")), (0x1d6b, 0x0104))
-        self.assertIsNone(lookup(dev("MacBook Air Speakers")))
-        self.assertIsNone(lookup(dev("USB Audio")))         # two devices, two IDs: can't tell
-        self.assertIsNone(lookup(dev("Not There")))
+        uids = {93: "AppleUSBAudioEngine:audiolink:AudioPi:audiopi0001:1",
+                91: "AppleUSBAudioEngine:audiolink:AudioPi:audiopi0001:2", 76: "BuiltInSpeakerDevice"}
+        lookup = self.lookup(names, ids, uids)
+        self.assertEqual(lookup(dev("Capture Inactive"), 1), ((0x1d6b, 0x0104), "AppleUSBAudioEngine:audiolink:AudioPi:audiopi0001"))
+        self.assertEqual(lookup(dev("Capture Inactive")), ((0x1d6b, 0x0104), None))        # by name
+        self.assertEqual(lookup(dev("MacBook Air Speakers"), 2), (None, None))
+        self.assertEqual(lookup(dev("USB Audio")), (None, None))      # by name, two IDs: can't tell
+        self.assertEqual(lookup(dev("USB Audio"), 4), ((0x5678, 2), None))  # by position: can
+        self.assertEqual(lookup(dev("Not There"), 9), (None, None))
 
     def test_model_uid(self):
         from audiolink.wire import coreaudio
         m = coreaudio.MODEL_IDS.search("Topology Control:1D6B:0104")
         self.assertEqual((m.group(1), m.group(2)), ("1D6B", "0104"))
         self.assertIsNone(coreaudio.MODEL_IDS.search("Digital Mic"))
+
+
+class Pairs(unittest.TestCase):
+    """Real GameBuds and a Pi cloned from them, plugged in together: same USB ID, same
+    names. Each USB device's output goes with its own input, never another's."""
+
+    def test_pairs_by_usb_device(self):
+        from unittest import mock
+        from audiolink.wire import host_audio
+        devs = [{"name": "Arctis GameBuds", "outputs": 2, "inputs": 0, "hostapi": "Core Audio", "hostapi_type": 5},
+                {"name": "Arctis GameBuds", "outputs": 0, "inputs": 1, "hostapi": "Core Audio", "hostapi_type": 5},
+                {"name": "Arctis GameBuds", "outputs": 2, "inputs": 0, "hostapi": "Core Audio", "hostapi_type": 5},
+                {"name": "Arctis GameBuds", "outputs": 0, "inputs": 1, "hostapi": "Core Audio", "hostapi_type": 5}]
+        where = ["real", "real", "clone", "clone"]
+        for i, d in enumerate(devs):
+            d["index"] = i
+        with mock.patch("audiolink.wire.portaudio.devices", lambda: [dict(d) for d in devs]), \
+                mock.patch("audiolink.wire.usb_audio._lookup",
+                           lambda: (lambda d, pos=None: ((0x1038, 0x230a), where[pos]))), \
+                mock.patch("audiolink.wire.usb_audio.known_ids", lambda: {(0x1038, 0x230a)}):
+            pairs = host_audio.find_pairs()
+        self.assertEqual([(o["index"], i["index"], k) for o, i, k in pairs], [(0, 1, "real"), (2, 3, "clone")])
 
 
 class Linux(unittest.TestCase):
@@ -114,10 +145,10 @@ class Linux(unittest.TestCase):
                     f.write(usbid)
             os.makedirs(os.path.join(proc, "card0"))            # built-in: no usbid
             ids = usb_audio.linux_ids(proc)
-            self.assertEqual(ids(dev("AudioPi: USB Audio (hw:1,0)")), (0x1d6b, 0x0104))
-            self.assertEqual(ids(dev("Logitech Headset: USB Audio (hw:3,0)")), (0x046d, 0x0a44))
-            self.assertIsNone(ids(dev("bcm2835 Headphones: - (hw:0,0)")))
-            self.assertIsNone(ids(dev("default")))
+            self.assertEqual(ids(dev("AudioPi: USB Audio (hw:1,0)")), ((0x1d6b, 0x0104), "card1"))
+            self.assertEqual(ids(dev("Logitech Headset: USB Audio (hw:3,0)")), ((0x046d, 0x0a44), "card3"))
+            self.assertEqual(ids(dev("bcm2835 Headphones: - (hw:0,0)")), (None, None))
+            self.assertEqual(ids(dev("default")), (None, None))
 
 
 if __name__ == "__main__":

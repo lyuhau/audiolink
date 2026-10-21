@@ -54,15 +54,20 @@ def by_name(dev):
 
 
 def annotate(devs):
-    """Add "usb": (vendor, product) or None to each PortAudio device, where this OS
-    says which USB device it belongs to; None also for non-USB devices."""
+    """Add to each PortAudio device "usb": (vendor, product) or None, where this OS says
+    which USB device it belongs to (None also for non-USB devices), and "usb_dev": which
+    USB device it's part of (its input and output share it), or None if unknown."""
     try:
         ids = _lookup()
     except Exception as e:                  # detection then falls back to names
         log.debug("usb audio ids unavailable: %s", e)
-        ids = lambda dev: None              # noqa: E731
+        ids = lambda dev, pos=None: (None, None)        # noqa: E731
+    pos = 0
     for d in devs:
-        d["usb"] = ids(d)
+        here = None
+        if d.get("hostapi") == "Core Audio":
+            here, pos = pos, pos + 1
+        d["usb"], d["usb_dev"] = ids(d, here)
     return devs
 
 
@@ -78,7 +83,7 @@ def _lookup():
         return linux_ids()
     if sys.platform == "darwin":
         return mac_ids()
-    return lambda dev: None
+    return lambda dev, pos=None: (None, None)
 
 
 # ---- Linux: ALSA cards know their USB ID
@@ -99,9 +104,9 @@ def linux_ids(proc="/proc/asound"):
         except (OSError, ValueError):
             continue
 
-    def lookup(dev):
+    def lookup(dev, pos=None):
         m = HW.search(dev["name"])
-        return ids.get(m.group(1)) if m else None
+        return (ids.get(m.group(1)), "card" + m.group(1)) if m and m.group(1) in ids else (None, None)
     return lookup
 
 

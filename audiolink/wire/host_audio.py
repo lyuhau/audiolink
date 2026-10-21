@@ -26,26 +26,45 @@ def host_buffer_frames(fmt, output):
     return fmt.chunk_frames
 
 
-def find_devices(out_name=None, in_name=None):
-    """Pick the gadget's output and input devices, preferring WASAPI on Windows."""
+def find_pairs(out_name=None, in_name=None):
+    """[(output, input, key)] that may be the Pi: an output and an input of the same
+    USB device (key: which), or by the given names. Real headphones a Pi was cloned
+    from look the same (USB ID and names): each pair is its own candidate, and only
+    the one whose input carries the link is played to (hears_the_link)."""
     from . import portaudio, usb_audio
     devs = portaudio.devices()
-    pis = None if out_name and in_name else usb_audio.pi_devices(usb_audio.annotate(devs))
+    order = lambda ds: sorted(ds, key=lambda d: d["hostapi_type"] != portaudio.paWASAPI)   # noqa: E731
+    if out_name or in_name:
+        pis = [] if out_name and in_name else usb_audio.pi_devices(usb_audio.annotate(devs))
 
-    def pick(name, kind):
-        key = "outputs" if kind == "output" else "inputs"
-        cands = [d for d in devs if d[key] >= 1]        # a clone's microphone can be mono
-        if name:
-            cands = [d for d in cands if name.lower() in d["name"].lower()]
-        else:
-            cands = [d for d in cands if d in pis]
-        if not cands:
-            raise LookupError("No %s audio device matching %r (see: audiolink list-devices)" % (kind, name)
-                              if name else "no Pi %s audio device found" % kind)
-        cands.sort(key=lambda d: d["hostapi_type"] != portaudio.paWASAPI)
-        return cands[0]
+        def pick(name, kind):
+            key = "outputs" if kind == "output" else "inputs"
+            cands = [d for d in devs if d[key] >= 1 and (name.lower() in d["name"].lower() if name else d in pis)]
+            if not cands:
+                raise LookupError("No %s audio device matching %r (see: audiolink list-devices)" % (kind, name)
+                                  if name else "no Pi %s audio device found" % kind)
+            return order(cands)[0]
+        out, inp = pick(out_name, "output"), pick(in_name, "input")
+        return [(out, inp, "%s/%s" % (out["name"], inp["name"]))]
+    pis = usb_audio.pi_devices(usb_audio.annotate(devs))
+    groups = {}                             # one USB device (or one name, unknown) -> its devices
+    for d in pis:
+        groups.setdefault(d.get("usb_dev") or "name:" + d["name"], []).append(d)
+    pairs = []
+    for key, ds in groups.items():
+        outs = order([d for d in ds if d["outputs"] >= 1])     # a clone's microphone can be mono
+        ins = order([d for d in ds if d["inputs"] >= 1])
+        if outs and ins:
+            pairs.append((outs[0], ins[0], key))
+    if not pairs:
+        raise LookupError("no Pi %s audio device found" % ("output" if not any(d["outputs"] for d in pis)
+                                                            else "input"))
+    return pairs
 
-    return pick(out_name, "output"), pick(in_name, "input")
+
+def find_devices(out_name=None, in_name=None):
+    """The first candidate (output, input): find_pairs."""
+    return find_pairs(out_name, in_name)[0][:2]
 
 
 def device_formats(out_dev, in_dev):
@@ -85,25 +104,33 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
     change), so waiting for it is -v detail.
     """
     from . import portaudio
-    not_the_pi = {}                    # device name -> when it last wasn't
+    not_the_pi = {}                    # USB device (find_pairs' key) -> when it last wasn't
 
     def open_streams():
         portaudio.reinit()
-        out_dev, in_dev = find_devices(out_name, in_name)
-        if time.monotonic() - not_the_pi.get(in_dev["name"], -NOT_THE_PI) < NOT_THE_PI:
-            raise LookupError("%s isn't sending the link (listening again shortly)" % in_dev["name"])
-        ofmt, ifmt = device_formats(out_dev, in_dev)
-        # Input first, and only then output, once the Pi is heard on it (hears_the_link)
-        inp = portaudio.Stream(in_dev, False, ifmt.rate, ifmt.channels, host_buffer_frames(ifmt, False))
-        try:
-            if not hears_the_link(inp, ifmt):
-                not_the_pi[in_dev["name"]] = time.monotonic()
-                raise LookupError("%s isn't sending the link: not the Pi, so nothing is played to it"
-                                  % in_dev["name"])
-            out = portaudio.Stream(out_dev, True, ofmt.rate, ofmt.channels, host_buffer_frames(ofmt, True))
-        except Exception:
-            inp.close()
-            raise
+        why = None
+        for out_dev, in_dev, key in find_pairs(out_name, in_name):
+            if time.monotonic() - not_the_pi.get(key, -NOT_THE_PI) < NOT_THE_PI:
+                why = why or "%s isn't sending the link (listening again shortly)" % in_dev["name"]
+                continue
+            ofmt, ifmt = device_formats(out_dev, in_dev)
+            # Input first, and only then output, once the Pi is heard on it (hears_the_link)
+            inp = portaudio.Stream(in_dev, False, ifmt.rate, ifmt.channels, host_buffer_frames(ifmt, False))
+            try:
+                if not hears_the_link(inp, ifmt):
+                    not_the_pi[key] = time.monotonic()
+                    log.debug("audio: %s (%s) isn't sending the link: not the Pi, nothing played to it",
+                              in_dev["name"], key)
+                    why = "%s isn't sending the link: not the Pi, so nothing is played to it" % in_dev["name"]
+                    inp.close()
+                    continue
+                out = portaudio.Stream(out_dev, True, ofmt.rate, ofmt.channels, host_buffer_frames(ofmt, True))
+            except Exception:
+                inp.close()
+                raise
+            break
+        else:
+            raise LookupError(why or "no Pi audio device found")
         link.set_format(ofmt)               # what this side sends in
         log.debug("audio out: %s [%s], %r", out_dev["name"], out_dev["hostapi"], ofmt)
         log.debug("audio in:  %s [%s], %r", in_dev["name"], in_dev["hostapi"], ifmt)
