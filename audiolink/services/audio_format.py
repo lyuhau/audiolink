@@ -1,6 +1,9 @@
 """The Pi's side of audio-format negotiation (the host drives it: host/audio_format.py).
 
-Every link starts in the BASELINE format. Over the link that's up, the host asks:
+Every link starts in the device's home format (wire/gadget.py: the gadget plan's;
+BASELINE for audiolink's own device, a cloned device's own otherwise), called "the
+baseline" below. The HELLO says which it is, and which other formats the device's
+USB speed carries (its candidates). Over the link that's up, the host asks:
   audio.switch {format, confirm_within}  reply first, then re-present the USB gadget
                                          in that format (only the known ones: wire/fmt.py
                                          SUPPORTED; anything else is refused before
@@ -32,10 +35,11 @@ import threading
 import time
 
 from . import Service
-from ..wire.fmt import BASELINE, CANDIDATES, SUPPORTED, AudioFormat
+from ..wire.fmt import BASELINE, CANDIDATES, AudioFormat
 
 log = logging.getLogger("audiolink")
 
+HOME = "home"                   # the device's own formats (wire/gadget.py), each direction its own
 HOST_GONE = 15.0
 MAX_CONFIRM = 120
 SILENT_REVERT = 6.0             # after a switch, revert early if the host stays silent this long
@@ -75,10 +79,13 @@ class AudioFormatService(Service):
         self.lock = threading.Lock()
         self.pending = None             # deadline (monotonic) for confirming the current format
         self.gone_since = None
-        current = gadget.current() if gadget.available() else None
-        if current not in (None, BASELINE):
+        available = gadget.available()
+        self.home = gadget.home() if available else (BASELINE, BASELINE)    # (sends, receives)
+        self.candidates = [f for f in CANDIDATES if gadget.fits(f)] if available else list(CANDIDATES)
+        current = gadget.current_both() if available else (None, None)
+        if None not in current and current != self.home:
             wait = _reset_wait()
-            log.info("audio: gadget left in %r; back to %r%s", current, BASELINE,
+            log.info("audio: gadget left in %r; back home to %r%s", current[0], self.home[0],
                      " in %.0fs (it was reset just before)" % wait if wait else "")
             if wait:
                 self.audio.stop()               # nothing usable until then
@@ -87,15 +94,21 @@ class AudioFormatService(Service):
     def _reset_later(self, wait):
         time.sleep(wait)
         with self.lock:
-            self._switch(BASELINE)
+            self._switch(HOME)
 
     @property
     def format(self):
         return self.audio.format
 
+    def at_home(self):
+        return (self.audio.format, self.audio.record_format or self.audio.format) == self.home
+
     def hello(self):
+        play, record = self.home
         return {"audio": {"format": self.format.to_json(), "pending": self.pending is not None,
-                          "switchable": self.gadget.available()}}
+                          "switchable": self.gadget.available(),
+                          "home": {"play": play.to_json(), "record": record.to_json()},
+                          "candidates": [f.to_json() for f in self.candidates]}}
 
     def on_up(self):
         self.gone_since = None
@@ -106,14 +119,14 @@ class AudioFormatService(Service):
         def fallback():
             time.sleep(HOST_GONE)
             with self.lock:
-                if self.gone_since == since and self.pending is None and self.format != BASELINE:
-                    log.info("audio: no host for %.0fs; back to %r", HOST_GONE, BASELINE)
-                    self._switch(BASELINE)
+                if self.gone_since == since and self.pending is None and not self.at_home():
+                    log.info("audio: no host for %.0fs; back home to %r", HOST_GONE, self.home[0])
+                    self._switch(HOME)
         threading.Thread(target=fallback, daemon=True).start()
 
     def handle(self, op, args):
         if op == "status":
-            return dict(self.hello()["audio"], candidates=[f.to_json() for f in CANDIDATES])
+            return self.hello()["audio"]
         if op == "train":
             up = base64.b64decode(args.get("up", ""))
             down = os.urandom(min(int(args.get("down", 0)), 8 << 20))
@@ -126,7 +139,7 @@ class AudioFormatService(Service):
                 fmt = AudioFormat.from_json(args["format"])
             except (KeyError, TypeError, ValueError):
                 fmt = None
-            if fmt not in SUPPORTED:        # the gadget may take it and then fail to come back
+            if fmt not in self.candidates:  # the gadget may take it and then fail to come back
                 raise ValueError("the Pi doesn't run audio format %s; nothing changed" % (
                     "%dx%d" % (fmt.rate, fmt.channels) if fmt else args.get("format")))
             within = min(float(args.get("confirm_within", 20)), MAX_CONFIRM)
@@ -139,7 +152,7 @@ class AudioFormatService(Service):
             return {"format": self.format.to_json()}
         if op == "revert":
             threading.Thread(target=self._revert, daemon=True).start()
-            return {"format": BASELINE.to_json()}
+            return {"format": self.home[0].to_json()}
         return super().handle(op, args)
 
     def _switch_pending(self, fmt, within):
@@ -164,37 +177,40 @@ class AudioFormatService(Service):
                 break                   # the host can't use this format: don't wait it out
         with self.lock:
             if self.pending == deadline:
-                log.warning("audio: %r not confirmed; back to %r", fmt, BASELINE)
-                self._switch(BASELINE)
+                log.warning("audio: %r not confirmed; back home to %r", fmt, self.home[0])
+                self._switch(HOME)
 
     def represent(self):
         """Re-present the gadget in its current format (services/usbnet.py)."""
         with self.lock:
-            self._switch(self.format)
+            self._switch(HOME if self.at_home() else self.format)
 
     def _revert(self):
         time.sleep(0.5)
         with self.lock:
-            log.info("audio: reverting to %r", BASELINE)
-            self._switch(BASELINE)
+            log.info("audio: back home to %r", self.home[0])
+            self._switch(HOME)
 
     def _switch(self, want):
-        """Call with self.lock held. Returns whether we're now in `want`; if the
-        kernel refuses it, we end up in the baseline."""
+        """Call with self.lock held. want: a format, or HOME. Returns whether we're now in
+        `want`; if the kernel refuses it, we end up at home."""
         fmt = want
         self.audio.stop()
         try:
             self.gadget.set_format(fmt)
         except OSError as e:
-            log.warning("audio: the gadget refused %r (%s); back to %r", fmt, e, BASELINE)
-            fmt = BASELINE
+            log.warning("audio: the gadget refused %r (%s); back home", fmt, e)
+            fmt = HOME
             try:
                 self.gadget.set_format(fmt)
             except OSError as e:
-                log.error("audio: can't restore %r: %s", fmt, e)
-        if fmt == BASELINE:
+                log.error("audio: can't go back home: %s", e)
+        if fmt == HOME:
             self.pending = None
         if not self.gadget.wait_card():
             log.warning("audio: the gadget's sound card didn't come back")
-        self.audio.start(fmt)
+        if fmt == HOME:
+            self.audio.start(*self.home)
+        else:
+            self.audio.start(fmt)
         return fmt == want

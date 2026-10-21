@@ -82,11 +82,11 @@ class NetCaller:
 def to_baseline(call, port):
     """Over USB: the link to the baseline audio format. -> (it's there, it was slowed
     down for this)."""
-    from .audio_format import BASELINE, AudioFormat
+    from .audio_format import at_home
 
     def status():
         st = call("audio.status", port=port)
-        return st, AudioFormat.from_json(st["link"]) == BASELINE and not (st.get("pi") or {}).get("pending")
+        return st, at_home(st) and not (st.get("pi") or {}).get("pending")
     try:
         st, ok = status()
         if ok:
@@ -113,7 +113,7 @@ def to_baseline(call, port):
 def restore(call, port, tries=2, wait=180):
     """After the restart: the host's own format again (a negotiation the reconnect
     started may be under way, or may have given up while the Pi was coming up)."""
-    from .audio_format import BASELINE, AudioFormat, human
+    from .audio_format import AudioFormat, at_home, human
     step("Speeding the link back up")
     st = None
     try:
@@ -128,12 +128,12 @@ def restore(call, port, tries=2, wait=180):
                     break
                 time.sleep(1)
             st = call("audio.status", port=port)
-            if AudioFormat.from_json(st["link"]) != BASELINE or not (st.get("remembered") or {}).get("best"):
+            if not at_home(st) or not (st.get("remembered") or {}).get("best"):
                 break
     except (SystemExit, KeyError, ValueError) as e:
         detail("audio: %s", e)
     link = st and AudioFormat.from_json(st["link"])
-    done(human(link) if link and link != BASELINE else "stayed at the starting speed (audiolink audio sweep)")
+    done(human(link) if link and not at_home(st) else "stayed at the starting speed (audiolink audio sweep)")
 
 
 def update_command(a):

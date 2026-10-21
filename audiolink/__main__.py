@@ -520,8 +520,12 @@ def run_pi(a, allow, port, gate):
                              NetworkShells(endpoint)])
     session.gate = link.check
     audio = AlsaAudio(session.link, a.device)
-    audio.start()
-    formats = AudioFormatService(audio, Gadget())
+    gadget = Gadget()
+    if gadget.available():
+        audio.start(*gadget.home())     # the device's own formats (a clone: each direction its own)
+    else:
+        audio.start()
+    formats = AudioFormatService(audio, gadget)
     session.add(formats)
     from .services.usbnet import UsbNetWatch
     UsbNetWatch(formats.represent).run()

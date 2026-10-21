@@ -226,12 +226,55 @@ class PiRefuses(unittest.TestCase):
     def test_unknown_format_leaves_the_gadget_alone(self):
         gadget = mock.Mock()
         gadget.available.return_value = True
-        gadget.current.return_value = BASELINE
+        gadget.current_both.return_value = gadget.home.return_value = (BASELINE, BASELINE)
+        gadget.fits.return_value = True
         svc = AudioFormatService(mock.Mock(), gadget)
         for bad in ({"rate": 0, "channels": 0}, {"rate": 48000, "channels": 200}, {"rate": "x"}, None):
             with self.assertRaisesRegex(ValueError, "doesn't run audio format"):
                 svc.handle("switch", {"format": bad})
         gadget.set_format.assert_not_called()
+
+
+class CloneHome(unittest.TestCase):
+    """A Pi whose device is a clone: home is its own formats (stereo out, mono in)."""
+    MONO, STEREO = AudioFormat(48000, 1), AudioFormat(48000, 2)
+
+    def service(self):
+        gadget = mock.Mock()
+        gadget.available.return_value = True
+        gadget.home.return_value = gadget.current_both.return_value = (self.MONO, self.STEREO)
+        gadget.fits.side_effect = lambda f: f.bytes_per_sec / 1000 + f.frame_bytes <= 1023
+        audio = mock.Mock()
+        audio.format, audio.record_format = self.MONO, self.STEREO
+        return AudioFormatService(audio, gadget), gadget, audio
+
+    def test_hello_and_no_reset_at_home(self):
+        svc, gadget, _ = self.service()
+        gadget.set_format.assert_not_called()              # already home: a clone stays a clone
+        audio = svc.hello()["audio"]
+        self.assertEqual(audio["home"], {"play": self.MONO.to_json(), "record": self.STEREO.to_json()})
+        self.assertNotIn({"rate": 192000, "channels": 8}, audio["candidates"])
+        self.assertIn({"rate": 96000, "channels": 4}, audio["candidates"])
+        with self.assertRaisesRegex(ValueError, "doesn't run audio format"):
+            svc.handle("switch", {"format": {"rate": 192000, "channels": 8}})
+
+    def test_going_home(self):
+        svc, gadget, audio = self.service()
+        audio.format, audio.record_format = AudioFormat(96000, 4), None
+        self.assertFalse(svc.at_home())
+        with svc.lock:
+            svc._switch("home")
+        gadget.set_format.assert_called_with("home")
+        audio.start.assert_called_with(self.MONO, self.STEREO)
+
+    def test_host_side(self):
+        from audiolink.host.audio_format import at_home, home_name
+        home = {"play": self.MONO.to_json(), "record": self.STEREO.to_json()}
+        self.assertTrue(at_home({"pi": {"format": self.MONO.to_json(), "home": home}, "link": self.STEREO.to_json()}))
+        self.assertFalse(at_home({"pi": {"format": {"rate": 96000, "channels": 4}, "home": home}, "link": {}}))
+        self.assertTrue(at_home({"pi": {}, "link": BASELINE.to_json()}))            # a Pi from before
+        self.assertEqual(home_name((self.MONO, self.STEREO)), "48 kHz stereo out, 48 kHz mono in")
+        self.assertEqual(home_name((BASELINE, BASELINE)), "48 kHz stereo")
 
 
 if __name__ == "__main__":

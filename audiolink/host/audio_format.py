@@ -60,6 +60,23 @@ def human(fmt):
     return "%g kHz %s" % (fmt.rate / 1000, ch)
 
 
+HOME = "home"                   # the Pi's device's own formats (its HELLO: audio.home); "baseline"
+
+
+def at_home(st):
+    """`audio.status` (local): is the Pi in its device's own format?"""
+    pi = st.get("pi") or {}
+    if pi.get("home") and pi.get("format"):
+        return pi["format"] == pi["home"]["play"]
+    return AudioFormat.from_json(st["link"]) == BASELINE      # a Pi from before home formats
+
+
+def home_name(home):
+    """(Pi sends, Pi receives) -> words, as this side sees it."""
+    play, record = home
+    return human(play) if play == record else "%s out, %s in" % (human(record), human(play))
+
+
 def speed(bytes_per_sec):
     return "%.1f MB/s" % (bytes_per_sec / 1e6) if bytes_per_sec >= 1e6 else "%.0f KB/s" % (bytes_per_sec / 1e3)
 
@@ -102,6 +119,17 @@ class AudioNegotiator(Service):
         self.epoch = 0                  # bumped by `audio forget`: a negotiation under way doesn't save
         self.outcome = None             # the last run: True worked, False didn't, None not finished
         self.lost = False               # the Pi stopped answering in the middle of a change
+        # What the Pi's device can run (its HELLO and audio.status): home (sends, receives),
+        # where links start and go back to, and the other formats its USB speed carries
+        self.home = (BASELINE, BASELINE)
+        self.candidates = list(CANDIDATES)
+
+    def _audio_info(self, audio):
+        home = (audio or {}).get("home")
+        self.home = ((AudioFormat.from_json(home["play"]), AudioFormat.from_json(home["record"]))
+                     if home else (BASELINE, BASELINE))
+        cands = (audio or {}).get("candidates")
+        self.candidates = [AudioFormat.from_json(f) for f in cands] if cands is not None else list(CANDIDATES)
 
     def _note(self, msg, *args, detail=None):
         """A progress message for `audiolink audio` and the host's log; detail (shown
@@ -116,6 +144,7 @@ class AudioNegotiator(Service):
     def on_peer_hello(self, info):
         self.lost = False
         audio = info.get("audio")
+        self._audio_info(audio)
         if not audio or not audio.get("switchable") or self.mode == "baseline":
             return
         self.start(sweep=False, target=None if self.mode == "auto" else self.mode)
@@ -155,20 +184,25 @@ class AudioNegotiator(Service):
 
     def _status(self, timeout=5):
         st = self.session.request("audio.status", timeout=timeout)
+        self._audio_info(st)
         return AudioFormat.from_json(st["format"]), st["pending"]
 
+    def _name(self, fmt):
+        return home_name(self.home) if fmt == HOME else human(fmt)
+
     def _wait_for(self, fmt, timeout):
-        """Until both ends run fmt and the link carries requests, or timeout."""
+        """Until both ends run fmt (or HOME) and the link carries requests, or timeout."""
         end = time.monotonic() + timeout
         time.sleep(2)                   # the switch takes the device away first
         while time.monotonic() < end:
-            if self.session.peer_alive and self.session.link.format == fmt:
+            link_want = self.home[1] if fmt == HOME else fmt        # this side sends what the Pi receives
+            if self.session.peer_alive and self.session.link.format == link_want:
                 try:
                     now, pending = self._status(timeout=4)
-                    if now == fmt:
+                    if now == (self.home[0] if fmt == HOME else fmt):
                         return True
-                    if now == BASELINE and not pending:
-                        return False        # the Pi couldn't present fmt and is back already
+                    if now == self.home[0] and not pending:
+                        return False        # the Pi couldn't present fmt and is back home already
                 except (RuntimeError, TimeoutError):
                     pass
             time.sleep(1)
@@ -176,6 +210,7 @@ class AudioNegotiator(Service):
 
     def _train(self, fmt, timeout=60):
         """Known data both ways; returns goodput (bytes/s, both directions) or None."""
+        name, fmt = self._name(fmt), self.home[1] if fmt == HOME else fmt
         n = max(192_000, min(fmt.bytes_per_sec, 3_000_000))     # ~1 s of the format each way
         up = os.urandom(n)
         stats = self.session.link.stats
@@ -185,16 +220,16 @@ class AudioNegotiator(Service):
             r = self.session.request("audio.train", {"up": base64.b64encode(up).decode(), "down": n},
                                      timeout=timeout)
         except (RuntimeError, TimeoutError) as e:
-            self._note("%s: doesn't work here", human(fmt), detail="test transfer failed: %s" % e)
+            self._note("%s: doesn't work here", name, detail="test transfer failed: %s" % e)
             return None
         elapsed = time.monotonic() - t0
         down = base64.b64decode(r["down"])
         if r["up_sha"] != hashlib.sha256(up).hexdigest() or len(down) != n \
                 or r["down_sha"] != hashlib.sha256(down).hexdigest():
-            self._note("%s: data damaged", human(fmt))
+            self._note("%s: data damaged", name)
             return None
         goodput = 2 * n / elapsed
-        self._note("%s: works", human(fmt),
+        self._note("%s: works", name,
                    detail="%.0f KB/s goodput, %d KB each way in %.1fs, retx=%d crc_fail=%d" % (
                        goodput / 1e3, n // 1000, elapsed, stats["retx"] - retx0, stats["crc_fail"] - crc0))
         return goodput
@@ -226,7 +261,7 @@ class AudioNegotiator(Service):
                 self.session.request("audio.revert", timeout=5)
             except (RuntimeError, TimeoutError):
                 pass                    # it reverts on its own at the deadline
-        if not self._wait_for(BASELINE, CONFIRM_WITHIN + 15):
+        if not self._wait_for(HOME, CONFIRM_WITHIN + 15):
             raise RuntimeError("the Pi didn't come back at the starting speed")
 
     # ---- the procedure
@@ -239,36 +274,39 @@ class AudioNegotiator(Service):
         current, pending = self._status()
         if target is not None:
             return self._go_to(target, current, pending, chosen, serial, mem, failed, epoch)
-        if pending or (current != BASELINE and sweep):
+        home = self.home[0]
+        if pending or (current != home and sweep):
             self.state = "reverting"
             self._note("back to baseline first")
             self._back_to_baseline()
-            current = BASELINE
+            current = home
 
         if sweep:
-            order = list(CANDIDATES)
+            order = list(self.candidates)
             failed = set()
         else:
             best = mem.get("best") and AudioFormat.from_json(mem["best"])
             if best and best == current:
                 self._note("already at %s (fastest so far)", human(current))
                 return
-            order = ([best] if best else []) + [f for f in CANDIDATES if f != best and key(f) not in failed]
+            if best not in self.candidates:
+                best = None             # remembered from a device that ran it (another image?)
+            order = ([best] if best else []) + [f for f in self.candidates if f != best and key(f) not in failed]
             now = time.monotonic()
             order = [f for f in order if self.cooling.get(key(f), 0) <= now]
             if not order:
                 return                  # nothing to try: leave the link as it is
-            if current != BASELINE:     # an earlier host left it in some other format
+            if current != home:         # an earlier host left it in some other format
                 self._back_to_baseline()
-                current = BASELINE
+                current = home
 
         self.state = "measuring the baseline"
-        base = self._train(BASELINE)
+        base = self._train(HOME)
         if base is None:
             raise RuntimeError("the link isn't working even at the starting speed")
         results = {}
         for fmt in order:
-            if fmt == BASELINE:
+            if (fmt, fmt) == self.home:
                 continue
             goodput = self._switch(fmt)
             if goodput is None or goodput < base * MIN_GAIN:
@@ -287,7 +325,7 @@ class AudioNegotiator(Service):
         mem["baseline_goodput"] = round(base)
         mem.setdefault("goodputs", {}).update({key(f): round(g) for f, g in results.items()})
         if not results:
-            self._note("staying at baseline (%s)", human(BASELINE))
+            self._note("staying at baseline (%s)", self._name(HOME))
             mem["best"] = None
             self._save(serial, mem, epoch)
             return
@@ -306,22 +344,28 @@ class AudioNegotiator(Service):
         """Straight to target (`--audio-format F`, `audio set F`), without a detour
         through the baseline. Returns whether the link ends up there. Not recorded as
         the fastest: it's a choice, not a race against the other formats."""
+        if target == BASELINE or target == HOME:
+            if current == self.home[0] and not pending:
+                self._note("already at %s (baseline)", self._name(HOME))
+                return True
+            self.state = "reverting"
+            self._back_to_baseline()
+            self._note("using %s (baseline)", self._name(HOME))
+            return True
         if target == current and not pending:
             self._note("already at %s", human(current))
             return True
-        if target == BASELINE:
-            self.state = "reverting"
-            self._back_to_baseline()
-            self._note("using %s (baseline)", human(BASELINE))
-            return True
+        if target not in self.candidates:
+            self._note("the Pi's device doesn't run %s; staying at %s", human(target), human(current))
+            return False
         if not chosen and self.cooling.get(key(target), 0) > time.monotonic():
             self._note("%s didn't work a moment ago; staying at %s for now (try it anyway: "
                        "audiolink audio set %s)", human(target), human(current), key(target))
             return False
         base = mem.get("baseline_goodput")
-        if current == BASELINE and not pending:     # measuring here costs no extra switch
+        if current == self.home[0] and not pending:     # measuring here costs no extra switch
             self.state = "measuring the baseline"
-            base = self._train(BASELINE) or base
+            base = self._train(HOME) or base
             if base:
                 mem["baseline_goodput"] = round(base)
         goodput = self._switch(target)              # if it fails, the Pi goes back to the baseline
@@ -329,7 +373,7 @@ class AudioNegotiator(Service):
             failed.add(key(target))
             mem["failed"] = sorted(failed)
             self._save(serial, mem, epoch)
-            self._note("staying at baseline (%s)", human(BASELINE))
+            self._note("staying at baseline (%s)", self._name(HOME))
             return False
         self.session.request("audio.confirm", timeout=10)
         self._note("using %s%s", human(target), " (%s baseline)" % times(goodput / base) if base else "",
@@ -428,8 +472,11 @@ def audio_command(a):
     mem = st["remembered"]
     best = mem.get("best") and AudioFormat.from_json(mem["best"])
     measured = (mem.get("goodputs") or {}).get(key(link)) or (best == link and mem.get("goodput"))
-    if link == BASELINE:
-        print("Link: %s (baseline)" % human(link))
+    if at_home(st):
+        home = (st.get("pi") or {}).get("home")
+        name = home_name((AudioFormat.from_json(home["play"]), AudioFormat.from_json(home["record"]))) \
+            if home else human(link)
+        print("Link: %s (baseline)" % name)
     elif measured and mem.get("baseline_goodput"):
         print("Link: %s (%s baseline)" % (human(link), times(measured / mem["baseline_goodput"])))
     else:

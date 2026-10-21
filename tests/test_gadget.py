@@ -116,5 +116,49 @@ class WithoutThePlatform(unittest.TestCase):
         self.assertEqual(self.g.current(), FAST)
 
 
+# pi-gadget-kit's plan for a GameBuds clone (its tests/data/capture.plan): uac1, full speed
+CLONE_PLAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "gamebuds-clone.plan")
+
+
+class Clone(unittest.TestCase):
+    """A device cloned from headphones: uac1, full speed, stereo out and a mono mic."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        fn = os.path.join(self.dir, "functions", "uac1.0")
+        os.makedirs(fn)
+        for name, v in (("c_chmask", "3"), ("c_srate", "48000"), ("p_chmask", "1"), ("p_srate", "48000")):
+            with open(os.path.join(fn, name), "w") as f:
+                f.write(v + "\n")
+        with open(os.path.join(self.dir, "max_speed"), "w") as f:
+            f.write("full-speed\n")
+        functions = os.path.join(self.dir, "functions.list")
+        with open(functions, "w") as f:
+            f.write("# ID KIND DIRECTORY\nuac1.0 uac1 %s\nhid.0 hid x\n" % fn)
+        self.g = Gadget(root=self.dir, gadget_sh="", env={"GADGET_FUNCTIONS": functions}, plan=CLONE_PLAN)
+
+    def test_home_is_the_plans(self):
+        self.assertEqual(self.g.kind, "uac1")
+        self.assertEqual(self.g.home(), (AudioFormat(48000, 1), AudioFormat(48000, 2)))   # sends mono, receives stereo
+        self.assertTrue(self.g.at_home())
+        attrs = dict(self.g.attributes("home"))                   # back home: the plan's values exactly
+        self.assertEqual((attrs["c_max_packet_size"], attrs["p_max_packet_size"]), ("192", "96"))
+        self.assertEqual((attrs["c_chmask"], attrs["p_chmask"]), ("3", "1"))
+
+    def test_only_what_full_speed_carries(self):
+        from audiolink.wire.fmt import CANDIDATES
+        fits = [f for f in CANDIDATES if self.g.fits(f)]
+        self.assertEqual(fits, [AudioFormat(96000, 4), AudioFormat(192000, 2), AudioFormat(96000, 2),
+                                AudioFormat(48000, 8)])
+        attrs = dict(self.g.attributes(AudioFormat(96000, 4)))    # uac1: its packets sized to fit
+        self.assertEqual((attrs["c_max_packet_size"], attrs["p_max_packet_size"]), (768, 768))
+        self.assertNotIn("c_hs_bint", attrs)
+
+    def test_audiolinks_own_device(self):
+        g = Gadget(root=self.dir, gadget_sh="", env={}, plan=os.devnull)   # no plan: the baseline
+        self.assertEqual(g.home(), (BASELINE, BASELINE))
+
+
 if __name__ == "__main__":
     unittest.main()
