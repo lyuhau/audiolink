@@ -220,15 +220,45 @@ to change it:
 | `audiolink.expose_setup` | `on`: exposed ports take connections from the setup network too | `off` |
 | `console` | `on`: a root shell over USB, as an extra serial port next to the audio (no password: for troubleshooting) | `off` (dev cards: `on`) |
 | `hostname` | the Pi's name on its network (`NAME.local`) | `audiopi` |
-| `usb.vendor_id`, `usb.product_id` | the USB IDs, hex | `0x1d6b`, `0x0104` |
-| `usb.manufacturer`, `usb.product`, `usb.serial` | what the computer shows for the device | `audiolink`, `AudioPi`, `audiopi0001` |
+| `flavor` | what the Pi presents on USB (see *Flavors*) | `audiolink` |
 
 A setting that's misspelt or not valid is ignored: the Pi starts with the built-in
-value and says why in `/var/log/settings.log` (`audiolink logs settings.log`). New
-USB IDs or strings make the computer see a new device (on a Mac: "Allow accessory"
-again). The release card has no SSH server, so it ignores an `ssh_authorized_keys`
+value and says why in `/var/log/settings.log` (`audiolink logs settings.log`). The
+`usb.*` settings are gone: a flavor names the device now (cards that still set them
+get a note in `settings.log`). The release card has no SSH server, so it ignores an `ssh_authorized_keys`
 file; dev cards add its keys to root's. Installing a new image keeps the settings
 someone set, and renews the rest from the new image.
+
+### Flavors
+
+What the Pi presents on USB is its *flavor*: audiolink's own sound device (the
+`audiolink` flavor, the fastest link), or another USB device. Switching is live, no
+new card image or reboot:
+
+```
+audiolink flavor                  what the Pi is, and what it could be
+audiolink flavor use NAME         become that (kept if the link comes back)
+audiolink flavor add FILE         add one (a .toml someone gave you, or one you made)
+audiolink flavor try FILE         try one without keeping it
+audiolink flavor remove NAME      remove one you added
+```
+
+Built-in flavors come with the card image; yours are added to the Pi's card
+(`flavors/` at its top, kept by updates and backups). A flavor that doesn't plan is
+refused when you add it, with the reason. `use` and `try` warn first that the computer
+may ask to allow a new accessory (on a Mac: "Allow accessory"; allow it), then wait:
+the Pi keeps the new flavor once this computer's link comes back on it, within a
+minute, or else goes back to the one it was by itself. A kept `use` is the Pi's
+`flavor` setting from then on; `try` lasts until the Pi restarts. Over the network
+(`--pi PI`) a computer must be plugged into the Pi to confirm a switch; without one,
+`audiolink settings flavor=NAME --pi PI --reboot` changes it unchecked. The reset pins
+(5 s) bring the default flavor back.
+
+The computer that adds or switches to a flavor learns its USB ID (`host.json`'s
+`usb_ids`), so it keeps finding the Pi; other computers learn it from the Pi when
+they reach it over the network. A flavor is a TOML file (pi-gadget-kit's README:
+*Hand-written devices*), or one made from a real device's capture
+(`capture_usb.py`, then `capture_to_toml.py capture.json -o x.toml`).
 
 ### Where card images come from
 
@@ -330,6 +360,7 @@ see *Where card images come from* to write one.
 | `audiolink update [PYZ] [--revert\|--status] [--pi PI]` | new code for the plugged-in Pi, over the link (kept on its card); `--pi`: over the network |
 | `audiolink update --image [IMAGE] [--revert]` | a whole new image, tried before it's kept (see *A newer image without touching the card*) |
 | `audiolink settings [KEY=VALUE ...] [--unset KEY] [--reboot]` | the Pi's card settings, over the link |
+| `audiolink flavor [use NAME\|add FILE\|remove NAME\|try FILE] [--pi PI]` | what the Pi presents on USB (see *Flavors*) |
 | `audiolink logs [FILE] [-n N] [--list] [--pi PI] [--key FILE]` | the plugged-in Pi's logs, over the link; `--pi`: over the network |
 | `audiolink shell [PI] [--key FILE] [-- CMD]` | a root shell: the plugged-in Pi, or PI over the network (see *Access*); `-- CMD` runs one command |
 | `audiolink debug [on\|off\|status]` | the plugged-in Pi's debug switch: root access over the network |
@@ -340,7 +371,8 @@ see *Where card images come from* to write one.
 to the plugged-in Pi need `audiolink host` running on that computer.
 
 **Reset pins.** Short header pins 39 (GND) and 40 (GPIO21), with a jumper or a
-paperclip, and hold. 5 s: back to the code in the Pi's image (drops an update).
+paperclip, and hold. 5 s: back to the code in the Pi's image (drops an update) and
+to the default flavor.
 15 s: also start over, with a new identity (unclaimed; codes given out stop working)
 and no saved Wi-Fi. The green light blinks slowly past 5 s, quickly past 15 s; the
 Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
@@ -352,8 +384,8 @@ Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
   cable? On a Mac, look for an "Allow accessory" prompt (it comes back when the Pi
   shows up as a new kind of USB device, e.g. after a new card). Then unplug and replug.
   `audiolink list-devices` shows whether the computer sees the Pi's sound devices.
-- **A Pi with its own USB ID** (built from a fork, or a card whose `settings.txt`
-  changes `usb.vendor_id`/`usb.product_id`): audiolink finds the Pi's sound devices
+- **A Pi with its own USB ID** (built from a fork, or in a flavor added on another
+  computer): audiolink finds the Pi's sound devices
   by USB ID, and by name only when none has a known ID. `audiolink list-devices` shows
   each device's ID; tell the host about it with `audiolink host --usb-id VID:PID`, or
   for good with `"usb_ids": ["VID:PID"]` in `host.json` (audiolink's settings folder).
@@ -505,8 +537,9 @@ for someone else: `make release-card`, then `audiolink card write dist/audiolink
 dev image: it includes `pi-release.toml` and adds USB ethernet with the Pi at
 `10.55.0.2` (the `audiolink` flavor's `dev = true` function, with `dev_functions`), SSH with
 `keys/id_ed25519.pub` and the debug console. `flavors/*.toml` are the built-in USB
-devices (flavors) for both, `flavors/audiolink.toml` the default; `flavors/local/` is
-for your own (gitignored). `pi/app-start.sh` is the app's start: USB ethernet, the
+devices (flavors) for both, `flavors/audiolink.toml` the default (a new one's USB ID
+goes in `wire/usb_audio.py`'s `USB_IDS`: a test checks); `flavors/local/` is for your
+own (gitignored), added to a Pi with `audiolink flavor add`. `pi/app-start.sh` is the app's start: USB ethernet, the
 daemon's respawn loop (`pi/start-audiolink.sh`), mDNS, Wi-Fi, the clock.
 `pi-release.toml`'s `[app.settings]` are the card's `audiolink.*` settings (*The card's
 settings*); `pi/card-settings.sh` checks them and turns them into `audiolink pi`
