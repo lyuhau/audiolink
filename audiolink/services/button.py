@@ -1,9 +1,13 @@
 """Pi side: the reset pins. Short header pins 39 (GND) and 40 (GPIO21), with a jumper
 or a paperclip, and hold:
 
-   5 s   back to the built-in code (removes an update from `audiolink update`)
+   5 s   back to the image's own code (removes a code update, `audiolink update --code`)
+         and the default flavor
   15 s   also start over: a new identity (unclaimed; codes given out stop working)
          and no saved Wi-Fi networks
+
+The version (the image slot that boots) stays: a new version that doesn't come back
+goes back by itself (its trial), and `audiolink update --back` is the way back after.
 
 The green light blinks slowly once the 5 s mark is reached, quickly past 15 s; the
 action happens on release. Shorted when the daemon starts counts as holding from
