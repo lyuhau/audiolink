@@ -143,10 +143,10 @@ class Status(unittest.TestCase):
             image_cli.show_image_status({"current": "b/", "trial": True, "committed": False, "slots": ["b/"],
                                          "images": {}})
         self.assertEqual(out.getvalue().splitlines(), [
-            "Running: a/ clone",
-            "Spare:   b/ card-pi (switch to it: audiolink update --image --revert)",
-            "Running: b/ as written (on trial: kept once it's back online)",
-            "Spare:   none yet (the next audiolink update --image goes there)"])
+            "Running:  clone (a)",
+            "Previous: card-pi (b): audiolink update --back",
+            "Running:  as written (b) on trial: kept once it's back online",
+            "Previous: none yet (the next audiolink update keeps this one to go back to)"])
 
 
 class Command(unittest.TestCase):
@@ -177,7 +177,7 @@ class Command(unittest.TestCase):
                 if op == "image.finish":
                     return {"slot": "b/", "from": "a/", "firmware_differs": False}
                 return {"ok": True}
-            a = SimpleNamespace(revert=False, image="x.zip")
+            a = SimpleNamespace(back=False, image="x.zip")
             orig_read, orig_sleep = image_cli.read_image, image_cli.time.sleep
             image_cli.read_image = lambda p: ("x.zip", data)
             image_cli.time.sleep = lambda s: None

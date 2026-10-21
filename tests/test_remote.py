@@ -118,7 +118,7 @@ class Roles(Harness):
 
 class Update(Harness):
     def run_update(self, path):
-        a = argparse.Namespace(pi="pi", at=None, status=False, revert=False, pyz=path, control_port=None)
+        a = argparse.Namespace(pi="pi", at=None, status=False, back=False, image=None, code=path, control_port=None)
         r = self.remote()
         out = io.StringIO()
         with mock.patch("audiolink.client.remote.open_remote", lambda *args: r), \

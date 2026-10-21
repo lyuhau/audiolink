@@ -13,7 +13,7 @@ On the computer the Pi is plugged into (the host):
   audiolink wifi check                       exit 0 = Pi online, 3 = sign-in page, 4 = no internet
   audiolink wifi ap [on|off|auto]            the Pi's own setup network (normally automatic)
   audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
-  audiolink update [PYZ] [--revert|--status] new code for the plugged-in Pi, over the link
+  audiolink update [IMAGE|--back|--status]   a new version for the plugged-in Pi, over the link
   audiolink logs [FILE] [-n N] [--list]      the plugged-in Pi's logs, over the link
   audiolink shell [-- CMD]                   root shell on the plugged-in Pi (or run CMD there)
 
@@ -246,14 +246,13 @@ def build_parser():
     aud.add_argument("action", nargs="?", default="status", choices=["status", "sweep", "set", "forget"],
                      help="see above")
     aud.add_argument("format", nargs="?", help="set: RATExCHANNELS (e.g. 96000x8) or baseline")
-    upd = sub.add_parser("update", help="new code (or a whole image) for the plugged-in Pi, over the link")
-    upd.add_argument("pyz", nargs="?", help="the .pyz to send (default: this one)")
-    upd.add_argument("--image", nargs="?", const="release", metavar="IMAGE",
-                     help="a whole new image instead: this version's release image, or IMAGE (a zip, or a "
-                          "build folder like build/card-pi); tried once, kept if it comes back online")
-    upd.add_argument("--revert", action="store_true",
-                     help="back to the code in the Pi's image (with --image: back to its other image)")
-    upd.add_argument("--status", action="store_true", help="which code (and image) the Pi runs")
+    upd = sub.add_parser("update", help="a new version for the plugged-in Pi, over the link (tried, kept if it comes back)")
+    upd.add_argument("image", nargs="?",
+                     help="the image: a zip, or a build folder like build/card-pi (default: this version's release)")
+    upd.add_argument("--back", action="store_true", help="back to the version the Pi ran before")
+    upd.add_argument("--status", action="store_true", help="the version the Pi runs, and the one it would go back to")
+    upd.add_argument("--code", nargs="?", const="this", metavar="PYZ",
+                     help=argparse.SUPPRESS)        # developers: just new code (a .pyz) on the card; --back undoes it
     lg = sub.add_parser("logs", help="the plugged-in Pi's logs (works when USB networking doesn't)")
     lg.add_argument("file", nargs="?", help="which log (default audiolink.log; --list shows them)")
     lg.add_argument("-n", "--lines", type=argtypes.positive_int, default=200,

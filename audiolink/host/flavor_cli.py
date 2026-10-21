@@ -36,7 +36,7 @@ def flavor_command(a):
         return
     info = call("flavor.list")
     if not info.get("switchable"):
-        raise SystemExit("This Pi's image has no flavors to switch between: audiolink update --image first")
+        raise SystemExit("This Pi's image has no flavors to switch between: audiolink update first")
     if net and not info.get("usb_peer"):
         raise SystemExit("Nothing can confirm a switch: no computer is plugged into the Pi's USB. Plug one in "
                          "(with audiolink host running), or, without a check: audiolink settings flavor=NAME "
@@ -160,7 +160,7 @@ def follow(call, r, net, port, keep):
 
 def show(info):
     if not info.get("switchable"):
-        print("Flavor: %s (this Pi's image has no others: audiolink update --image first)"
+        print("Flavor: %s (this Pi's image has no others: audiolink update first)"
               % (info.get("running") or info.get("default") or "its own"))
         return
     running, default = info.get("running"), info.get("default")

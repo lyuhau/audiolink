@@ -126,20 +126,21 @@ class UpdateCommand(unittest.TestCase):
         self.assertIn(msg, str(e.exception.code))
 
     def test_file_checked_before_the_pi(self):
-        self.refused([os.path.join(self.dir, "nope.pyz")], "No file")
-        self.refused([self.file(b"")], "is empty")
-        self.refused([self.file(b"just bytes")], "isn't an audiolink .pyz")
-        self.refused([self.file(pyz_without_main())], "isn't an audiolink .pyz")
+        self.refused(["--code", os.path.join(self.dir, "nope.pyz")], "No file")
+        self.refused(["--code", self.file(b"")], "is empty")
+        self.refused(["--code", self.file(b"just bytes")], "isn't an audiolink .pyz")
+        self.refused(["--code", self.file(pyz_without_main())], "isn't an audiolink .pyz")
         self.assertEqual(self.calls, [])
 
     def test_options_dont_combine(self):
-        self.refused(["--status", "--revert"], "Pick one")
-        self.refused([self.file(pyz()), "--status"], "Pick one")
+        self.refused(["--status", "--back"], "Pick one")
+        self.refused(["build/card-pi", "--status"], "Pick one")
+        self.refused(["--code", self.file(pyz()), "--status"], "--code goes alone")
         self.refused(["--status", "--at", "10.0.0.2"], "goes with --pi")
         self.assertEqual(self.calls, [])
 
     def test_revert_with_nothing_installed(self):
-        self.assertIn("already runs its built-in code", self.run_cmd("--revert"))
+        self.assertIn("already runs its image's code", self.run_cmd("--code", "--back"))
 
     def test_status_compares_with_this_computer(self):
         from unittest import mock
@@ -149,11 +150,11 @@ class UpdateCommand(unittest.TestCase):
         self.u.status = lambda: st
         with mock.patch("audiolink.host.update_cli._this_pyz", lambda: path):
             out = self.run_cmd("--status")
-        self.assertIn("Running the built-in code (%s, the same as this computer's)" % h[:12], out)
+        self.assertIn("Code:     the image's (%s, the same as this computer's)" % h[:12], out)
         self.assertIn("An update is on the card but isn't running", out)
 
     def test_slows_the_link_before_sending(self):
-        out = self.run_cmd(self.file(pyz()))
+        out = self.run_cmd("--code", self.file(pyz()))
         self.assertLess(self.calls.index("audio.run"), self.calls.index("update.begin"))
         self.assertIn("sent", out)
         self.assertTrue(os.path.exists(os.path.join(self.dir, "audiolink.pyz")))
@@ -162,12 +163,12 @@ class UpdateCommand(unittest.TestCase):
 
     def test_a_link_at_baseline_stays_there(self):
         self.link = {"rate": 48000, "channels": 2}
-        self.run_cmd(self.file(pyz()))
+        self.run_cmd("--code", self.file(pyz()))
         self.assertNotIn("audio.resume", self.calls)
 
     def test_says_when_the_pi_hasnt_come_back(self):
         self.answers = False
-        self.refused([self.file(pyz())], "hasn't come back yet")
+        self.refused(["--code", self.file(pyz())], "hasn't come back yet")
 
 
 def pyz_without_main():

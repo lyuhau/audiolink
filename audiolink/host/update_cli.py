@@ -1,6 +1,10 @@
-"""`audiolink update [PYZ] | --revert | --status [--pi PI]`: new code for a Pi.
+"""`audiolink update [IMAGE] | --back | --status [--pi PI]`: a new version for a Pi.
 
-Sends the .pyz over the link (USB networking not needed), or with --pi over the network
+A version is a whole image (host/image_cli.py: tried in the Pi's spare slot, kept if
+it comes back). Developers can send just new code instead, hidden `--code [PYZ]`
+(`--code --back` undoes it), which is what this file does itself:
+
+it sends the .pyz over the link (USB networking not needed), or with --pi over the network
 (owners of the Pi); the Pi keeps it on its SD card and restarts into it
 (services/update.py). Default: the .pyz this command runs from.
 
@@ -139,18 +143,18 @@ def restore(call, port, tries=2, wait=180):
 def update_command(a):
     line_buffered()
     port = a.control_port
-    image = getattr(a, "image", None)
-    if image is not None and a.pyz is not None:
-        raise SystemExit("Pick one: a .pyz (new code) or --image (a whole image)")
-    if (a.pyz is not None) + a.revert + a.status > 1:
-        raise SystemExit("Pick one: a .pyz to send, --revert or --status")
+    code = getattr(a, "code", None)
+    if (a.image is not None) + a.back + a.status > 1:
+        raise SystemExit("Pick one: an image to send, --back or --status")
+    if code is not None and (a.image is not None or a.status):
+        raise SystemExit("--code goes alone (or with --back)")
     if a.at and not a.pi:
         raise SystemExit("--at goes with --pi PI (over the network)")
     data = path = None
-    if not (a.status or a.revert or image is not None):
-        path = a.pyz or _this_pyz()
+    if code is not None and not a.back:
+        path = _this_pyz() if code == "this" else code
         if not path:
-            raise SystemExit("Which .pyz? (audiolink update PATH)")
+            raise SystemExit("Which .pyz? (audiolink update --code PATH)")
         data = read_pyz(path)
     if a.pi:
         from ..client.remote import open_remote
@@ -163,23 +167,23 @@ def update_command(a):
         caps = (peer.get("peer") or {}).get("caps", [])
         if "update" not in caps:
             raise SystemExit("The Pi's audiolink can't take updates over the link; put a new image on its card")
-        if image is not None and "image" not in caps:
-            raise SystemExit("The Pi's audiolink is older than image updates: audiolink update (new code) first, "
-                             "then this")
-    if image is not None and not a.status:
-        from .image_cli import image_command
-        return image_command(a, call, port, bool(a.pi))
+        if code is None and not a.status and "image" not in caps:
+            raise SystemExit("The Pi's audiolink is older than image updates: audiolink update --code first, then this")
     if a.status:
-        show_status(call("update.status", port=port))
         try:
             st = call("image.status", port=port)
         except (SystemExit, KeyError, ValueError):
-            return                              # a Pi from before image updates
-        from .image_cli import show_image_status
-        return show_image_status(st)
-    if a.revert:
+            st = None                           # a Pi from before image updates
+        if st is not None:
+            from .image_cli import show_image_status
+            show_image_status(st)
+        return show_status(call("update.status", port=port))
+    if code is None:
+        from .image_cli import image_command
+        return image_command(a, call, port, bool(a.pi))
+    if a.back:
         r = call("update.revert", port=port)
-        print("The Pi already runs its built-in code" if r.get("already") else "Back to the built-in code (restarting)")
+        print("The Pi already runs its image's code" if r.get("already") else "Back to the image's code (restarting)")
         return
     digest = hashlib.sha256(data).hexdigest()
     if call("update.status", port=port).get("running_hash") == digest:
@@ -223,7 +227,7 @@ def update_command(a):
     detail("%s", st)
     raise SystemExit("The update didn't start%s; the Pi runs %s (audiolink update --status)" % (
         " (it kept failing and is set aside)" if st.get("set_aside") else "",
-        "an earlier update" if _on_card(st) else "its built-in code"))
+        "an earlier update" if _on_card(st) else "its image's code"))
 
 
 def _on_card(st):
@@ -240,9 +244,11 @@ def show_status(st):
     same = ""
     if mine and theirs:
         same = ", the same as this computer's" if theirs == mine else ", not this computer's"
-    print("Running %s (%s%s)" % ("an update" if _on_card(st) else "the built-in code",
+    print("Code:     %s (%s%s)" % ("an update on the card" if _on_card(st) else "the image's",
                                 "build %s" % st["running_build"] if st.get("running_build")
                                 else _short(st.get("running_hash")), same))
+    if _on_card(st):
+        print("          (back to the image's: audiolink update --code --back)")
     if st.get("set_aside"):
         print("The update on the card kept failing and is set aside")
     elif st.get("update") and not _on_card(st):

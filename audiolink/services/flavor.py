@@ -236,7 +236,7 @@ class FlavorService(Service):
         if len(toml.encode()) > MAX_SIZE:
             raise ValueError("that flavor is too big (at most %d KB)" % (MAX_SIZE // 1024))
         if not os.path.exists(self.planner):
-            raise ValueError("this Pi's image has no flavors (no planner): audiolink update --image first")
+            raise ValueError("this Pi's image has no flavors (no planner): audiolink update first")
         with tempfile.TemporaryDirectory() as d:
             src, plan = os.path.join(d, "flavor.toml"), os.path.join(d, "flavor.plan")
             with open(src, "w", encoding="utf-8") as f:
@@ -310,7 +310,7 @@ class FlavorService(Service):
 
     def use(self, name, tried=None):
         if not self.switchable():
-            raise ValueError("this Pi's image has no flavors to switch between: audiolink update --image first")
+            raise ValueError("this Pi's image has no flavors to switch between: audiolink update first")
         if not self.find(name):
             raise ValueError("no flavor %s on the Pi (audiolink flavor lists them)" % name)
         with self.lock:
@@ -334,7 +334,7 @@ class FlavorService(Service):
 
     def try_(self, toml):
         if not self.switchable():
-            raise ValueError("this Pi's image has no flavors to switch between: audiolink update --image first")
+            raise ValueError("this Pi's image has no flavors to switch between: audiolink update first")
         info = self.plan(toml)
         with self.lock:
             if self._busy():
@@ -377,9 +377,9 @@ class FlavorService(Service):
                  sw["name"], sw["back"], self.within)
         st, said = self._present(sw["name"])
         if st != 0:
-            sw.update(state="refused", error=said or "exit status %d" % st, running=self.running())
             self._note(None)
             self._tidy()
+            sw.update(state="refused", error=said or "exit status %d" % st, running=self.running())
             return
         sw["state"] = "waiting"
         since = clock()
@@ -393,16 +393,19 @@ class FlavorService(Service):
         if self._link_back(since):
             if not sw["tried"]:
                 self._choose(sw["name"])
-            sw.update(state="kept", running=sw["name"])
+            self._note(None)
+            self._tidy()
+            sw.update(state="kept", running=sw["name"])             # done: tidied first
             log.info("flavor: %s kept: a computer's USB link came back on it", sw["name"])
-        else:
-            log.warning("flavor: no computer's USB link on %s in %ds; back to %s", sw["name"], self.within, sw["back"])
-            sleep(self.wait())
-            if self.switch is sw:
-                self._present(sw["back"])
-                sw.update(state="back", running=self.running())
+            return
+        log.warning("flavor: no computer's USB link on %s in %ds; back to %s", sw["name"], self.within, sw["back"])
+        sleep(self.wait())
+        if self.switch is sw:
+            self._present(sw["back"])
         self._note(None)
         self._tidy()
+        if self.switch is sw:
+            sw.update(state="back", running=self.running())
 
     def _link_back(self, since):
         """A computer's USB link up again, heard since the new device came up."""

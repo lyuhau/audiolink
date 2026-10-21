@@ -1,4 +1,4 @@
-"""`audiolink update --image [IMAGE] | --image --revert`: a whole new image for the Pi.
+"""`audiolink update [IMAGE] | --back`: a new version (a whole image) for the Pi.
 
 Sends a card image (this version's release image by default, or a zip, or a build
 folder like build/card-pi) over the link or the network; the Pi puts it in its spare
@@ -56,11 +56,11 @@ def read_image(path, runner=None):
 
 def image_command(a, call, port, over_network):
     from .update_cli import restore, to_baseline
-    if a.revert:
+    if a.back:
         r = call("image.revert", port=port)
-        print("Going back to the image in %s (rebooting)" % r["slot"])
+        print("Going back to the version before (%s; rebooting)" % r["slot"].rstrip("/"))
         return
-    name, data = read_image(None if a.image == "release" else a.image)
+    name, data = read_image(a.image)
     st = call("image.status", port=port)
     if st.get("slots") is None:
         raise SystemExit("The Pi's card has no image slots yet: put this image on it with audiolink card write "
@@ -127,13 +127,12 @@ def show_image_status(st):
         print("Image: the card has no slots yet (an image from before them)")
         return
     images = st.get("images") or {}
-    name = lambda s: (images.get(s) or {}).get("name") or "as written"     # noqa: E731
+    name = lambda s: "%s (%s)" % ((images.get(s) or {}).get("name") or "as written", s.rstrip("/"))  # noqa: E731
     current = st.get("current")
-    print("Running: %s %s%s" % (current, name(current),
-                                " (on trial: kept once it's back online)" if st.get("trial") and not st.get("committed")
-                                else ""))
+    print("Running:  %s%s" % (name(current), " on trial: kept once it's back online"
+                             if st.get("trial") and not st.get("committed") else ""))
     for s in st["slots"]:
         if s != current:
-            print("Spare:   %s %s (switch to it: audiolink update --image --revert)" % (s, name(s)))
+            print("Previous: %s: audiolink update --back" % name(s))
     if len(st["slots"]) < 2:
-        print("Spare:   none yet (the next audiolink update --image goes there)")
+        print("Previous: none yet (the next audiolink update keeps this one to go back to)")

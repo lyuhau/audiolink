@@ -63,7 +63,8 @@ class ExtraIds(unittest.TestCase):
         with mock.patch.object(config, "load", lambda strict=True: {"usb_ids": ["1209:abcd"]}):
             self.assertIn(self.FORK, usb_audio.known_ids())
             self.assertEqual(usb_audio.pi_devices([fork, dev("Speakers (USB DAC)", (0x1234, 1))]), [fork])
-        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | set())    # nothing saved: the built-in ones
+        with mock.patch.object(config, "load", lambda strict=True: {}):
+            self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS)       # nothing saved: the built-in ones
 
     def test_flag_wins_over_saved(self):
         from unittest import mock

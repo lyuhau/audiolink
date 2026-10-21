@@ -49,7 +49,7 @@ run = "/opt/audiolink/app-start.sh"
 owns = ["wifi", "time"]
 state = true                       # /var/lib/audiolink is the card's audiolink/
 keep_logs = true                   # /var/log on the card: logs/last, logs/prev
-commits_trial = true               # a new image on trial (audiolink update --image) stays once audiolink
+commits_trial = true               # a new image on trial (audiolink update) stays once audiolink
                                    # reaches its host or relay (services/image.py), else back to the old one
 config_txt = ["gpio=21=ip,pu"]     # the reset pins: GPIO21 an input with its pull-up
 

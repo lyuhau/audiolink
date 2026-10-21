@@ -233,7 +233,7 @@ def write(runner, disk, image, sleep=time.sleep):
     return n
 
 
-# An update `audiolink update` put on the card (services/update.py; its --revert removes
+# A code update (`audiolink update --code`) put on the card (services/update.py; `--code --back` removes
 # the same): the Pi runs it instead of its image's built-in code
 UPDATE = ("audiolink/audiolink.pyz", "audiolink/audiolink.pyz.bad", "audiolink/audiolink.pyz.new")
 

@@ -20,7 +20,7 @@ pi_wait_up() {
 }
 
 # pi_code_check: is the daemon running the code just installed? An update on the
-# card (`audiolink update`: /var/lib/audiolink/audiolink.pyz) runs instead of the
+# card (`audiolink update --code`: /var/lib/audiolink/audiolink.pyz) runs instead of the
 # built-in copy. Offers to remove it (and restart); returns 1 if it stays.
 pi_code_check() {
     U=/var/lib/audiolink/audiolink.pyz
@@ -36,7 +36,7 @@ pi_code_check() {
             exit 1 ;;
         esac
     fi
-    echo "to run this code: audiolink update --revert" >&2
+    echo "to run this code: audiolink update --code --back" >&2
     return 1
 }
 

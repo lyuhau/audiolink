@@ -1,13 +1,13 @@
-"""Pi side: new code from the host (`audiolink update`), kept on the SD card.
+"""Pi side: new code from the host (`audiolink update --code`, for developers), kept on the SD card.
 
 The image carries a built-in audiolink.pyz (/opt/audiolink/, next to
 start-audiolink.sh); an update goes to the card's audiolink/ folder (the state folder) and
 pi/start-audiolink.sh runs it instead. An update that keeps dying soon
 after starting is set aside (.bad) and the built-in copy runs again, so a bad update
-can't take the Pi out of reach. `audiolink update --revert` removes it.
+can't take the Pi out of reach. `audiolink update --code --back` removes it.
 
 Owners only, over USB (link requests, from an owner's host: services/access.py) or
-over the network (endpoint "update", `audiolink update --pi PI`): new code runs as root.
+over the network (endpoint "update", `audiolink update --code --pi PI`): new code runs as root.
 """
 import base64
 import hashlib

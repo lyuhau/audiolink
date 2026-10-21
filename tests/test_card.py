@@ -87,7 +87,7 @@ class Backup(unittest.TestCase):
                 self.assertIn("a/boot/initrd.img", z.namelist())
             from audiolink.services.image import check_image
             with self.assertRaisesRegex(ValueError, "card backup"):
-                check_image(str(Path(tmp, "one.zip")))                   # not something update --image takes
+                check_image(str(Path(tmp, "one.zip")))                   # not something update takes
 
     def test_mounted_cards(self):
         with tempfile.TemporaryDirectory() as mount:

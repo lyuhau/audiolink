@@ -1,4 +1,4 @@
-"""Pi side: a whole new image from the host (`audiolink update --image`), into a slot.
+"""Pi side: a whole new image from the host (`audiolink update`), into a slot.
 
 The card holds images in slot folders (a/, b/; pi-gadget-kit's image/slot.sh): its
 config.txt says which one boots. A new image arrives as a card image zip (a release's
@@ -7,7 +7,7 @@ once on trial. It stays only if this daemon, running from it, gets through to it
 or its relay within COMMIT_WITHIN (it commits then); otherwise the platform's guard
 reboots into the slot that was booting. The Pi's state (audiolink/, settings.txt,
 logs/) is shared by the slots; settings.txt is renewed from the new image's, keeping
-what was set, and an earlier code update (audiolink update) goes, so the new image
+what was set, and an earlier code update (audiolink update --code) goes, so the new image
 runs its own code. The firmware files at the top of the card stay: a new firmware needs
 `audiolink card write`.
 
@@ -177,7 +177,7 @@ class ImageService(Service):
             os.remove(self.zip)
             raise
         os.remove(self.zip)
-        # An earlier code update (audiolink update) would run instead of the new image's code
+        # An earlier code update (audiolink update --code) would run instead of the new image's code
         for p in ("audiolink.pyz", "audiolink.pyz.bad", "audiolink.pyz.new"):
             p = os.path.join(self.state_dir, p)
             if os.path.exists(p):
