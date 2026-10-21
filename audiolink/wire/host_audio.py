@@ -9,6 +9,8 @@ from .fmt import AudioFormat
 log = logging.getLogger("audiolink")
 
 OUT_FRAMES = 256               # macOS: PortAudio's output buffer, written a buffer at a time
+LISTEN = 5.0                   # s to hear the Pi's link on a device's input before playing to it
+NOT_THE_PI = 30.0              # s before listening again to a device that wasn't the Pi
 
 
 def host_buffer_frames(fmt, output):
@@ -56,6 +58,25 @@ def device_format(out_dev, in_dev):
     return fmt
 
 
+def hears_the_link(inp, fmt, seconds=LISTEN, clock=time.monotonic, sleep=time.sleep):
+    """Listen before talking: does this input carry the link (one valid frame)? The Pi
+    sends one at least every KEEPALIVE whether or not it hears us; any other device
+    (a microphone, real headphones that share the Pi's USB ID or name) never does, and
+    is never played to. The input is read and dropped here; the link resyncs."""
+    import collections
+    from .protocol import Parser
+    heard = []
+    parser = Parser(lambda *frame: heard.append(True), collections.Counter())
+    end = clock() + seconds
+    while not heard and clock() < end:
+        if inp.available() < fmt.chunk_frames:
+            sleep(0.005)
+            continue
+        data, _ = inp.read(fmt.chunk_frames)
+        parser.feed(data)
+    return bool(heard)
+
+
 def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
     """Host: blocking PortAudio streams on the gadget's devices.
 
@@ -66,14 +87,21 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
     change), so waiting for it is -v detail.
     """
     from . import portaudio
+    not_the_pi = {}                    # device name -> when it last wasn't
 
     def open_streams():
         portaudio.reinit()
         out_dev, in_dev = find_devices(out_name, in_name)
+        if time.monotonic() - not_the_pi.get(in_dev["name"], -NOT_THE_PI) < NOT_THE_PI:
+            raise LookupError("%s isn't sending the link (listening again shortly)" % in_dev["name"])
         fmt = device_format(out_dev, in_dev)
-        # Input first: the gadget's capture side only carries data while the host streams.
+        # Input first, and only then output, once the Pi is heard on it (hears_the_link)
         inp = portaudio.Stream(in_dev, False, fmt.rate, fmt.channels, host_buffer_frames(fmt, False))
         try:
+            if not hears_the_link(inp, fmt):
+                not_the_pi[in_dev["name"]] = time.monotonic()
+                raise LookupError("%s isn't sending the link: not the Pi, so nothing is played to it"
+                                  % in_dev["name"])
             out = portaudio.Stream(out_dev, True, fmt.rate, fmt.channels, host_buffer_frames(fmt, True))
         except Exception:
             inp.close()
