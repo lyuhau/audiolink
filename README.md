@@ -503,8 +503,10 @@ checkout of the platform, e.g. one you're changing. A card
 for someone else: `make release-card`, then `audiolink card write dist/audiolink-pi-VER.zip`. `config/` describes the card:
 `pi-release.toml` (no USB ethernet, no SSH, the debug console off) and `pi.toml`, the
 dev image: it includes `pi-release.toml` and adds USB ethernet with the Pi at
-`10.55.0.2` (`device.toml`'s `dev = true` function, with `dev_functions`), SSH with
-`keys/id_ed25519.pub` and the debug console. `device.toml` is the USB device for both. `pi/app-start.sh` is the app's start: USB ethernet, the
+`10.55.0.2` (the `audiolink` flavor's `dev = true` function, with `dev_functions`), SSH with
+`keys/id_ed25519.pub` and the debug console. `flavors/*.toml` are the built-in USB
+devices (flavors) for both, `flavors/audiolink.toml` the default; `flavors/local/` is
+for your own (gitignored). `pi/app-start.sh` is the app's start: USB ethernet, the
 daemon's respawn loop (`pi/start-audiolink.sh`), mDNS, Wi-Fi, the clock.
 `pi-release.toml`'s `[app.settings]` are the card's `audiolink.*` settings (*The card's
 settings*); `pi/card-settings.sh` checks them and turns them into `audiolink pi`

@@ -12,7 +12,7 @@ the function is in no configuration, so a switch is: unbind (the host sees the d
 unplugged), unlink, write the attributes, link back, bind again (the host enumerates
 the new format). On pi-gadget-kit its gadget.sh does that (`gadget.sh set audio
 c_srate=...`: it relinks every function in order and brings usb0 up after the bind);
-the device starts in the BASELINE format (config/device.toml). Without the platform
+audiolink's own flavor starts in the BASELINE format (config/flavors/audiolink.toml). Without the platform
 (the older, pre-platform image's gadget) it's done here.
 """
 import glob
@@ -28,7 +28,7 @@ from .fmt import BASELINE, AudioFormat
 log = logging.getLogger("audiolink")
 
 LEGACY_GADGET = Path("/sys/kernel/config/usb_gadget/audiopi")      # the older image's
-FUNCTION = "uac2.audio"         # config/device.toml's uac2 function, id "audio"
+FUNCTION = "uac2.audio"         # the audiolink flavor's uac2 function, id "audio"
 MAX_PACKET = 1024               # high-speed isochronous, one transaction per microframe
 FS_PACKET = 1023                # full-speed isochronous: one packet per 1 ms frame
 PLAN = "/etc/usb-gadget/device.plan"
@@ -51,7 +51,7 @@ class Gadget:
 
     def _function(self, functions=None):
         """The audio function: the device description's (its list of functions), else
-        config/device.toml's id, else any uac2 (the older image's uac2.usb0)."""
+        the audiolink flavor's id, else any uac2 (the older image's uac2.usb0)."""
         try:
             with open(functions) as f:
                 for line in f:

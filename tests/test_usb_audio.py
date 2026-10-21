@@ -38,12 +38,15 @@ class PiDevices(unittest.TestCase):
             usb_audio._lookup = orig
 
     def test_device_files_use_known_ids(self):
-        for name in ("device.toml",):
-            with open(os.path.join(REPO, "config", name)) as f:
+        """Every built-in flavor (config/flavors/*.toml; not local/, people's own)."""
+        names = sorted(n for n in os.listdir(os.path.join(REPO, "config", "flavors")) if n.endswith(".toml"))
+        self.assertIn("audiolink.toml", names)
+        for name in names:
+            with open(os.path.join(REPO, "config", "flavors", name)) as f:
                 text = f.read()
             vid = int(re.search(r"^idVendor = (0x[0-9a-fA-F]+)", text, re.M).group(1), 16)
             pid = int(re.search(r"^idProduct = (0x[0-9a-fA-F]+)", text, re.M).group(1), 16)
-            self.assertIn((vid, pid), usb_audio.USB_IDS, "config/%s: add its ID to USB_IDS" % name)
+            self.assertIn((vid, pid), usb_audio.USB_IDS, "config/flavors/%s: add its ID to USB_IDS" % name)
 
 
 class ExtraIds(unittest.TestCase):

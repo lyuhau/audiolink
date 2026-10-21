@@ -36,7 +36,10 @@ ssh_public_key = ""                       # no sshd
 debug_console = false                     # the card's settings.txt can turn it on: console = on
 
 [device]
-description = "device.toml"
+# The flavors built in (README: Flavors): what the Pi can present on USB. Yours go in
+# flavors/local/ (never committed) and onto a Pi with `audiolink flavor add`.
+flavors = { audiolink = "flavors/audiolink.toml" }
+default = "audiolink"
 start_at_boot = true
 console = true                            # room for it in the device, next to the audio
 

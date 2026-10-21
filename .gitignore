@@ -2,6 +2,9 @@
 wifi.conf
 keys/
 
+# Your own flavors (clones of real devices, say): never commit
+config/flavors/local/
+
 # Generated (build_pyz.py, build_bin.py, tools/build_card.sh)
 dist/
 build/

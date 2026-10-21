@@ -1,5 +1,5 @@
 # audiolink, dev image: pi-release.toml plus the ways in: USB ethernet (the Pi at
-# 10.55.0.2, device.toml's dev function), SSH with keys/id_ed25519.pub, and the
+# 10.55.0.2, flavors/audiolink.toml's dev function), SSH with keys/id_ed25519.pub, and the
 # debug console on.
 #   tools/build_card.sh [config/pi.toml]     # then tools/deploy.sh
 include = "pi-release.toml"
@@ -9,4 +9,4 @@ ssh_public_key = "../keys/id_ed25519.pub" # dev key
 debug_console = true                      # USB serial root shell, next to the audio ([device] console)
 
 [device]
-dev_functions = true                      # device.toml's net: USB ethernet
+dev_functions = true                      # the audiolink flavor's net: USB ethernet
