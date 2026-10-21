@@ -1,6 +1,7 @@
 # Plan: versions and flavors
 
-Status: proposed, for review. Nothing here is built yet.
+Status: agreed (2026-10-21); being built in the order below. Decisions from the review
+are folded in; "v2" marks what's deliberately later.
 
 ## The model
 
@@ -43,8 +44,14 @@ Flavor: audiolink
 Switch: audiolink flavor use NAME
 ```
 
-- Switching is confirm-or-revert, like audio formats and updates: the Pi presents the
-  new flavor and keeps it once a host or its relay reaches it, else goes back.
+- Every `flavor use` (not just the first) is confirm-or-revert, like audio formats and
+  updates: the Pi presents the new flavor and keeps it once a computer's USB link
+  comes back on it, else goes back. Only USB counts: a flavor changes only USB, so the
+  relay or Wi-Fi coming back proves nothing about it. Switched over the network with
+  no computer plugged in, nothing can confirm it: the command says so.
+- Switching is live: the Pi re-presents its USB device (down, plan, up), no reboot,
+  respecting the same gap between re-presentations as audio formats (RESET_GAP: the
+  controller has wedged when rebound several times in a row at high rates).
 - `flavor use` warns first that the computer may show "Allow accessory".
 - Computers find the Pi in any flavor without being told: built-in flavors' USB IDs
   are known to every audiolink (`USB_IDS`); for added ones, the computer that adds or
@@ -67,7 +74,8 @@ user-added (`capture_usb.py` → `capture_to_toml.py` → `flavor add`).
 3. Edit and `try` again; `flavor add` to keep it; `flavor use` to make it the default.
 4. Built-in flavors: `config/flavors/NAME.toml` in the repo; the build packages them
    and runs the planner over each as a check (a flavor that doesn't plan fails the
-   build).
+   build). Your own: `config/flavors/local/` (gitignored), next to them, never committed
+   (a clone of a real product, say).
 
 One planner (pi-gadget-kit's `gadget_plan.py`), run on the Pi; the build only calls it
 early as a check. Validation happens on the Pi, so what was validated is what runs.
@@ -91,8 +99,8 @@ hidden `audiolink update --code PYZ`. The `.pyz` itself stays what computers run
   `/run/usb-gadget/device.plan`, present it. Any failure (missing, doesn't plan, the
   kernel refuses it): the default flavor, with the reason in the log; if even that
   fails, the prebuilt plan.
-- `gadget.sh use FLAVOR`: plan and re-present live (down, plan, up), for switching
-  without a reboot.
+- `gadget.sh use FLAVOR`: plan and re-present live (down, plan, up): how every switch
+  is done (no reboot). Loads the kernel modules the flavor needs.
 - Flavor files can say `extras = false`: no debug console and no dev functions in
   that flavor (a faithful clone), whatever the image's settings.
 - The `usb.*` card settings go: a flavor owns its identity (rename the device by
@@ -135,14 +143,18 @@ hidden `audiolink update --code PYZ`. The `.pyz` itself stays what computers run
 - Tag a release once the above is on hardware: update over the link from the
   previous release (whose Pis have slots but not flavors) is the migration test.
 
-## Open questions
+## Decided
 
-- Built-in flavors to ship beyond `audiolink`: a plain USB headset? Which USB ID (a
-  pid.codes ID for the project would cover audiolink's own flavors too)?
-- Live flavor switching (`gadget.sh use`) or a reboot each time? Live is faster;
-  a reboot is what the boot path already tests.
-- Should `flavor try` also be how `flavor use` works for added flavors the Pi has
-  never run (always a trial the first time)?
-- Images without `python3` (other pi-gadget-kit projects): build-time plans only, or
-  ship a planner that doesn't need Python?
-- State migrations (parked): rolling back a version now meets newer state more often.
+- Flavors live in `config/flavors/` (built in, committed) and `config/flavors/local/`
+  (yours, gitignored).
+- Switching is live; every `use` is a trial, confirmed over USB only.
+- Blue-green is for reliability; going back (`update --back`) is a developer tool for
+  now, so state migrations stay parked. When state formats change: a version in each
+  state file, and new code converts state only once its trial is committed (a failed
+  trial must never leave state the old version can't read).
+
+## Later (v2)
+
+- Which built-in flavors to ship beyond `audiolink`, and their USB ID (a pid.codes ID
+  for the project would cover audiolink's own flavors too): to be decided.
+- Images without `python3` (other pi-gadget-kit projects): today's build-time plan.
