@@ -292,31 +292,34 @@ unzip over it without replacing `settings.txt`
 (`unzip -o audiolink-pi-VER.zip -x settings.txt -d /Volumes/AUDIOPI`; on Windows,
 keep a copy of `settings.txt` and put it back). The Pi's state (`audiolink/`) and
 logs (`logs/`) stay. New settings the old `settings.txt` doesn't mention keep their
-built-in values. Code alone updates without a new card: `audiolink update`.
+built-in values. Without touching the card: `audiolink update`.
 
-**A newer image without touching the card:** `audiolink update --image` sends this
-version's release image (or `--image IMAGE`: a zip, or a build folder) over the link,
-or the network with `--pi PI`. The card holds two images (`a/`, `b/`); the new one
-goes in the one that isn't running and boots once on trial. It stays if audiolink on
-it reaches this computer or its relay within 3 minutes; otherwise the Pi goes back to
-the image it had, by itself. `audiolink update --image --revert` switches back to the
-other image; `audiolink update --status` shows both. The Pi's state and settings are
-shared by the two. A card written before image slots needs one `audiolink card write`
-first; the firmware files (`bootcode.bin`, `start.elf`) only change with a card write.
+**A new version without touching the card:** `audiolink update` sends this
+version's release image (or `audiolink update IMAGE`: a zip, or a build folder) over
+the link, or the network with `--pi PI`. The card holds two versions (image slots
+`a/`, `b/`); the new one goes in the one that isn't running and boots once on trial.
+It stays if audiolink on it reaches this computer or its relay within 3 minutes;
+otherwise the Pi goes back to the version it had, by itself. `audiolink update --back`
+switches back to the version before; `audiolink update --status` shows both. The Pi's
+state, settings and flavors are shared by the two. A card written before image slots
+needs one `audiolink card write` first; the firmware files (`bootcode.bin`,
+`start.elf`) only change with a card write.
 
 ### Write, back up and restore the card (macOS)
 
 ```
 audiolink card write [IMAGE] [--wipe]   audiolink onto the card
 audiolink card backup [FILE]            everything on the card to a zip
-audiolink card restore FILE             erase the card and put FILE on it (= write FILE --wipe)
+audiolink card restore FILE             erase the card and put a backup on it
 ```
 
 `card write` puts this version's release image on the card (downloaded and checked),
 or IMAGE: a zip, or a build folder such as `build/card-pi`. On an audiolink card it
 replaces the image's files and keeps the Pi's: `audiolink/` (its keys, saved Wi-Fi),
 `logs/`, `settings.txt` (renewed from the image's, with the settings someone set
-carried over) and `ssh_authorized_keys`. An earlier `audiolink update` on the card is removed, so the
+carried over), `ssh_authorized_keys` and the image it boots: the new one goes in the
+other slot and boots from then on (`audiolink update --back` goes back to the one
+before). An earlier code update (`audiolink update --code`) on the card is removed, so the
 Pi runs the code of the image just written (`--keep-update`: keep it). A blank card is written. Anything else (Raspberry Pi OS,
 another project's card) stops it, untouched: `--wipe` erases the card first, keeping
 nothing. Every file is checked after writing.
@@ -326,7 +329,8 @@ nothing. Every file is checked after writing.
 saved Wi-Fi passwords, so keep the zip private; `settings.txt`; logs) and the image it
 runs. `--all-images` adds the card's other image (a Pi carrying two, say). Restoring a
 backup gives a card that boots as that Pi; its other image slot fills with the next
-`audiolink update --image`. A backup isn't an image: `update --image` refuses it. With the Pi connected and no card open here, the
+`audiolink update`. A backup isn't an image: `update` and `card write` refuse it, and
+`card restore` takes only backups. With the Pi connected and no card open here, the
 Pi backs up its own card over the link (any OS; `--pi PI`: over the network; owners
 only), so the card stays in the Pi. A restored card is the same Pi as the one backed
 up: don't use both in two Pis at once. Backup leaves the card open, for writing onto
@@ -357,8 +361,7 @@ see *Where card images come from* to write one.
 | `audiolink wifi [scan\|status\|list\|join\|forget\|portal\|check\|ap]` | the Pi's Wi-Fi; `join`, `status`, `check` also over the network (`--pi PI`); `check` exits 0 online, 3 sign-in page, 4 no internet |
 | `audiolink discovery [status\|enable\|disable\|publish\|code]` | whether the plugged-in Pi publishes where it is on the DHT (the relay works either way) |
 | `audiolink audio [status\|sweep\|set RATExCH\|forget]` | the link's audio format (see *How it works*) |
-| `audiolink update [PYZ] [--revert\|--status] [--pi PI]` | new code for the plugged-in Pi, over the link (kept on its card); `--pi`: over the network |
-| `audiolink update --image [IMAGE] [--revert]` | a whole new image, tried before it's kept (see *A newer image without touching the card*) |
+| `audiolink update [IMAGE\|--back\|--status] [--pi PI]` | a new version for the plugged-in Pi, over the link, tried before it's kept (see *A new version without touching the card*); `--pi`: over the network |
 | `audiolink settings [KEY=VALUE ...] [--unset KEY] [--reboot]` | the Pi's card settings, over the link |
 | `audiolink flavor [use NAME\|add FILE\|remove NAME\|try FILE] [--pi PI]` | what the Pi presents on USB (see *Flavors*) |
 | `audiolink logs [FILE] [-n N] [--list] [--pi PI] [--key FILE]` | the plugged-in Pi's logs, over the link; `--pi`: over the network |
@@ -402,8 +405,10 @@ Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
   isn't on the internet (check its Wi-Fi on the host: `audiolink wifi check`);
   "online" with ssh failing means the host isn't running with `--expose 2222:22`, or
   its ssh server is off.
-- **An update broke it.** Over USB: `audiolink update --revert`. Or hold the reset
-  pins for 5 s (back to the image's code), 15 s to also start over. With a card
+- **An update broke it.** A new version that doesn't come back online goes back by
+  itself; one that does but misbehaves: `audiolink update --back`. A code update
+  (developers): `audiolink update --code --back`, or hold the reset pins for 5 s
+  (back to the image's code), 15 s to also start over. With a card
   reader, the card's `logs/last` (and `logs/prev`, the boot before) has the Pi's logs,
   and `audiolink/` its state: deleting `audiolink/audiolink.pyz` drops an update.
 - **Looking inside.** Over USB, `audiolink shell` is a root shell on the Pi and
@@ -579,7 +584,7 @@ clients and Pis first, then swap it.
 - Run the host daemon from a copy (`cp dist/audiolink.pyz build/host.pyz`): every
   build rewrites `dist/audiolink.pyz` under it.
 - `hot.sh`, `deploy.sh` and `smoke.sh` reach the Pi over USB ethernet; over Wi-Fi:
-  `PI=root@ADDRESS tools/hot.sh`. An update on the card (`audiolink update`) runs
+  `PI=root@ADDRESS tools/hot.sh`. A code update on the card (`audiolink update --code`) runs
   instead of the code they install; `hot.sh` and `deploy.sh` say so and offer to remove it.
 - Many daemon restarts or USB rebinds in a row can wedge the Pi's USB until it's
   replugged.
@@ -596,9 +601,9 @@ clients and Pis first, then swap it.
    workflow refuses a card whose packages differ from it (Alpine moved on; rebuild,
    review the diff, try the card).
 3. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
-4. Check the release's files: the macOS and Windows zips, the `.pyz` (also
-   what `audiolink update` sends to a Pi), the card (`audiolink-pi-VER.zip`, with
-   its `.manifest`) and `SHA256SUMS`. Unzip the card onto a microSD card and boot a
+4. Check the release's files: the macOS and Windows zips, the `.pyz`, the card
+   (`audiolink-pi-VER.zip`, with its `.manifest`: also what `audiolink update`
+   sends to a Pi) and `SHA256SUMS`. Unzip the card onto a microSD card and boot a
    Pi from it.
 
 ## License
