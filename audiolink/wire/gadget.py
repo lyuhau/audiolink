@@ -1,7 +1,8 @@
 """Pi: re-present the USB audio gadget in another audio format.
 
 The audio function is the device description's (pi-gadget-kit): uac2 for
-audiolink's own device, or uac1 for a device cloned from real headphones. Its home
+audiolink's own device, or uac1 for a device cloned from real headphones. The
+device is the flavor that's up (services/flavor.py switches it; then reload()). Its home
 format (where every link starts, and what the Pi goes back to) is the one the
 gadget plan sets, each direction its own (a clone: stereo out, mono in), and going
 home writes the plan's values back exactly, so a clone is the device it copies
@@ -31,21 +32,34 @@ LEGACY_GADGET = Path("/sys/kernel/config/usb_gadget/audiopi")      # the older i
 FUNCTION = "uac2.audio"         # the audiolink flavor's uac2 function, id "audio"
 MAX_PACKET = 1024               # high-speed isochronous, one transaction per microframe
 FS_PACKET = 1023                # full-speed isochronous: one packet per 1 ms frame
-PLAN = "/etc/usb-gadget/device.plan"
+PLAN = "/etc/usb-gadget/device.plan"          # the image's: its default flavor's, prebuilt
+RUN_PLAN = "/run/usb-gadget/device.plan"      # the flavor that's up (pi-gadget-kit: gadget.sh up/use)
 # A direction's format in the function's attributes; going home also restores these
 HOME_ATTRS = ("chmask", "srate", "ssize", "max_packet_size", "hs_bint")
 
 
+def running_plan():
+    """The plan of the device that's up: the flavor's, else the image's."""
+    return RUN_PLAN if os.path.exists(RUN_PLAN) else PLAN
+
+
 class Gadget:
-    def __init__(self, root=None, gadget_sh=None, env=None, plan=PLAN):
+    def __init__(self, root=None, gadget_sh=None, env=None, plan=None):
         env = platform_env() if env is None else env
         if root is None:
             root = env.get("GADGET") or LEGACY_GADGET
         self.root = Path(root)
         self.gadget_sh = gadget_sh if gadget_sh is not None else env.get("GADGET_SH")
-        self.uac2 = self.root / "functions" / self._function(env.get("GADGET_FUNCTIONS"))
+        self.functions = env.get("GADGET_FUNCTIONS")
+        self.plan = plan
+        self.reload()
+
+    def reload(self):
+        """Read the device again: after a flavor switch (services/flavor.py) it may be
+        another one (its function, its kind, its speed, its home formats)."""
+        self.uac2 = self.root / "functions" / self._function(self.functions)
         self.kind = self.uac2.name.split(".")[0]           # uac2, or uac1 (a clone)
-        self.plan_attrs = self._plan_attrs(plan)
+        self.plan_attrs = self._plan_attrs(self.plan or running_plan())
         # The device leaves bInterval at the kernel default; formats too fast for it use 1.
         self.default_bint = {d: self._read("%s_hs_bint" % d) for d in "cp"}
 

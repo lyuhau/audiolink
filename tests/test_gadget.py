@@ -155,6 +155,26 @@ class Clone(unittest.TestCase):
         self.assertEqual((attrs["c_max_packet_size"], attrs["p_max_packet_size"]), (768, 768))
         self.assertNotIn("c_hs_bint", attrs)
 
+    def test_reload_after_a_flavor_switch(self):
+        """gadget.sh use: another device in the same gadget; read it again."""
+        uac2 = os.path.join(self.dir, "functions", "uac2.audio")
+        os.makedirs(uac2)
+        for name, v in (("c_chmask", "3"), ("c_srate", "48000"), ("p_chmask", "3"), ("p_srate", "48000"),
+                        ("c_hs_bint", "4")):
+            with open(os.path.join(uac2, name), "w") as f:
+                f.write(v + "\n")
+        with open(self.g.functions, "w") as f:
+            f.write("audio uac2 %s\n" % uac2)
+        plan = os.path.join(self.dir, "device.plan")
+        with open(plan, "w") as f:
+            f.write("write functions/uac2.audio/c_srate 48000\nwrite functions/uac2.audio/p_chmask 3\n")
+        self.g.plan = plan
+        os.remove(os.path.join(self.dir, "max_speed"))
+        self.g.reload()
+        self.assertEqual((self.g.kind, self.g.uac2.name, self.g.default_bint["c"]), ("uac2", "uac2.audio", "4"))
+        self.assertEqual(self.g.home(), (BASELINE, BASELINE))
+        self.assertFalse(self.g.full_speed())
+
     def test_audiolinks_own_device(self):
         g = Gadget(root=self.dir, gadget_sh="", env={}, plan=os.devnull)   # no plan: the baseline
         self.assertEqual(g.home(), (BASELINE, BASELINE))

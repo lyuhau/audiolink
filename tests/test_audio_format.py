@@ -267,6 +267,26 @@ class CloneHome(unittest.TestCase):
         gadget.set_format.assert_called_with("home")
         audio.start.assert_called_with(self.MONO, self.STEREO)
 
+    def test_another_device(self):
+        """A flavor switch (services/flavor.py): audiolink's own device instead of the clone."""
+        svc, gadget, audio = self.service()
+        svc.pending = 1.0
+
+        def change():
+            audio.start.assert_not_called()
+            audio.stop.assert_called_once_with()
+            gadget.home.return_value = (BASELINE, BASELINE)
+            gadget.fits.side_effect = lambda f: True        # high speed
+            return 0, "flavor audiolink up"
+        with svc.lock:
+            self.assertEqual(svc.replace_device(change), (0, "flavor audiolink up"))
+        gadget.reload.assert_called_once_with()
+        self.assertEqual(svc.home, (BASELINE, BASELINE))
+        self.assertIn(AudioFormat(192000, 8), svc.candidates)
+        self.assertIsNone(svc.pending)
+        audio.start.assert_called_with(BASELINE, BASELINE)
+        gadget.set_format.assert_not_called()               # gadget.sh use presented it, in its formats
+
     def test_host_side(self):
         from audiolink.host.audio_format import at_home, home_name
         home = {"play": self.MONO.to_json(), "record": self.STEREO.to_json()}

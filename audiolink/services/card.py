@@ -50,8 +50,12 @@ def check(kind, value):
         return value
     if kind == "text" and not bad:
         return value
+    if kind == "flavor" and re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value):
+        return value
     raise ValueError({"hostname": "letters, digits and -", "hex16": "a hex ID like 0x1d6b", "onoff": "on or off",
-                      "usbstring": "at most 126 characters"}.get(kind, "one line of text"))
+                      "usbstring": "at most 126 characters",
+                      "flavor": "a flavor's name: lowercase letters, digits, - and _ (audiolink flavor lists them)"
+                      }.get(kind, "one line of text"))
 
 
 class CardService(Service):

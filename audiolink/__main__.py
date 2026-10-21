@@ -471,6 +471,7 @@ def run_pi(a, allow, port, gate):
     from .services.proxy import ProxyService
     from .services.wifi import WifiService
     from .services.audio_format import AudioFormatService
+    from .services.flavor import FlavorService, usb_ids
     from .session import CLOCK_SANE
     from .wire.alsa import AlsaAudio
     from .wire.gadget import Gadget
@@ -488,7 +489,8 @@ def run_pi(a, allow, port, gate):
         """Where the Pi is now, for a computer that proved its key (and one that just paired)."""
         conn, now = wifi.connection(), session.now()
         return {"name": identity.pi_name(), "ts": int(now) if now > CLOCK_SANE else None,
-                "lan": [conn["ip"]] if conn["ip"] else [], "ssid": conn["ssid"], "ports": streams.ports()}
+                "lan": [conn["ip"]] if conn["ip"] else [], "ssid": conn["ssid"], "ports": streams.ports(),
+                "usb": usb_ids()}           # its flavor's: computers find it by them (host.json usb_ids)
     endpoint = Endpoint(identity, presence=presence, record=record)
     streams.serve_endpoint(endpoint)
     PairingService(identity, endpoint)
@@ -504,8 +506,10 @@ def run_pi(a, allow, port, gate):
     # A new image on trial stays once it gets through: to its host, or to its relay
     image = ImageService(endpoint=endpoint,
                          healthy=lambda: session.peer_alive or relay.status().get("relay") == "up")
+    card = CardService(endpoint=endpoint)
 
     def revert():
+        flavors.to_default()                            # the pins: the default flavor too
         update.handle("revert", {"restart": True})     # the pins always restart
 
     def forget_everything():
@@ -519,8 +523,7 @@ def run_pi(a, allow, port, gate):
     identity.serve(endpoint, reset)
     session = Session("pi", [streams, wifi, proxy, identity, link, setup_ap,
                              WifiRemoteService(wifi, setup_ap, endpoint, radio), relay,
-                             LogsService(endpoint=endpoint), update, image, CardService(endpoint=endpoint),
-                             NetworkShells(endpoint)])
+                             LogsService(endpoint=endpoint), update, image, card, NetworkShells(endpoint)])
     session.gate = link.check
     audio = AlsaAudio(session.link, a.device)
     gadget = Gadget()
@@ -530,6 +533,7 @@ def run_pi(a, allow, port, gate):
         audio.start()
     formats = AudioFormatService(audio, gadget)
     session.add(formats)
+    flavors = session.add(FlavorService(formats, card, endpoint=endpoint))      # what it presents on USB
     from .services.usbnet import UsbNetWatch
     UsbNetWatch(formats.represent).run()
     for spec in a.forward:
@@ -537,6 +541,7 @@ def run_pi(a, allow, port, gate):
     setup_ap.run()
     relay.run()
     image.run()
+    flavors.run()
     try:
         ShellServer().run()
     except OSError as e:

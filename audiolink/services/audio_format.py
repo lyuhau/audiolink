@@ -25,7 +25,9 @@ streams at a high rate has wedged it (dwc2 endpoint-stop timeouts; the host then
 drops the device until it's replugged). A second restart within the gap leaves the
 audio stopped until the gap has passed. (Keeping the old format instead, without a
 rebind, was tried: after the abrupt stop of aplay/arecord the link ran with heavy
-loss, and the next rebind wedged the controller.)
+loss, and the next rebind wedged the controller.) Flavor switches (services/flavor.py:
+another device altogether, replace_device) keep the same gap, from these resets and
+from each other.
 """
 import base64
 import hashlib
@@ -52,9 +54,9 @@ def _uptime():
         return float(f.read().split()[0])
 
 
-def _reset_wait():
-    """Seconds to wait before a restart-time reset of the gadget (0: now), and note
-    the reset as done at that time."""
+def reset_wait():
+    """Seconds to wait before a restart-time reset of the gadget, or a flavor switch
+    (services/flavor.py) (0: now), and note the reset as done at that time."""
     try:
         now = _uptime()
         try:
@@ -79,17 +81,40 @@ class AudioFormatService(Service):
         self.lock = threading.Lock()
         self.pending = None             # deadline (monotonic) for confirming the current format
         self.gone_since = None
-        available = gadget.available()
-        self.home = gadget.home() if available else (BASELINE, BASELINE)    # (sends, receives)
-        self.candidates = [f for f in CANDIDATES if gadget.fits(f)] if available else list(CANDIDATES)
-        current = gadget.current_both() if available else (None, None)
+        self._read_device()
+        current = gadget.current_both() if gadget.available() else (None, None)
         if None not in current and current != self.home:
-            wait = _reset_wait()
+            wait = reset_wait()
             log.info("audio: gadget left in %r; back home to %r%s", current[0], self.home[0],
                      " in %.0fs (it was reset just before)" % wait if wait else "")
             if wait:
                 self.audio.stop()               # nothing usable until then
             threading.Thread(target=self._reset_later, args=(wait,), daemon=True).start()
+
+    def _read_device(self):
+        """The device's home formats (sends, receives) and the other formats its speed carries."""
+        available = self.gadget.available()
+        self.home = self.gadget.home() if available else (BASELINE, BASELINE)
+        self.candidates = [f for f in CANDIDATES if self.gadget.fits(f)] if available else list(CANDIDATES)
+
+    def replace_device(self, change):
+        """Call with self.lock held. Another device (a flavor switch, services/flavor.py):
+        the audio stopped, change() run (gadget.sh use), then the device read again (it
+        may be another kind, another speed) and the audio started in its home formats.
+        -> change()'s result."""
+        self.audio.stop()
+        try:
+            return change()
+        finally:
+            self.pending = None
+            self.gadget.reload()
+            self._read_device()
+            if self.gadget.available():
+                if not self.gadget.wait_card():
+                    log.warning("audio: the gadget's sound card didn't come back")
+                self.audio.start(*self.home)
+            else:
+                self.audio.start()
 
     def _reset_later(self, wait):
         time.sleep(wait)
