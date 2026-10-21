@@ -59,6 +59,16 @@ class Directions(unittest.TestCase):
         inp = {"rate": 48000.0, "inputs": 1}
         self.assertEqual(host_audio.device_formats(out, inp), (AudioFormat(48000, 2), AudioFormat(48000, 1)))
 
+    def test_a_mono_microphone_is_picked(self):
+        from unittest import mock
+        devs = [{"name": "Arctis GameBuds", "outputs": 2, "inputs": 0, "hostapi_type": 5, "rate": 48000.0},
+                {"name": "Arctis GameBuds", "outputs": 0, "inputs": 1, "hostapi_type": 5, "rate": 48000.0}]
+        with mock.patch("audiolink.wire.portaudio.devices", lambda: [dict(d) for d in devs]), \
+                mock.patch("audiolink.wire.usb_audio._lookup", lambda: (lambda d: (0x1038, 0x230a))), \
+                mock.patch("audiolink.wire.usb_audio.known_ids", lambda: {(0x1038, 0x230a)}):
+            out, inp = host_audio.find_devices()
+        self.assertEqual((out["outputs"], inp["inputs"]), (2, 1))
+
     def test_pi_plays_and_records_in_its_own(self):
         from audiolink.wire import alsa
         from audiolink.wire.fmt import AudioFormat

@@ -34,7 +34,7 @@ def find_devices(out_name=None, in_name=None):
 
     def pick(name, kind):
         key = "outputs" if kind == "output" else "inputs"
-        cands = [d for d in devs if d[key] >= 2]
+        cands = [d for d in devs if d[key] >= 1]        # a clone's microphone can be mono
         if name:
             cands = [d for d in cands if name.lower() in d["name"].lower()]
         else:
