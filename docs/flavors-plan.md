@@ -2,7 +2,7 @@
 
 Status: agreed (2026-10-21); being built in the order below. Decisions from the review
 are folded in; "v2" marks what's deliberately later. Done: 1 (pi-gadget-kit c8880ae),
-2 and 3 (`services/flavor.py`, `audiolink flavor`; not yet tried on hardware).
+2 and 3 (`services/flavor.py`, `audiolink flavor`; switching tried on hardware), 4.
 
 ## The model
 
