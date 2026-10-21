@@ -107,6 +107,15 @@ def find(entry, at, turned_away):
     return None, None, None, why
 
 
+def learn_usb_ids(rec):
+    """The Pi's record says which USB ID its flavor has (services/flavor.py): this
+    computer then finds it plugged in as that, too (host.json usb_ids)."""
+    if isinstance(rec, dict) and isinstance(rec.get("usb"), list):
+        from ..host.config import remember_usb_ids
+        for i in remember_usb_ids(rec["usb"]):
+            detail("learned the Pi's USB ID %s (host.json usb_ids)", i)
+
+
 def not_listed(name):
     return SystemExit("%s doesn't have this computer on its list. On an owner computer: audiolink invite %s; "
                       "then audiolink setup here" % (name, this_computer()))
@@ -150,6 +159,7 @@ class Remote:
                 fields["last_record"] = rec
                 if rec.get("name"):
                     fields["name"] = rec["name"]
+            learn_usb_ids(rec)
             keyring.update(pub, **fields)
             keyring.seen(pub)
         if not quiet:

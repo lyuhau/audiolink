@@ -8,7 +8,8 @@ value (a list flag such as --expose replaces the saved list).
    "out_device": null, "in_device": null, "usb_ids": []}
 
 usb_ids: more USB IDs (VID:PID) whose sound devices are the Pi's, next to the built-in
-ones (wire/usb_audio.py): a Pi from a fork that presents its own.
+ones (wire/usb_audio.py): a Pi from a fork that presents its own, or in a flavor someone
+added (`audiolink flavor`, and the Pi's network record, add them: remember_usb_ids).
 """
 import argparse
 import json
@@ -89,6 +90,25 @@ def update(**changes):
         else:
             data[k] = v
     return save(data)
+
+
+def remember_usb_ids(ids):
+    """Add Pis' USB IDs ("vvvv:pppp") to usb_ids, those that aren't built in or saved
+    already. -> the ones added. Never fails: a damaged host.json stays as it is."""
+    from ..wire.usb_audio import USB_IDS, parse_id
+    try:
+        data = load()
+        saved = list(data.get("usb_ids", []))
+        new = []
+        for i in ids or []:
+            i = argtypes.usb_id(str(i))
+            if parse_id(i) not in USB_IDS and i not in saved + new:
+                new.append(i)
+        if new:
+            update(usb_ids=saved + new)
+        return new
+    except (SystemExit, OSError, ValueError, argparse.ArgumentTypeError):
+        return []
 
 
 def apply(a, saved=None):

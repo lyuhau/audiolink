@@ -31,6 +31,14 @@ def set_extra_ids(ids):
     _extra = None if ids is None else {parse_id(i) for i in ids}
 
 
+def add_ids(ids):
+    """More of the host's usb_ids while it runs (`audiolink flavor`: the Pi as another
+    device). -> every ID known now, as text."""
+    global _extra
+    _extra = (_extra if _extra is not None else known_ids() - USB_IDS) | {parse_id(i) for i in ids}
+    return sorted("%04x:%04x" % i for i in known_ids())
+
+
 def parse_id(text):
     vid, pid = text.split(":")
     return int(vid, 16), int(pid, 16)

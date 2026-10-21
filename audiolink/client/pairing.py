@@ -473,6 +473,8 @@ def _joined(result, a):
     rec = result.get("record")
     if isinstance(rec, dict) and rec.get("ts"):
         fields["last_record"] = rec
+    from .remote import learn_usb_ids
+    learn_usb_ids(rec)
     keyring.update(result["pub"], **fields)
     entry.update(fields)
     on_list = result.get("as")          # this computer's name on the Pi's list (maybe numbered: laptop-2)

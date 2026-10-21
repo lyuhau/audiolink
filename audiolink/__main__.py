@@ -24,6 +24,7 @@ Start here:
   audiolink card backup [FILE]               the Pi's whole card to a zip
   audiolink card restore FILE                erase the card and put a backup on it (= write FILE --wipe)
   audiolink settings [KEY=VALUE ...]         the plugged-in Pi's card settings (--pi PI: over the network)
+  audiolink flavor [use NAME]                what the Pi presents on USB, and what it could (add, remove, try)
 
 Any computer:
   audiolink pis [PI]                         the Pis this computer knows (PI: online?, its list)
@@ -266,7 +267,7 @@ def build_parser():
                             "  -- CMD ...   run CMD on the Pi with sh -c instead (no terminal; stdin, stdout and\n"
                             "               stderr pass through), e.g. audiolink shell -- 'df -h; uptime'"))
     sh.add_argument("pi", nargs="?", help="over the network: a name, code or address")
-    stg = sub.add_parser("settings", help="the Pi's card settings (hostname, relay, USB names...), over the link",
+    stg = sub.add_parser("settings", help="the Pi's card settings (hostname, relay, flavor...), over the link",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "The Pi's card settings (README: The card's settings), through the running Pi:\n"
                              "  audiolink settings                     list them: their values, set or built in\n"
@@ -276,8 +277,24 @@ def build_parser():
     stg.add_argument("items", nargs="*", metavar="KEY=VALUE", help="settings to change (none: list them)")
     stg.add_argument("--unset", action="append", metavar="KEY", help="back to its built-in value (repeatable)")
     stg.add_argument("--reboot", action="store_true", help="restart the Pi so the changes take effect now")
+    flv = sub.add_parser("flavor", help="what the Pi presents on USB (its flavor), and what it could",
+                         formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+                             "What the Pi presents on USB: audiolink's own sound device, or another (README: "
+                             "Flavors).\n"
+                             "  audiolink flavor                  what the Pi is, and what it could be\n"
+                             "  audiolink flavor use NAME         become that (kept if this computer's link comes "
+                             "back)\n"
+                             "  audiolink flavor add FILE         add one (a .toml someone gave you, or one you "
+                             "made)\n"
+                             "  audiolink flavor try FILE         try one without keeping it\n"
+                             "  audiolink flavor remove NAME      remove one you added\n"
+                             "Owners only."))
+    flv.add_argument("action", nargs="?", default="list", choices=["list", "use", "add", "remove", "try"],
+                     help="see above")
+    flv.add_argument("arg", nargs="?", metavar="NAME|FILE", help="the flavor (use, remove) or its file (add, try)")
+    flv.add_argument("--name", help="add: its name on the Pi (default: the file's)")
     crd.add_argument("--pi", help="backup: over the network, from this Pi (name, code or address)")
-    for p in (upd, lg, sh, stg, crd):
+    for p in (upd, lg, sh, stg, crd, flv):
         if p is not sh and p is not crd:
             p.add_argument("--pi", help="over the network: which Pi (name, code or address)")
         p.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
@@ -329,7 +346,7 @@ def build_parser():
     roles["host"].add_argument("--out-device", metavar="NAME",
                                help="the Pi's output sound device, if not found (part of its name: "
                                     "audiolink list-devices)")
-    for p in (roles["host"], w, ren, aud, upd, lg, sh, stp, stg, crd):
+    for p in (roles["host"], w, ren, aud, upd, lg, sh, stp, stg, crd, flv):
         p.add_argument("--control-port", type=argtypes.port, default=None, metavar="PORT",
                        help="the port other audiolink commands reach this on (default 47800)" if p is roles["host"]
                        else "audiolink host's control port (default 47800), if it runs with another")
@@ -422,6 +439,10 @@ def main(argv=None):
     if a.cmd == "settings":
         from .host.settings_cli import settings_command
         return settings_command(a)
+    if a.cmd == "flavor":
+        from .host.flavor_cli import flavor_command
+        a.control_port = port
+        return flavor_command(a)
     if a.cmd == "update":
         from .host.update_cli import update_command
         a.control_port = port
@@ -606,6 +627,7 @@ def run_host(a, allow, port, gate):
                                        "link": identity.local_ops(),
                                        "proxy_port": a.proxy_port, "shell_port": a.shell_port,
                                        "expose": list(a.expose)}}
+    local_ops["usb_ids.add"] = lambda args: usb_audio.add_ids(args.get("ids") or [])    # audiolink flavor
     local_ops.update(watcher.local_ops())
     local_ops.update(negotiator.local_ops())
     control.serve(session, ctl, local_ops)

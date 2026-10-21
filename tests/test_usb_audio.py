@@ -72,6 +72,17 @@ class ExtraIds(unittest.TestCase):
         with mock.patch.object(config, "load", lambda strict=True: {"usb_ids": ["1209:0001"]}):
             self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK})
 
+    def test_added_while_running(self):
+        """audiolink flavor: the running host finds the Pi as its new flavor too."""
+        from unittest import mock
+        from audiolink.host import config
+        usb_audio.set_extra_ids(["1209:0001"])
+        self.assertEqual(usb_audio.add_ids(["1209:abcd"]), ["1209:0001", "1209:abcd", "1d6b:0104"])
+        usb_audio.set_extra_ids(None)
+        with mock.patch.object(config, "load", lambda strict=True: {"usb_ids": ["1209:0001"]}):
+            usb_audio.add_ids(["1209:abcd"])                     # on top of host.json's
+        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK, (0x1209, 1)})
+
     def test_flag_and_config_values(self):
         import argparse
         from audiolink import argtypes

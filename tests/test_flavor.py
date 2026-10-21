@@ -1,6 +1,9 @@
-"""The Pi's flavors (services/flavor.py): listing, adding and removing them on the card,
+"""The Pi's flavors (services/flavor.py) and `audiolink flavor` (host/flavor_cli.py): listing, adding and removing them on the card,
 and switching (use, try) with confirm-or-revert over USB; with stand-ins for the
 platform's planner and gadget.sh, the audio, the card's settings and the link."""
+import contextlib
+import io
+import os
 import shutil
 import subprocess
 import sys
@@ -296,6 +299,104 @@ class Switching(Base):
         self.assertEqual(sw["state"], "cancelled")
         time.sleep(2)                                               # past the confirm time: no second revert
         self.assertEqual(self.uses, ["gamebuds", "audiolink"])
+
+
+class Command(Base):
+    """`audiolink flavor` (host/flavor_cli.py) against the service above."""
+
+    def setUp(self):
+        super().setUp()
+        from audiolink.host import flavor_cli
+        self.cli = flavor_cli
+        self.taught = []
+        for p in (mock.patch.object(flavor_cli, "POLL", 0.05),
+                  mock.patch.dict(os.environ, {"AUDIOLINK_CONFIG_DIR": str(self.dir / "config")}),
+                  mock.patch("audiolink.host.control.call", lambda op, args=None, **kw: self.taught.extend(args["ids"])),
+                  mock.patch.object(flavor_cli, "pi_caller", lambda a, cap: (self.call, self.net))):
+            p.start()
+            self.addCleanup(p.stop)
+        self.net = False
+        (self.dir / "gamebuds.toml").write_text(CLONE)
+
+    def call(self, op, args=None, port=None):
+        area, _, action = op.partition(".")
+        try:
+            return self.svc.handle(action, dict(args or {}))
+        except ValueError as e:                 # as control.call and NetCaller say it
+            raise SystemExit(str(e))
+
+    def command(self, action=None, arg=None, name=None):
+        out = io.StringIO()
+        a = SimpleNamespace(action=action, arg=arg, name=name, pi="kitchen" if self.net else None, control_port=None)
+        with contextlib.redirect_stdout(out):
+            try:
+                self.cli.flavor_command(a)
+            except SystemExit as e:
+                print("EXIT", e)
+        return out.getvalue()
+
+    def saved_ids(self):
+        from audiolink.host import config
+        return config.load().get("usb_ids", [])
+
+    def test_list(self):
+        self.command("add", str(self.dir / "gamebuds.toml"))
+        out = self.command()
+        self.assertTrue(out.startswith("Flavor: audiolink\n"), out)
+        self.assertRegex(out, r"\* audiolink +AudioPi +1d6b:0104 +\(built in, the default\)")
+        self.assertRegex(out, r"  gamebuds +Arctis GameBuds +1038:230a +\(yours\)")
+        self.assertTrue(out.endswith("Switch: audiolink flavor use NAME\n"))
+
+    def test_add_remembers_its_id(self):
+        out = self.command("add", str(self.dir / "gamebuds.toml"))
+        self.assertIn("Note: string 33 not reproduced\nAdded gamebuds (Arctis GameBuds, 1038:230a)", out)
+        self.assertIn("This computer finds the Pi as 1038:230a from now on", out)
+        self.assertEqual(self.saved_ids(), ["1038:230a"])
+        self.assertEqual(self.taught, ["1038:230a"])                # the running host too
+        self.assertIn("Added my-buds", self.command("add", str(self.dir / "gamebuds.toml"), name="my-buds"))
+        self.assertEqual(self.saved_ids(), ["1038:230a"])           # once
+        self.assertEqual(self.cli.name_of("/x/My GameBuds v2.toml"), "my-gamebuds-v2")
+
+    def test_use_kept(self):
+        self.command("add", str(self.dir / "gamebuds.toml"))
+        self.link_comes_back()
+        out = self.command("use", "gamebuds")
+        self.assertIn("may ask to allow it (macOS: Allow accessory)", out)
+        self.assertIn("Switching the Pi to gamebuds; it keeps it once this computer's link comes back (1s)... kept", out)
+        self.assertIn("The Pi starts as gamebuds from now on", out)
+        self.assertTrue(self.command().startswith("Flavor: gamebuds\n"))
+        self.assertIn("EXIT the Pi is gamebuds now", self.command("remove", "gamebuds"))
+
+    def test_use_went_back(self):
+        self.command("add", str(self.dir / "gamebuds.toml"))
+        out = self.command("use", "gamebuds")
+        self.assertIn("... went back\nEXIT No computer's link came back on gamebuds, so the Pi went back to "
+                      "audiolink", out)
+        self.assertIn("EXIT No flavor nope", self.command("use", "nope"))
+        self.assertIn("The Pi is audiolink already", self.command("use", "audiolink"))
+
+    def test_try(self):
+        self.link_comes_back()
+        out = self.command("try", str(self.dir / "gamebuds.toml"))
+        self.assertIn("Note: string 33 not reproduced", out)
+        self.assertIn("Switching the Pi to the tried flavor", out)
+        self.assertIn("Until the Pi restarts", out)
+        self.assertEqual(self.saved_ids(), [])                       # not kept: only the running host learns it
+        self.assertEqual(self.taught, ["1038:230a"])
+        self.assertIn("Flavor: the tried flavor (starts as audiolink)", self.command())
+
+    def test_over_the_network_without_a_computer(self):
+        self.net = True
+        self.session.peer_alive = False
+        out = self.command("use", "audiolink")
+        self.assertIn("EXIT Nothing can confirm a switch: no computer is plugged into the Pi's USB", out)
+        self.assertIn("audiolink settings flavor=NAME --pi kitchen --reboot", out)
+
+    def test_learned_from_the_record(self):
+        from audiolink.client.remote import learn_usb_ids
+        learn_usb_ids({"usb": ["1038:230a", "1d6b:0104"]})            # the built-in one isn't saved
+        learn_usb_ids({"name": "a Pi from before flavors"})
+        self.assertEqual(self.saved_ids(), ["1038:230a"])
 
 
 class Settings(unittest.TestCase):
