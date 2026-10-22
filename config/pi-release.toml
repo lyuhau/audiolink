@@ -64,8 +64,9 @@ certificate), or off."""
 
 [app.settings.expose_setup]
 default = "off"
-help = """on: ports the host exposes take connections from the Pi's open setup network
-too, not only from its Wi-Fi network."""
+help = """No effect now (kept so older cards' settings still work): exposed ports take
+connections from computers on the Pi's list, on every network, the setup network
+included."""
 
 [app.files]
 "opt/audiolink/audiolink.pyz" = "../dist/audiolink.pyz"

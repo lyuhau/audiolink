@@ -3,7 +3,7 @@
 # [app] settings, the platform's README: Card settings) as `audiolink pi`
 # arguments, one per line, for start-audiolink.sh to add after its own.
 #   audiolink.relay         HOST:PORT[#PIN] or off   -> --relay=...
-#   audiolink.expose_setup  on or off                -> --expose-setup
+#   audiolink.expose_setup  on or off                -> --expose-setup (ignored now)
 # The platform passes any one line of text: a value that isn't valid is logged
 # (/var/log/settings.log, next to the platform's notes) and left out, so
 # audiolink uses its default. Never passed on: an argument audiolink refuses
