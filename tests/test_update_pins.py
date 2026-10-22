@@ -14,10 +14,12 @@ from audiolink.services.update import UpdateService
 from .helpers import wait
 
 
-def pyz(text="print('hi')"):
+def pyz(text="print('hi')", image=False):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("__main__.py", text)
+        if image:
+            z.writestr("audiolink/services/image.py", "")
     return buf.getvalue()
 
 
@@ -61,6 +63,18 @@ class Update(unittest.TestCase):
         self.u.handle("revert", {})
         self.assertFalse(os.path.exists(self.path))
 
+    def test_card_with_slots_refuses_code_without_the_image_service(self):
+        from audiolink.services.access import Refused
+        self.u.slots = lambda: {"current": "a/", "slots": ["a/"]}
+        with self.assertRaises(Refused) as e:          # an old program's own .pyz: refused, shown as is
+            self.send(pyz())
+        self.assertEqual(e.exception.code, "too_old")
+        self.assertIn("get the new audiolink", str(e.exception))
+        self.assertFalse(os.path.exists(self.path) or os.path.exists(self.path + ".new"))
+        self.assertEqual(self.restarts, [])
+        self.send(pyz(image=True))
+        self.assertTrue(os.path.exists(self.path))
+
     def test_chunk_without_begin(self):
         with self.assertRaises(ValueError):
             self.u.handle("chunk", {"offset": 0, "data": ""})
@@ -82,11 +96,12 @@ class UpdateCommand(unittest.TestCase):
         self.link = self.fast = {"rate": 96000, "channels": 8}
         self.calls = []
         self.answers = True                     # does the Pi answer after the restart?
+        self.caps = ["update"]
 
     def call(self, op, args=None, port=None):
         self.calls.append(op)
         if op == "peer":
-            return {"connected": True, "peer": {"caps": ["update"]}}
+            return {"connected": True, "peer": {"caps": self.caps}}
         if op == "audio.status":
             return {"link": self.link, "running": False, "pi": {}, "remembered": {"best": self.fast}}
         if op == "audio.run":
@@ -165,6 +180,31 @@ class UpdateCommand(unittest.TestCase):
         self.link = {"rate": 48000, "channels": 2}
         self.run_cmd("--code", self.file(pyz()))
         self.assertNotIn("audio.resume", self.calls)
+
+    def test_without_image_slots_says_why(self):
+        self.refused([], "card write")                  # a card from before slots
+        self.u.status = lambda: {"running": "/var/lib/audiolink/audiolink.pyz"}
+        self.refused([], "audiolink update --code --back")      # an old code update runs instead
+        self.assertNotIn("image.status", self.calls)
+
+    def test_over_the_network_asks_the_pi_before_the_image(self):
+        from unittest import mock
+        from audiolink.host import update_cli
+
+        class Remote:
+            name, conn = "pi", object()
+
+            def ask(self, op, **fields):
+                if op == "image_status":
+                    return {"error": "unknown op 'image_status'", "code": "unknown"}
+                return {"result": {"running": "/opt/audiolink/audiolink.pyz"}}
+
+            def refusal(self, r):
+                return "too old"
+        with mock.patch("audiolink.client.remote.open_remote", lambda pi, at: Remote()), \
+                mock.patch("audiolink.card.fetch_image", lambda *a, **k: self.fail("downloaded")):
+            self.refused(["--pi", "pi"], "card write")
+        self.assertTrue(issubclass(update_cli.NoOp, SystemExit))
 
     def test_says_when_the_pi_hasnt_come_back(self):
         self.answers = False

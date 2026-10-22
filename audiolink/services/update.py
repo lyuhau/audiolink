@@ -20,12 +20,18 @@ import zipfile
 
 from ..paths import PI_STATE_DIR
 from . import Service
-from .access import OWNER
+from .access import OWNER, Refused
+from .image import slot_status
 
 log = logging.getLogger("audiolink")
 
 MAX_SIZE = 8 * 1024 * 1024
 RESTART = 75                    # exit status: "start me again now" (pi/start-audiolink.sh)
+IMAGE_CODE = "audiolink/services/image.py"      # in a .pyz: code that knows image slots
+# Said by whatever program sent it (an old one shows it as is): its code would run without
+# the image service, and the Pi would look like a card from before slots
+TOO_OLD = ("That audiolink is too old for this Pi (its card has versions, which that code can't keep): "
+           "get the new audiolink on this computer, then audiolink update. Nothing changed")
 
 
 def pyz_build(path):
@@ -50,10 +56,11 @@ class UpdateService(Service):
     name = "update"
     caps = ("update",)
 
-    def __init__(self, state_dir=PI_STATE_DIR, restart=None, endpoint=None):
+    def __init__(self, state_dir=PI_STATE_DIR, restart=None, endpoint=None, slots=slot_status):
         self.path = os.path.join(state_dir, "audiolink.pyz")
         self.new = self.path + ".new"
         self.restart = restart or self._exit        # () -> None, after the reply has gone
+        self.slots = slots                          # () -> slot status, or None (a card from before slots)
         self.lock = threading.Lock()
         self.expect = None                          # (size, sha256) of the upload under way
         if endpoint:
@@ -118,11 +125,15 @@ class UpdateService(Service):
             raise ValueError("the update arrived damaged; nothing changed")
         try:
             with zipfile.ZipFile(self.new) as z:
-                if "__main__.py" not in z.namelist() or z.testzip() is not None:
+                names = z.namelist()
+                if "__main__.py" not in names or z.testzip() is not None:
                     raise zipfile.BadZipFile("no __main__.py, or damaged")
         except zipfile.BadZipFile as e:
             os.remove(self.new)
             raise ValueError("not an audiolink .pyz (%s)" % e)
+        if IMAGE_CODE not in names and self.slots() is not None:
+            os.remove(self.new)
+            raise Refused("too_old", TOO_OLD)
         with open(self.new, "r+b") as f:        # Windows won't fsync a read-only handle
             os.fsync(f.fileno())
         os.replace(self.new, self.path)
