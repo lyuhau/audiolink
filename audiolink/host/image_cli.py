@@ -10,7 +10,6 @@ import base64
 import hashlib
 import io
 import time
-import zipfile
 
 from ..services.image import COMMIT_WITHIN, check_image
 from ..ui import detail, done, step
@@ -36,17 +35,7 @@ def read_image(path, runner=None):
             raise
         done("checked")
     image = card.Image(path)
-    if image.path.is_dir():
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            for name, data in image.files():
-                info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
-                info.compress_type = zipfile.ZIP_DEFLATED
-                z.writestr(info, data)
-        data = buf.getvalue()
-    else:
-        with open(str(image.path), "rb") as f:
-            data = f.read()
+    data = image.zipped()
     try:
         check_image(io.BytesIO(data))
     except ValueError as e:
