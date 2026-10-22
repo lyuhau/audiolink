@@ -93,14 +93,32 @@ def image_command(a, call, port, over_network):
 
 def back_command(call, port, over_network):
     """--back: the version before, on trial like a new one."""
-    from .update_cli import to_baseline
+    from .update_cli import restore, to_baseline
+    st = call("image.status", port=port)
+    if st.get("slots") is None:
+        raise SystemExit("The Pi's card has no image slots: there's no version before to go back to")
+    if st.get("trial") and not st.get("committed"):
+        raise SystemExit(TRYING)
+    images = st.get("images") or {}
+    other = [s for s in st["slots"] if s != st.get("current")]
+    if not other:
+        raise SystemExit("No version before on the Pi to go back to")
+    if not offered(images.get(other[0]), other[0], st.get("current")):
+        raise SystemExit("The version in %s %s: send a new one instead (audiolink update)" % (
+            other[0], "was only partly written" if (images.get(other[0]) or {}).get("state") == "writing"
+            else "didn't work"))
     if over_network:
         print("Over the network: if that version doesn't get back online within %d minutes, the Pi "
               "returns to this one by itself" % TRIAL_MINUTES)
     slowed = False
     if not over_network:
         _, slowed = to_baseline(call, port)
-    r = call("image.revert", port=port)
+    try:
+        r = call("image.revert", port=port)
+    except SystemExit:
+        if slowed:                      # refused after all: its old speed again
+            restore(call, port)
+        raise
     wait_trial(call, port, r["from"], r["slot"], slowed,
                "The version before didn't get through to this computer or the relay, so the Pi went back "
                "to the one it had (its trial's logs: audiolink logs prev/boot.log, prev/audiolink.log)")

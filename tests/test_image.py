@@ -341,10 +341,24 @@ class Command(unittest.TestCase):
                 self.assertIsNone(err, out.getvalue())
                 self.assertIn("Trying it on the Pi (up to 5 minutes)... running it", out.getvalue())
 
+    def test_back_refused_before_slowing(self):
+        calls = []
+        failed = {"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
+                  "images": {"b/": {"name": "x", "state": "failed"}}}
+
+        def call(op, args=None, port=None):
+            calls.append(op)
+            return failed
+        with self.assertRaisesRegex(SystemExit, "b/ didn't work: send a new one"):
+            image_cli.image_command(SimpleNamespace(back=True), call, None, over_network=False)
+        self.assertEqual(calls, ["image.status"])                 # the link left at its speed
+
     def test_back_waits_for_its_trial(self):
         from audiolink.host import update_cli
         for outcome, expect in ((("b/", False, True), None), (("a/", False, True), "version before didn't")):
-            states = iter([{"current": "b/", "trial": True, "committed": False},
+            states = iter([{"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
+                            "images": {"b/": {"name": "x"}}},
+                           {"current": "b/", "trial": True, "committed": False},
                            dict(zip(("current", "trial", "committed"), outcome))])
             calls = []
 
@@ -368,7 +382,7 @@ class Command(unittest.TestCase):
                         err = str(e)
             finally:
                 update_cli.to_baseline, update_cli.restore, image_cli.time.sleep = orig
-            self.assertEqual(calls[:2], ["baseline", "image.revert"])
+            self.assertEqual(calls[:3], ["image.status", "baseline", "image.revert"])
             if expect:
                 self.assertIn(expect, err)
             else:
