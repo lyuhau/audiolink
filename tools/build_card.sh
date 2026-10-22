@@ -45,6 +45,29 @@ rm -rf "build/card-$NAME" "build/card-$NAME.manifest"
 mkdir -p build
 cp -R "$SRC" "build/card-$NAME"
 cp "$PLATFORM/$MANIFEST" "build/card-$NAME.manifest"
+# Which audiolink the slot carries, for `audiolink update --status` (services/image.py
+# VERSION_FILE), in the manifest too: a release when built at its version's tag from
+# a clean checkout.
+V=$(python3 -c "import audiolink; print(audiolink.__version__)")
+RELEASE=false
+[ "${GITHUB_REF_NAME:-$(git describe --tags --exact-match 2>/dev/null)}" = "v$V" ] &&
+    [ -z "$(git status --porcelain -- audiolink pi config build_pyz.py)" ] && RELEASE=true
+[ -d "build/card-$NAME/a" ] && python3 - "build/card-$NAME" "$RELEASE" <<'EOF'
+import hashlib, json, sys
+sys.path.insert(0, "dist/audiolink.pyz")
+import audiolink
+card, release = sys.argv[1], sys.argv[2] == "true"
+name = "a/audiolink-version.json"
+data = json.dumps({"version": audiolink.__version__, "build": audiolink.BUILD, "release": release}).encode()
+with open(card + "/" + name, "wb") as f:
+    f.write(data)
+with open(card + ".manifest") as f:
+    lines = [l for l in f.read().splitlines() if l[66:] != name]
+lines.append(hashlib.sha256(data).hexdigest() + "  " + name)
+with open(card + ".manifest", "w") as f:
+    f.write("\n".join(sorted(lines, key=lambda l: l[66:])) + "\n")
+print("%s: audiolink %s, build %s%s" % (name, audiolink.__version__, audiolink.BUILD, ", a release" if release else ""))
+EOF
 # A release card must not let anyone in over SSH.
 case "$NAME" in *release*)
     . tools/pi_code.sh

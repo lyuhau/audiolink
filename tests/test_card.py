@@ -227,7 +227,8 @@ class Update(unittest.TestCase):
 
     def test_a_card_from_before_slots(self):
         slotted = {"config.txt": "os_prefix=a/\ninclude a/config.txt\n", "settings.txt": IMAGE["settings.txt"],
-                   "a/config.txt": "kernel", "a/boot/initrd.img": "new img"}
+                   "a/config.txt": "kernel", "a/boot/initrd.img": "new img",
+                   "a/audiolink-version.json": '{"version": "0.15.0", "build": "3871eed7e803", "release": true}'}
         with tempfile.TemporaryDirectory() as tmp:
             mount = Path(tmp, "card")
             make_card(mount)                                     # config.txt, boot/: no slots
@@ -236,7 +237,9 @@ class Update(unittest.TestCase):
             self.assertIsNone(into)
             self.assertEqual(card.slots(str(mount)), (["a"], "a"))
             self.assertFalse(Path(mount, "boot/initrd.img").exists())
-            self.assertIn('"name": "build"', Path(mount, "a", card.SLOT_INFO).read_text())   # named in status
+            info = json.loads(Path(mount, "a", card.SLOT_INFO).read_text())
+            self.assertEqual((info["name"], info["version"], info["build"], info["release"]),     # named in status
+                             ("build", "0.15.0", "3871eed7e803", True))
             self.assertEqual(Path(mount, "audiolink/identity.json.a").read_text(), "{}")
 
     def test_keep_update(self):

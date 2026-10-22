@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -38,12 +39,17 @@ IMAGE_SLOT = "a/"               # where a built image has its slot (pi-gadget-ki
 FIRMWARE = ("bootcode.bin", "start.elf", "fixup.dat")
 TRIAL_SECONDS = 300             # the platform's guard: app.env TRIAL_SECONDS ([app] trial_seconds), its default
 COMMIT_MARGIN = 10              # stop trying this long before the guard reboots
-INFO = ".image.json"            # in a slot: which image it holds, and its state (below)
+INFO = ".image.json"            # in a slot: which image it holds, its version, and its state (below)
 # A slot's state: "writing" (half-written until it's done), "ready" (written), "trying"
 # (a trial of it began), "kept" (committed), "failed" (its trial wasn't kept: the
 # platform says so, TRIAL_FAILED, whichever version's code ran it). None: from
 # before states (an older Pi, a card write): fine.
 NOT_OFFERED = ("writing", "failed")
+# In a built image's slot: the audiolink it carries, {"version", "build", "release"}
+# (tools/build_card.sh); recorded in INFO when a slot is written. Images from before
+# it go by their name: a release's zip says its version.
+VERSION_FILE = "audiolink-version.json"
+RELEASE_ZIP = re.compile(r"audiolink-pi-(\d+(?:\.\d+)*)\.zip$")
 TRIAL_FAILED = "/run/usb-gadget/trial-failed"     # slot.sh guard: the slot whose trial this boot ended
 TRYING = ("The Pi is trying a version: it keeps it or goes back within a few minutes; "
           "check: audiolink update --status")
@@ -66,6 +72,34 @@ def slot_status(run=subprocess.run):
 def offered(info, slot, current):
     """Whether `slot` (not running) is a version to go back to."""
     return slot != current and (info or {}).get("state") not in NOT_OFFERED
+
+
+def version_info(data):
+    """A slot's VERSION_FILE -> what it says of {"version", "build", "release"} ({}: nothing)."""
+    try:
+        v = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(v, dict):
+        return {}
+    return {k: v[k] for k, t in (("version", str), ("build", str), ("release", bool)) if isinstance(v.get(k), t)}
+
+
+def version_name(info, running=None):
+    """A slot's version for people: "0.14.0", "0.14.0 dev build 3871eed7"; else its
+    image's name, or None. running: {"version", "build"} the Pi runs, for its slot
+    when INFO is from before versions (a name that isn't a release zip: a dev build)."""
+    info = info or {}
+    name = info.get("name")
+    zipped = RELEASE_ZIP.match(name or "")
+    if info.get("version"):
+        v, build, dev = info["version"], info.get("build"), not info.get("release")
+    elif (running or {}).get("version"):
+        v, build = running["version"], running.get("build")
+        dev = bool(name) and not (zipped and zipped.group(1) == v)
+    else:
+        return zipped.group(1) if zipped else name
+    return ("%s dev build %s" % (v, build[:8]) if build else "%s dev build" % v) if dev else v
 
 
 def check_image(path):
@@ -204,7 +238,18 @@ class ImageService(Service):
         st = slot_status(self.run_cmd)
         if st is None:
             return {"slots": None}
-        return dict(st, images={s: self._info(s) for s in st["slots"]})
+        return dict(st, images={s: self._described(s) for s in st["slots"]})
+
+    def _described(self, slot):
+        """Its INFO, with the version its slot carries if INFO is from before versions."""
+        info = self._info(slot)
+        if "version" not in info:
+            try:
+                with open(os.path.join(self.card, slot, VERSION_FILE), "rb") as f:
+                    info.update(version_info(f.read()))
+            except OSError:
+                pass
+        return info
 
     def handle(self, op, args):
         with self.lock:
@@ -280,9 +325,10 @@ class ImageService(Service):
         dest = os.path.join(self.card, target)
         shutil.rmtree(dest, ignore_errors=True)
         os.makedirs(dest, exist_ok=True)
-        with open(os.path.join(dest, INFO), "w") as f:      # never offered until it's all there
-            json.dump({"name": name, "sha256": digest, "state": "writing"}, f)
         with zipfile.ZipFile(self.zip) as z:
+            version = version_info(z.read(IMAGE_SLOT + VERSION_FILE)) if IMAGE_SLOT + VERSION_FILE in names else {}
+            with open(os.path.join(dest, INFO), "w") as f:      # never offered until it's all there
+                json.dump(dict({"name": name, "sha256": digest, "state": "writing"}, **version), f)
             for n in names:
                 if not n.startswith(IMAGE_SLOT):
                     continue
@@ -330,8 +376,9 @@ class ImageService(Service):
             raise ValueError("no other image on the card to go back to")
         info = self._info(other[0])
         if not offered(info, other[0], st["current"]):
-            raise ValueError("the version in %s %s: send a new one instead (audiolink update)" % (
-                other[0], "was only partly written" if info.get("state") == "writing" else "didn't work"))
+            raise ValueError("the version before (%s) %s: send a new one instead (audiolink update)" % (
+                version_name(info) or other[0], "was only partly written" if info.get("state") == "writing"
+                else "didn't work"))
         # On trial, like a new version: kept once it gets through, else back to this one
         log.info("image: back to %s; trying it", other[0])
         self.trying = True

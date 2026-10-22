@@ -12,7 +12,9 @@ import hashlib
 import io
 import time
 
-from ..services.image import TRIAL_SECONDS, TRYING, check_image, offered
+from .. import ui
+from ..services.image import (IMAGE_SLOT, TRIAL_SECONDS, TRYING, VERSION_FILE, check_image, offered,
+                              version_info, version_name)
 from ..ui import detail, done, step
 
 CHUNK = 256 * 1024
@@ -44,6 +46,22 @@ def read_image(path, runner=None):
     return image.name, data
 
 
+def image_version(name, data):
+    """The version an image (its zip) carries, for people (version_name)."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            info = version_info(z.read(IMAGE_SLOT + VERSION_FILE))
+    except (KeyError, zipfile.BadZipFile):
+        info = {}
+    return version_name(dict(info, name=name)) or name
+
+
+def _called(label):
+    """"version 0.14.0", or a build's name as it is."""
+    return "version %s" % label if label[:1].isdigit() else label
+
+
 def image_command(a, call, port, over_network):
     from .update_cli import to_baseline
     if a.back:
@@ -57,14 +75,16 @@ def image_command(a, call, port, over_network):
     name, data = read_image(a.image)
     digest = hashlib.sha256(data).hexdigest()
     running = (st.get("images") or {}).get(st.get("current")) or {}
+    version = image_version(name, data)
     if running.get("sha256") == digest:
-        print("The Pi already runs this image (%s)" % name)
+        print("The Pi already runs this version (%s)" % version)
         return
     if over_network:
         print("Over the network: if the new image doesn't get back online within %d minutes, the Pi "
               "returns to this one by itself" % TRIAL_MINUTES)
     # Sent at the link's speed; only the reboot wants the starting format (update_cli.py)
-    step("Sending %s (%.1f MB)" % (name, len(data) / 1e6))
+    detail("%s", name)
+    step("Sending %s (%.1f MB)" % (_called(version), len(data) / 1e6))
     start = time.monotonic()
     call("image.begin", {"size": len(data), "sha256": digest, "name": name}, port=port)
 
@@ -103,10 +123,13 @@ def back_command(call, port, over_network):
     other = [s for s in st["slots"] if s != st.get("current")]
     if not other:
         raise SystemExit("No version before on the Pi to go back to")
+    before = version_name(images.get(other[0]))
+    detail("%s: %s", other[0], images.get(other[0]))
     if not offered(images.get(other[0]), other[0], st.get("current")):
-        raise SystemExit("The version in %s %s: send a new one instead (audiolink update)" % (
-            other[0], "was only partly written" if (images.get(other[0]) or {}).get("state") == "writing"
-            else "didn't work"))
+        raise SystemExit("The version before%s %s: send a new one instead (audiolink update)" % (
+            " (%s)" % before if before else "",
+            "was only partly written" if (images.get(other[0]) or {}).get("state") == "writing" else "didn't work"))
+    print("Going back to %s" % (_called(before) if before else "the version before"))
     if over_network:
         print("Over the network: if that version doesn't get back online within %d minutes, the Pi "
               "returns to this one by itself" % TRIAL_MINUTES)
@@ -153,22 +176,36 @@ def wait_trial(call, port, old, new, slowed, fell_back):
     raise SystemExit("The Pi hasn't come back yet; check: audiolink update --status")
 
 
-def show_image_status(st):
+def show_image_status(st, code=None, peer_version=None):
+    """Which version runs and which one --back goes to. code: the Pi's update.status (a
+    code update on top: its image's version isn't what runs); peer_version: what the Pi
+    said it runs, for a slot whose INFO is from before versions."""
     if st.get("slots") is None:
         print("Running:  a version from before image slots: the next one goes on with audiolink card write "
               "(once; it keeps the Pi's state)")
         return
+    from .update_cli import _on_card
     images = st.get("images") or {}
-    name = lambda s: "%s (%s)" % ((images.get(s) or {}).get("name") or "as written", s.rstrip("/"))  # noqa: E731
     current = st.get("current")
-    print("Running:  %s%s" % (name(current), " on trial: kept once it's back online"
-                             if st.get("trial") and not st.get("committed") else ""))
+    running = None if _on_card(code or {}) or not peer_version else {"version": peer_version,
+                                                        "build": (code or {}).get("running_build")}
+
+    def more(s):                        # -v: the slot, its image, its build
+        info = images.get(s) or {}
+        bits = [s] + [str(info[k]) for k in ("name", "state") if info.get(k)]
+        if info.get("build"):
+            bits.append("build %s" % info["build"])
+        return "  [%s]" % ", ".join(bits) if ui.VERBOSE else ""
+    print("Running:  %s%s%s" % (version_name(images.get(current), running) or "the version written to its card",
+                                " on trial: kept once it's back online"
+                                if st.get("trial") and not st.get("committed") else "", more(current)))
     for s in st["slots"]:
         if s == current:
             continue
         state = (images.get(s) or {}).get("state")
-        print("Previous: %s: %s" % (name(s), "audiolink update --back" if offered(images.get(s), s, current)
-                                    else "partly written, not offered" if state == "writing"
-                                    else "didn't work, not offered"))
+        label = version_name(images.get(s)) or "an earlier version"
+        print("Previous: %s%s" % ("%s (audiolink update --back)" % label if offered(images.get(s), s, current)
+                                  else "%s: partly written, not offered" % label if state == "writing"
+                                  else "%s: didn't work, not offered" % label, more(s)))
     if len(st["slots"]) < 2:
         print("Previous: none yet (the next audiolink update keeps this one to go back to)")

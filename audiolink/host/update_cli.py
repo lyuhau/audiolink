@@ -24,6 +24,7 @@ import zipfile
 from ..paths import PI_STATE_DIR
 from ..services.audio_format import RESET_GAP
 from ..services.update import MAX_SIZE
+from .. import ui
 from ..ui import detail, done, line_buffered, step
 
 CHUNK = 48 * 1024
@@ -150,7 +151,7 @@ def update_command(a):
         raise SystemExit("--code goes alone (or with --back)")
     if a.at and not a.pi:
         raise SystemExit("--at goes with --pi PI (over the network)")
-    data = path = None
+    data = path = peer_version = None
     if code is not None and not a.back:
         path = _this_pyz() if code == "this" else code
         if not path:
@@ -165,6 +166,7 @@ def update_command(a):
         if not peer.get("connected"):
             raise SystemExit("No Pi plugged in (or over the network: --pi PI)")
         caps = (peer.get("peer") or {}).get("caps", [])
+        peer_version = (peer.get("peer") or {}).get("version")
         if "update" not in caps:
             raise SystemExit("The Pi's audiolink can't take updates over the link; put a new image on its card")
         if code is None and not a.status and "image" not in caps:
@@ -175,9 +177,10 @@ def update_command(a):
             st = call("image.status", port=port)
         except (SystemExit, KeyError, ValueError):
             st = None                           # a Pi from before image updates
+        code_st = call("update.status", port=port)
         from .image_cli import show_image_status
-        show_image_status(st or {"slots": None})
-        return show_status(call("update.status", port=port))
+        show_image_status(st or {"slots": None}, code_st, peer_version)
+        return show_status(code_st)
     if code is None:
         from .image_cli import image_command
         return image_command(a, call, port, bool(a.pi))
@@ -244,11 +247,12 @@ def show_status(st):
     same = ""
     if mine and theirs:
         same = ", the same as this computer's" if theirs == mine else ", not this computer's"
-    print("Code:     %s (%s%s)" % ("an update on the card" if _on_card(st) else "the image's",
-                                "build %s" % st["running_build"] if st.get("running_build")
-                                else _short(st.get("running_hash")), same))
+    if ui.VERBOSE:
+        print("Code:     %s (%s%s)" % ("an update on the card" if _on_card(st) else "the image's",
+                                    "build %s" % st["running_build"] if st.get("running_build")
+                                    else _short(st.get("running_hash")), same))
     if _on_card(st):
-        print("          (back to the image's: audiolink update --code --back)")
+        print("Running a code update on top (developers): audiolink update --code --back")
     if st.get("set_aside"):
         print("The update on the card kept failing and is set aside")
     elif st.get("update") and not _on_card(st):
