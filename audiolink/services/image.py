@@ -4,8 +4,8 @@ The card holds images in slot folders (a/, b/; pi-gadget-kit's image/slot.sh): i
 config.txt says which one boots. A new image arrives as a card image zip (a release's
 audiolink-pi-VER.zip, or a build), goes into the slot that isn't running, and boots
 once on trial. It stays only if this daemon, running from it, gets through to its host
-or its relay within COMMIT_WITHIN (it commits then); otherwise the platform's guard
-reboots into the slot that was booting. The Pi's state (audiolink/, settings.txt,
+or its relay within the platform's trial window (TRIAL_SECONDS from boot; it commits
+then); otherwise the platform's guard reboots into the slot that was booting. The Pi's state (audiolink/, settings.txt,
 logs/) is shared by the slots; settings.txt is renewed from the new image's, keeping
 what was set, and an earlier code update (audiolink update --code) goes, so the new image
 runs its own code. The firmware files at the top of the card stay: a new firmware needs
@@ -36,7 +36,8 @@ SLOT_SH = "/etc/usb-gadget/slot.sh"
 SLOTS = ("a/", "b/")
 IMAGE_SLOT = "a/"               # where a built image has its slot (pi-gadget-kit image_initramfs.SLOT)
 FIRMWARE = ("bootcode.bin", "start.elf", "fixup.dat")
-COMMIT_WITHIN = 180             # seconds a trial has to reach its host or relay (the platform's guard: 300)
+TRIAL_SECONDS = 300             # the platform's guard: app.env TRIAL_SECONDS ([app] trial_seconds), its default
+COMMIT_MARGIN = 10              # stop trying this long before the guard reboots
 INFO = ".image.json"            # in a slot: which image it holds, and its state (below)
 # A slot's state: "writing" (half-written until it's done), "ready" (written), "trying"
 # (a trial of it began), "kept" (committed), "failed" (its trial fell back). None: from
@@ -84,6 +85,22 @@ def check_image(path):
     return names
 
 
+def trial_left(env=None, uptime="/proc/uptime"):
+    """Seconds this boot's trial has left to commit: the guard's TRIAL_SECONDS counted
+    from boot, less COMMIT_MARGIN."""
+    env = platform_env() if env is None else env
+    try:
+        window = int(env.get("TRIAL_SECONDS") or TRIAL_SECONDS)
+    except ValueError:
+        window = TRIAL_SECONDS
+    try:
+        with open(uptime) as f:
+            up = float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        up = 0.0
+    return window - up - COMMIT_MARGIN
+
+
 class ImageService(Service):
     name = "image"
     caps = ("image",)
@@ -109,7 +126,7 @@ class ImageService(Service):
         return {"result": self.handle(req["action"], req)}
 
     # ---- the trial: commit once this image gets through
-    def run(self, sleep=time.sleep, clock=time.monotonic):
+    def run(self, sleep=time.sleep, clock=time.monotonic, left=trial_left):
         st = slot_status(self.run_cmd)
         if st:
             self._settle(st)
@@ -118,7 +135,7 @@ class ImageService(Service):
         log.info("image: %s is on trial: committing once it reaches its host or relay", st["current"])
 
         def watch():
-            end = clock() + COMMIT_WITHIN
+            end = clock() + left()
             while clock() < end:
                 if self.healthy():
                     p = self.run_cmd(["sh", SLOT_SH, "commit"], capture_output=True, text=True)
@@ -127,8 +144,8 @@ class ImageService(Service):
                         self._mark(st["current"], "kept")
                     return
                 sleep(2)
-            log.warning("image: %s didn't get through in %ds; the platform reboots into the old slot",
-                        st["current"], COMMIT_WITHIN)
+            log.warning("image: %s didn't get through in time; the platform reboots into the old slot",
+                        st["current"])
         threading.Thread(target=watch, name="image-trial", daemon=True).start()
 
     def _settle(self, st):

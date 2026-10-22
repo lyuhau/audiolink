@@ -298,8 +298,8 @@ built-in values. Without touching the card: `audiolink update`.
 version's release image (or `audiolink update IMAGE`: a zip, or a build folder) over
 the link, or the network with `--pi PI`. The card holds two versions (image slots
 `a/`, `b/`); the new one goes in the one that isn't running and boots once on trial.
-It stays if audiolink on it reaches this computer or its relay within 3 minutes;
-otherwise the Pi goes back to the version it had, by itself. `audiolink update --back`
+It stays if audiolink on it reaches this computer or its relay within 5 minutes of
+its boot; otherwise the Pi goes back to the version it had, by itself. `audiolink update --back`
 goes back to the version before, on trial the same way (kept only once it gets through);
 `audiolink update --status` shows both. A version whose trial failed, or that was only
 partly written, isn't offered to go back to: send a new one. The Pi's
