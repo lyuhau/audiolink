@@ -7,7 +7,8 @@ Windows; the Pi runs the same file (it uses ALSA and ignores PortAudio).
 Reproducible: the same sources give the same bytes (sorted entries, fixed
 timestamps and permissions), so the relay and the card's manifest only change
 when the code does. Its build id (audiolink/_build.py, audiolink.BUILD) is a hash of
-those sources: two builds of one version say which they are.
+those sources: two builds of one version say which they are. _build.py also names the
+GitHub repo it's built from (a fork's own), whose releases it downloads (card.repo()).
 """
 import hashlib
 import os
@@ -37,6 +38,13 @@ def build_id(entries):
     return h.hexdigest()[:12]
 
 
+def stamp(bid):
+    """audiolink/_build.py's text: the build id, and the repo (GITHUB_REPOSITORY, else origin's)."""
+    from audiolink.card import checkout_repo
+    repo = checkout_repo(ROOT)
+    return 'BUILD = "%s"\n' % bid + ('REPO = "%s"\n' % repo if repo else "")
+
+
 def source_build_id(pkg=ROOT / "audiolink"):
     """The build id of the package as it is now (what build() would stamp)."""
     entries = {name: src.read_bytes() for name, src in sources(pkg).items() if name != "audiolink/_build.py"}
@@ -48,7 +56,7 @@ def build(out=OUT, pkg=ROOT / "audiolink"):
     out.parent.mkdir(parents=True, exist_ok=True)
     entries = {name: src.read_bytes() for name, src in sources(pkg).items() if name != "audiolink/_build.py"}
     entries["__main__.py"] = MAIN.encode()
-    entries["audiolink/_build.py"] = ('BUILD = "%s"\n' % build_id(entries)).encode()
+    entries["audiolink/_build.py"] = stamp(build_id(entries)).encode()
     tmp = out.with_name(out.name + ".tmp")
     with open(tmp, "wb") as f:
         f.write(SHEBANG)

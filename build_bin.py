@@ -41,11 +41,11 @@ def main():
            "--specpath", str(ROOT / "build")]
     for f in libs + ["PORTAUDIO-LICENSE.txt"]:
         cmd += ["--add-data", "%s%saudiolink/wire/_lib" % (lib / f, sep)]
-    # The build id, as build_pyz.py computes it (the same sources: the same id), in the
-    # package while PyInstaller collects it
+    # The build id and repo, as build_pyz.py stamps them (the same sources: the same id),
+    # in the package while PyInstaller collects it
     import build_pyz
     stamp = ROOT / "audiolink" / "_build.py"
-    stamp.write_text('BUILD = "%s"\n' % build_pyz.source_build_id())
+    stamp.write_text(build_pyz.stamp(build_pyz.source_build_id()))
     try:
         subprocess.run(cmd + [str(entry)], check=True)
     finally:

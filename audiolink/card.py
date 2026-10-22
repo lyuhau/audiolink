@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import zipfile
@@ -32,7 +33,7 @@ from pathlib import Path
 from . import __version__
 from .ui import detail, done, step
 
-REPO = "lyuhau/audiolink"
+UPSTREAM = "lyuhau/audiolink"              # whose release images, when nothing says (repo())
 BOOT_ROM = ("0a5c", ("2763", "2764"))       # the Pi's boot ROM, waiting for rpiboot
 MSD = ("0a5c", ("0001",))                   # rpiboot's firmware: its card as a disk
 LABEL = "AUDIOPI"
@@ -124,7 +125,34 @@ def image_name(version=__version__):
 
 
 def release_url(name, version=__version__):
-    return "https://github.com/%s/releases/download/v%s/%s" % (REPO, version, name)
+    return "https://github.com/%s/releases/download/v%s/%s" % (repo(), version, name)
+
+
+def repo():
+    """The GitHub repo whose releases this downloads, so a fork gets its own: the one it was
+    built from (build_pyz.py writes it into _build.py), from source this checkout's, else UPSTREAM."""
+    from . import BUILD
+    try:
+        from ._build import REPO
+        return REPO
+    except ImportError:
+        pass
+    return (None if BUILD else checkout_repo(Path(__file__).resolve().parent.parent)) or UPSTREAM
+
+
+def checkout_repo(root):
+    """'owner/name' of the git checkout at root: GITHUB_REPOSITORY (in a workflow), else its
+    origin's GitHub URL; None if neither."""
+    name = os.environ.get("GITHUB_REPOSITORY", "")
+    if not name and (Path(root) / ".git").exists():
+        try:
+            url = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
+                                 capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            url = ""
+        m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+        name = m.group(1) if m else ""
+    return name if re.fullmatch(r"[\w.-]+/[\w.-]+", name) else None
 
 
 def sha256(path):
