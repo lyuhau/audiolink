@@ -60,7 +60,9 @@ class Service(unittest.TestCase):
         self.slot = SlotSh(str(self.card))
         self.orig = image_mod.SLOT_SH
         image_mod.SLOT_SH = __file__            # "exists"
-        self.svc = image_mod.ImageService(state_dir=str(self.state), card=str(self.card), run=self.slot)
+        self.failed = Path(self.tmp.name, "trial-failed")          # slot.sh guard's record
+        self.svc = image_mod.ImageService(state_dir=str(self.state), card=str(self.card), run=self.slot,
+                                          trial_failed=str(self.failed))
         self.svc._later = lambda fn: fn()
 
     def tearDown(self):
@@ -128,7 +130,8 @@ class Service(unittest.TestCase):
     def test_revert_is_a_trial(self):
         self.send(zipped(IMAGE))
         self.svc.trying = False                   # (rebooted: a new daemon)
-        self.svc.run()                            # the trial of b/ fell back: a/ runs, committed
+        self.failed.write_text("b/\n")            # the trial of b/ wasn't kept: a/ runs, committed
+        self.svc.run()
         self.assertEqual(self.info("b")["state"], "failed")
         self.assertIn("failed_at", self.info("b"))
         with self.assertRaisesRegex(ValueError, "didn't work: send a new one"):
@@ -139,6 +142,17 @@ class Service(unittest.TestCase):
         self.assertEqual(self.slot.calls[-1], ["try", "b/"])
         self.assertNotIn("switch", [c[0] for c in self.slot.calls])
         self.assertEqual(self.info("b")["state"], "trying")
+
+    def test_trying_alone_isnt_failed(self):
+        # --back to a version from before slot states: it keeps itself without saying so,
+        # then a newer one goes in a/ again; b/ still says "trying" but ran fine
+        (self.card / "b" / "config.txt").parent.mkdir(parents=True)
+        (self.card / "b" / "config.txt").write_text("x")
+        (self.card / "b" / image_mod.INFO).write_text(json.dumps({"name": "0.14.0", "state": "trying"}))
+        self.svc.run()
+        self.assertEqual(self.info("b")["state"], "trying")
+        self.assertTrue(image_mod.offered(self.info("b"), "b/", "a/"))
+        self.assertEqual(self.svc.handle("revert", {})["slot"], "b/")
 
     def test_trial_of_the_running_one_kept(self):
         (self.card / "a" / image_mod.INFO).write_text(json.dumps({"name": "x", "state": "trying"}))
@@ -255,7 +269,7 @@ class Status(unittest.TestCase):
             "Running:  as written (a)",
             "Previous: x (b): didn't work, not offered",
             "Running:  as written (a)",
-            "Previous: x (b): didn't work, not offered",
+            "Previous: x (b): audiolink update --back",
             "Running:  as written (a)",
             "Previous: x (b): partly written, not offered",
             "Running:  as written (a)",

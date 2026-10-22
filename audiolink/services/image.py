@@ -40,9 +40,11 @@ TRIAL_SECONDS = 300             # the platform's guard: app.env TRIAL_SECONDS ([
 COMMIT_MARGIN = 10              # stop trying this long before the guard reboots
 INFO = ".image.json"            # in a slot: which image it holds, and its state (below)
 # A slot's state: "writing" (half-written until it's done), "ready" (written), "trying"
-# (a trial of it began), "kept" (committed), "failed" (its trial fell back). None: from
+# (a trial of it began), "kept" (committed), "failed" (its trial wasn't kept: the
+# platform says so, TRIAL_FAILED, whichever version's code ran it). None: from
 # before states (an older Pi, a card write): fine.
-NOT_OFFERED = ("writing", "trying", "failed")
+NOT_OFFERED = ("writing", "failed")
+TRIAL_FAILED = "/run/usb-gadget/trial-failed"     # slot.sh guard: the slot whose trial this boot ended
 TRYING = ("The Pi is trying a version: it keeps it or goes back within a few minutes; "
           "check: audiolink update --status")
 
@@ -106,8 +108,9 @@ class ImageService(Service):
     caps = ("image",)
 
     def __init__(self, state_dir=PI_STATE_DIR, endpoint=None, healthy=lambda: False, card=None,
-                 run=subprocess.run):
+                 run=subprocess.run, trial_failed=TRIAL_FAILED):
         self.state_dir = state_dir
+        self.trial_failed = trial_failed
         self.zip = os.path.join(state_dir, "image.zip")
         self.new = self.zip + ".new"
         self.card = card or platform_env().get("CARD") or "/media/mmcblk0p1"
@@ -149,15 +152,21 @@ class ImageService(Service):
         threading.Thread(target=watch, name="image-trial", daemon=True).start()
 
     def _settle(self, st):
-        """At start: a trial that ended. The slot running committed was kept; one that was
-        "trying" and isn't running fell back: failed."""
+        """At start: a trial that ended. The slot running committed was kept; the one the
+        platform says wasn't kept failed. ("trying" alone proves nothing: a version from
+        before slot states keeps itself without saying so.)"""
+        try:
+            with open(self.trial_failed) as f:
+                failed = f.read().strip()
+        except OSError:
+            failed = None
         for s in st["slots"]:
             state = self._info(s).get("state")
             if s == st["current"] and not (st["trial"] and not st["committed"]):
                 if state in ("trying", "failed"):
                     self._mark(s, "kept")
-            elif s != st["current"] and state == "trying":
-                log.warning("image: the trial of %s fell back; not offered to go back to", s)
+            elif s != st["current"] and s == failed and state != "failed":
+                log.warning("image: the trial of %s wasn't kept; not offered to go back to", s)
                 self._mark(s, "failed", failed_at=int(time.time()))
 
     def _info(self, slot):
