@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Phase 1: is the USB audio channel bit-exact?
+"""Phase 1 (an early experiment, kept for reference; needs numpy, sounddevice): is
+the USB audio channel bit-exact?
 
 Sends a known pseudo-random payload through the AudioPi sound card and compares
 what comes out the other side, byte for byte.
@@ -14,14 +15,13 @@ import argparse
 import hashlib
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]     # the repo: keys/, and where the .raw files go
 PI = "root@10.55.0.2"
 SSH = ["ssh", "-i", str(ROOT / "keys/id_ed25519"), "-o", "StrictHostKeyChecking=no",
        "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"]

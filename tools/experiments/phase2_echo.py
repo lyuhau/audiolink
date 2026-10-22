@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 2 end-to-end test: TCP echo through the audio link.
+"""Phase 2 (an early experiment, kept for reference): TCP echo through the audio link.
 
   client --TCP--> Pi:9000 --audio--> Mac audiolink --TCP--> echo server (127.0.0.1:9000)
          <--TCP-- Pi      <--audio-- Mac audiolink <--TCP--
