@@ -116,6 +116,8 @@ def image_command(a, call, port, over_network):
     detail("%s", seen)
     if seen and seen.get("current") == old:
         done("didn't work")
+        if slowed:                      # back and answering: its old speed again
+            restore(call, port)
         raise SystemExit("The new image didn't get through to this computer or the relay, so the Pi went back "
                          "to the one it had (its trial's logs: audiolink logs prev/boot.log, prev/audiolink.log)")
     done("no answer")
