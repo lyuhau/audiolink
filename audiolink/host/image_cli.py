@@ -124,7 +124,8 @@ def image_command(a, call, port, over_network):
 
 def show_image_status(st):
     if st.get("slots") is None:
-        print("Image: the card has no slots yet (an image from before them)")
+        print("Running:  a version from before image slots: the next one goes on with audiolink card write "
+              "(once; it keeps the Pi's state)")
         return
     images = st.get("images") or {}
     name = lambda s: "%s (%s)" % ((images.get(s) or {}).get("name") or "as written", s.rstrip("/"))  # noqa: E731

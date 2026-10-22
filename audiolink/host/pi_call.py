@@ -14,8 +14,11 @@ def pi_caller(a, cap):
     peer = control.call("peer", port=port)
     if not peer.get("connected"):
         raise SystemExit("No Pi plugged in (or over the network: --pi PI)")
-    if cap not in (peer.get("peer") or {}).get("caps", []):
-        raise SystemExit("The Pi's audiolink is older than this: audiolink update (new code) first")
+    caps = (peer.get("peer") or {}).get("caps", [])
+    if cap not in caps:
+        raise SystemExit("The Pi's audiolink is older than this: %s" % (
+            "audiolink update first" if "image" in caps else
+            "put the new version on its card once with audiolink card write (it keeps the Pi's state)"))
     return (lambda op, args=None, port=port: control.call(op, args, port=port)), False
 
 

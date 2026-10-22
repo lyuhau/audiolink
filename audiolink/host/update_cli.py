@@ -175,9 +175,8 @@ def update_command(a):
             st = call("image.status", port=port)
         except (SystemExit, KeyError, ValueError):
             st = None                           # a Pi from before image updates
-        if st is not None:
-            from .image_cli import show_image_status
-            show_image_status(st)
+        from .image_cli import show_image_status
+        show_image_status(st or {"slots": None})
         return show_status(call("update.status", port=port))
     if code is None:
         from .image_cli import image_command
