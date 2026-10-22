@@ -141,8 +141,9 @@ hidden `audiolink update --code PYZ`. The `.pyz` itself stays what computers run
 
 - README: versions and flavors, the commands; the flavor TOML format (pi-gadget-kit
   README: Hand-written devices) and how to make one from a capture.
-- Tag a release once the above is on hardware: update over the link from the
-  previous release (whose Pis have slots but not flavors) is the migration test.
+- Tag a release once the above is on hardware: the previous release's cards (v0.13.1)
+  have no image slots, so the migration test is `card write` onto one (keeping its
+  state), then an update over the link.
 
 ## Decided
 
