@@ -325,7 +325,7 @@ class Guide:
             raise SystemExit("Card not set up: insert a card set up for audiolink, or run audiolink setup again")
         if self.platform != "darwin":
             raise SystemExit("Setting up the card through the Pi works on macOS only so far; write the card by hand "
-                             "(README: Make the card), then run audiolink setup again")
+                             "(README: Where card images come from), then run audiolink setup again")
         cmd = card.rpiboot_command(self.platform)
         if not cmd:
             raise SystemExit("Setting up the card through the Pi needs rpiboot: %s; then run "
