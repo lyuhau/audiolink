@@ -94,7 +94,10 @@ class Base(unittest.TestCase):
                                  planner=str(d / "planner.py"), python=sys.executable, run_dir=str(d / "run"),
                                  switch_file=str(d / "switch.json"), run=self.fake_run, within=1.5,
                                  wait=lambda: self.waits.append(1) or 0)
-        self.session = SimpleNamespace(peer_alive=True, link=SimpleNamespace(last_rx=0.0))
+        self.host_caps, self.host_takes = ["usb_ids"], True
+        self.told = []                  # what the host was told, and how many gadget.sh uses before
+        self.session = SimpleNamespace(peer_alive=True, link=SimpleNamespace(last_rx=0.0),
+                                       peer_has=lambda cap: cap in self.host_caps, request=self.host_request)
         self.svc.attach(self.session)
         p = mock.patch.object(flavor, "REPLY_FIRST", 0)
         p.start()
@@ -109,6 +112,11 @@ class Base(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, st, "flavor %s up\n" % up if st == 0 else "",
                                                "" if st == 0 else "gadget.sh: flavor %s refused" % cmd[3])
         return subprocess.run(cmd, **kw)
+
+    def host_request(self, op, args=None, timeout=60):
+        if not self.host_takes:
+            raise RuntimeError("host does not support %r" % op)
+        self.told.append((op, args, len(self.uses)))
 
     def settings(self):
         return (self.dir / "card" / "settings.txt").read_text()
@@ -227,6 +235,19 @@ class Switching(Base):
         self.assertIn("flavor = gamebuds", self.settings())       # it starts as gamebuds from now on
         self.assertEqual(self.waits, [1])                          # after the gap
         self.assertFalse((self.dir / "switch.json").exists())
+        self.assertEqual(self.told, [("usb_ids.add", {"ids": ["1038:230a"]}, 0)])     # before it switched
+        self.assertEqual(self.svc.switch["host"], "told")
+
+    def test_the_host_is_told_the_new_id(self):
+        """An older host: the switch goes on (and says so); no host: nothing to tell."""
+        self.host_caps = []
+        self.assertEqual(self.finished(self.svc.handle("use", {"name": "gamebuds"}))["host"], "old")
+        self.host_caps, self.host_takes = ["usb_ids"], False
+        self.assertEqual(self.finished(self.svc.handle("use", {"name": "gamebuds"}))["host"], "failed")
+        self.session.peer_alive = False
+        self.assertIsNone(self.finished(self.svc.handle("use", {"name": "gamebuds"}))["host"])
+        self.assertEqual(self.told, [])
+        self.assertEqual(self.uses, ["gamebuds", "audiolink"] * 3)
 
     def test_back_without_a_computers_link(self):
         sw = self.svc.handle("use", {"name": "gamebuds"})
@@ -264,6 +285,7 @@ class Switching(Base):
         sw = self.svc.handle("try", {"toml": OTHER})
         self.assertEqual((sw["name"], sw["usb"], sw["notes"]), ("try", "1038:2300", ["string 33 not reproduced"]))
         self.assertEqual(self.finished(sw)["state"], "kept")
+        self.assertEqual(self.told, [("usb_ids.add", {"ids": ["1038:2300"]}, 0)])
         self.assertNotIn("\nflavor = ", self.settings())           # until the next start
         listed = self.svc.handle("list", {})
         self.assertEqual(listed["running"], "try")
@@ -371,7 +393,16 @@ class Command(Base):
         self.command("add", str(self.dir / "gamebuds.toml"))
         out = self.command("use", "gamebuds")
         self.assertIn("... went back\nEXIT No computer's link came back on gamebuds, so the Pi went back to "
-                      "audiolink", out)
+                      "audiolink. Likely:\n  - this computer asked to allow the new device", out)
+        self.assertNotIn("doesn't find the Pi", out)                # its host was told the new ID
+        self.host_caps, self.session.peer_alive = [], False          # nobody to tell: maybe
+        self.assertIn("doesn't find the Pi as 1038:230a (an older one?; or start it with: audiolink host --usb-id "
+                      "1038:230a)", self.command("use", "gamebuds"))
+        self.session.peer_alive = True
+        self.assertIn("  - gamebuds has no audio both ways (the link runs over it)\n(audiolink logs)", out)
+        self.host_caps = []                                         # a host from before: likeliest first
+        self.assertIn("Likely:\n  - this computer's audiolink host doesn't find the Pi as 1038:230a (it's older",
+                      self.command("use", "gamebuds"))
         self.assertIn("EXIT No flavor nope", self.command("use", "nope"))
         self.assertIn("The Pi is audiolink already", self.command("use", "audiolink"))
 
@@ -381,9 +412,34 @@ class Command(Base):
         self.assertIn("Note: string 33 not reproduced", out)
         self.assertIn("Switching the Pi to the tried flavor", out)
         self.assertIn("Until the Pi restarts", out)
-        self.assertEqual(self.saved_ids(), [])                       # not kept: only the running host learns it
-        self.assertEqual(self.taught, ["1038:230a"])
+        self.assertEqual(self.saved_ids(), ["1038:230a"])            # kept: a restarted host still finds the Pi
+        self.assertEqual(set(self.taught), {"1038:230a"})
         self.assertIn("Flavor: the tried flavor (starts as audiolink)", self.command())
+
+    def test_a_capture_isnt_a_flavor(self):
+        cap = str(self.dir / "GameBuds.json")
+        Path(cap).write_text('{"devices": []}')
+        for action in ("add", "try"):
+            self.assertIn("EXIT %s is a capture, not a flavor: convert it first: platform/capture_to_toml.py %s "
+                          "-o gamebuds.toml" % (cap, cap), self.command(action, cap))
+        self.assertEqual(self.uses, [])
+
+    def test_a_chosen_flavor_that_isnt_there(self):
+        self.card.handle("set", {"changes": {"flavor": "typo"}})
+        self.assertIn("Flavor: audiolink (settings.txt's flavor = typo: there's no such flavor, so it starts as "
+                      "audiolink)", self.command())
+
+    def test_replacing_the_one_thats_up_or_chosen(self):
+        self.command("add", str(self.dir / "gamebuds.toml"))
+        self.card.handle("set", {"changes": {"flavor": "gamebuds"}})
+        out = self.command("add", str(self.dir / "gamebuds.toml"))
+        self.assertIn("The Pi starts as gamebuds: the new file shows then, unchecked (to check it now: "
+                      "audiolink flavor use gamebuds)", out)
+        (self.dir / "run" / "flavor").write_text("gamebuds\n")
+        out = self.command("add", str(self.dir / "gamebuds.toml"))
+        self.assertIn("The Pi is gamebuds now: the new file shows when it next starts, unchecked (to check it "
+                      "first: audiolink flavor try %s)" % (self.dir / "gamebuds.toml"), out)
+        self.assertNotIn("Switch:", out)
 
     def test_over_the_network_without_a_computer(self):
         self.net = True
@@ -397,6 +453,54 @@ class Command(Base):
         learn_usb_ids({"usb": ["1038:230a", "1d6b:0104"]})            # the built-in one isn't saved
         learn_usb_ids({"name": "a Pi from before flavors"})
         self.assertEqual(self.saved_ids(), ["1038:230a"])
+
+
+class OverTheLink(unittest.TestCase):
+    """The Pi tells its host the new USB ID over a real link (session.py): a host that knows
+    how saves it; one from before refuses, and the Pi carries on."""
+
+    def pair(self, host_services):
+        from audiolink.session import Session
+        host, pi = Session("host", host_services), Session("pi", [])
+        running = [True]
+
+        def pump():
+            while running[0]:
+                pi.link.feed(host.link.pull(4096))
+                host.link.feed(pi.link.pull(4096))
+                time.sleep(0.001)
+        threading.Thread(target=pump, daemon=True).start()
+        self.addCleanup(running.__setitem__, 0, False)
+        self.assertTrue(wait(lambda: pi.peer_alive and pi.peer_info))
+        svc = FlavorService(FakeFormats(), None, card="/nonexistent", env={})
+        svc.attach(pi)
+        return svc
+
+    def setUp(self):
+        from audiolink.wire import usb_audio
+        self.usb_audio = usb_audio
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        for p in (mock.patch.dict(os.environ, {"AUDIOLINK_CONFIG_DIR": d}),
+                  mock.patch.object(flavor, "TELL_WITHIN", 3)):
+            p.start()
+            self.addCleanup(p.stop)
+        usb_audio.set_extra_ids(None)
+        self.addCleanup(usb_audio.set_extra_ids, None)
+
+    def test_a_host_that_knows(self):
+        from audiolink.host import config
+        svc = self.pair([self.usb_audio.UsbIds()])
+        self.assertEqual(svc._tell_host("1038:230a"), "told")
+        self.assertIn((0x1038, 0x230a), self.usb_audio.known_ids())
+        self.assertEqual(config.load()["usb_ids"], ["1038:230a"])
+
+    def test_a_host_from_before(self):
+        svc = self.pair([])
+        self.assertEqual(svc._tell_host("1038:230a"), "old")
+        svc.session.peer_info["caps"].append("usb_ids")             # says it can, then refuses
+        self.assertEqual(svc._tell_host("1038:230a"), "failed")
+        self.assertNotIn((0x1038, 0x230a), self.usb_audio.known_ids())
 
 
 class Settings(unittest.TestCase):

@@ -351,7 +351,7 @@ def build_parser():
                        else "audiolink host's control port (default 47800), if it runs with another")
     roles["host"].add_argument("--in-device", metavar="NAME", help="likewise, its input sound device")
     roles["host"].add_argument("--usb-id", dest="usb_ids", action="append", type=argtypes.usb_id, metavar="VID:PID",
-                               help="a Pi with these USB IDs too (repeatable; replaces the saved usb_ids), "
+                               help="a Pi with these USB IDs too (repeatable; on top of the saved usb_ids), "
                                     "e.g. one from a fork: see audiolink list-devices"),
     roles["pi"].add_argument("--device", default="hw:0,0", help="ALSA device")
     roles["pi"].add_argument("--state-dir", default=PI_STATE_DIR, help="where the Pi keeps its identity")
@@ -598,8 +598,10 @@ def run_host(a, allow, port, gate):
     negotiator = AudioNegotiator(a.audio_format if a.audio_format in ("auto", "baseline")
                                  else parse_format(a.audio_format))
     identity = HostIdentity()
+    from .wire import usb_audio
     session = Session("host", [streams, watcher, identity, negotiator,
-                               HostConsole(expose, busy=lambda: negotiator.running)])
+                               HostConsole(expose, busy=lambda: negotiator.running),
+                               usb_audio.UsbIds()])        # the Pi's next flavor's USB ID
 
     def listen(lport, target, what, flag=None):
         try:
@@ -619,7 +621,6 @@ def run_host(a, allow, port, gate):
     if not a.verbose:
         from .wire.portaudio import quiet_stdout
         quiet_stdout()
-    from .wire import usb_audio
     usb_audio.set_extra_ids(a.usb_ids)
     run_portaudio(session.link, a.out_device, a.in_device, expected=lambda: negotiator.running)
     local_ops = {"peer": lambda args: {"connected": session.peer_alive, "peer": session.peer_info,

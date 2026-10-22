@@ -464,8 +464,9 @@ acts when you let go. Shorted while the Pi starts, it runs the version's own cod
 - **A Pi with its own USB ID** (built from a fork, or in a flavor added on another
   computer): audiolink finds the Pi's sound devices
   by USB ID, and by name only when none has a known ID. `audiolink list-devices` shows
-  each device's ID; tell the host about it with `audiolink host --usb-id VID:PID`, or
-  for good with `"usb_ids": ["VID:PID"]` in `host.json` (audiolink's settings folder).
+  each device's ID; tell the host about it with `audiolink host --usb-id VID:PID` (on
+  top of the saved ones), or for good with `"usb_ids": ["VID:PID"]` in `host.json`
+  (audiolink's settings folder; a running host picks up changes to it).
 - **The Pi's sound device is there, but the host never says `Connected`.**
   `audiolink list-devices` shows it (`*`), yet nothing comes through. On a Mac, the
   program reading the Pi needs the microphone permission: System Settings → Privacy &

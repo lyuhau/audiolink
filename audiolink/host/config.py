@@ -1,7 +1,7 @@
 """The host's saved settings (config dir / host.json), written by `audiolink setup host` and
 read by `audiolink host`: what it exposes, forwards and allows, the audio format, its local
 ports and the Pi's sound devices. A flag given on the command line wins over the saved
-value (a list flag such as --expose replaces the saved list).
+value (a list flag such as --expose replaces the saved list; --usb-id adds to it).
 
   {"expose": ["2222:22"], "forward": [], "allow": [], "audio_format": "auto",
    "proxy_port": 47801, "shell_port": 47802, "control_port": 47800,
@@ -9,7 +9,9 @@ value (a list flag such as --expose replaces the saved list).
 
 usb_ids: more USB IDs (VID:PID) whose sound devices are the Pi's, next to the built-in
 ones (wire/usb_audio.py): a Pi from a fork that presents its own, or in a flavor someone
-added (`audiolink flavor`, and the Pi's network record, add them: remember_usb_ids).
+added (`audiolink flavor`, the Pi's network record, and the Pi itself before it becomes
+another device add them: remember_usb_ids). A running host reads them again when this
+file changes.
 """
 import argparse
 import json
@@ -31,6 +33,7 @@ FIELDS = {
     "in_device": (None, str, False),
     "usb_ids": ([], argtypes.usb_id, True),
 }
+ADDS = {"usb_ids"}              # list flags that add to the saved list instead of replacing it
 
 
 def path():
@@ -119,6 +122,8 @@ def apply(a, saved=None):
         if getattr(a, key, None) is None:
             value = saved.get(key, builtin)
             setattr(a, key, list(value) if many else value)
+        elif key in ADDS:
+            setattr(a, key, saved.get(key, []) + [v for v in getattr(a, key) if v not in saved.get(key, [])])
     return a
 
 

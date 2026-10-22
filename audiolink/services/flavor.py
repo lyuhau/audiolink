@@ -9,12 +9,18 @@ setting `flavor`, else the image's default) and switches live with `gadget.sh us
   flavor.list               the flavors; which is up, the default, the card's choice; the
                             switch under way (or the last one) and whether a computer's
                             USB link is up to confirm one
-  flavor.add {name, toml}   onto the card, once it plans (the image's planner and options)
+  flavor.add {name, toml}   onto the card, once it plans (the image's planner and options);
+                            over the one that's up or chosen: unchecked, from the next start
   flavor.remove {name}      off the card (not the one that's up)
   flavor.use {name}         present it; kept (the card's setting) once a computer's USB link
                             comes back on it within CONFIRM_WITHIN, else back to the one before
   flavor.try {toml}         the same for a file that isn't kept (developers): on the card as
                             try.toml while it's up, never the card's setting
+
+Before it becomes the new device, the Pi tells the host it's plugged into the new USB ID
+(usb_ids.add: wire/usb_audio.py UsbIds; the host saves it), so that host finds it again,
+whoever asked for the switch. A host from before that refuses it, and the switch goes on
+(it may then go back; the switch says so: "host").
 
 Only USB confirms: a flavor changes only USB, so the relay or Wi-Fi coming back proves
 nothing about it. A switch stops the audio, re-presents the device and reads it again
@@ -51,6 +57,7 @@ RUN = "/run/usb-gadget"                         # flavor: the name of the one th
 SWITCH = "/run/audiolink-flavor-switch"         # the switch under way: {name, back}
 CONFIRM_WITHIN = 60             # s for a computer's USB link to come back on a new flavor
 REPLY_FIRST = 0.5               # s: let the reply reach the computer before USB goes
+TELL_WITHIN = 5                 # s for the host to take the new USB ID
 TRY = "try"                     # a tried file's name on the card while it's up
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 MAX_SIZE = 64 * 1024
@@ -280,7 +287,9 @@ class FlavorService(Service):
             existed = bool(self.find(name))
             self._write(name, toml)
         log.info("flavor: %s %s (%s)", "replaced" if existed else "added", name, info["usb"])
-        return dict(info, name=name, replaced=existed)
+        # Replacing the one that's up, or the one it starts as: no trial; it shows at the next start
+        return dict(info, name=name, replaced=existed, up=existed and name == self.running(),
+                    starts=existed and name == self.chosen())
 
     def remove(self, name):
         name = check_name(name)
@@ -325,12 +334,12 @@ class FlavorService(Service):
             self.ids += 1
             wait = self.wait()
             self.switch = {"id": self.ids, "name": name, "back": back, "state": "switching", "tried": bool(tried),
-                           "wait": round(wait), "within": self.within}
+                           "wait": round(wait), "within": self.within, "usb": describe(self.find(name)[0])["usb"]}
             if tried:
                 self.switch.update(tried)
-            sw = self.switch
+            sw, reply = self.switch, dict(self.switch)          # the reply: as it starts
         threading.Thread(target=self._run, args=(sw, wait), name="flavor-switch", daemon=True).start()
-        return dict(sw)
+        return reply
 
     def try_(self, toml):
         if not self.switchable():
@@ -373,6 +382,7 @@ class FlavorService(Service):
         if self.switch is not sw:
             return
         self._note(sw)
+        sw["host"] = self._tell_host(sw.get("usb"))
         log.info("flavor: switching to %s (back to %s unless a computer's USB link comes back on it in %ds)",
                  sw["name"], sw["back"], self.within)
         st, said = self._present(sw["name"])
@@ -406,6 +416,24 @@ class FlavorService(Service):
         self._tidy()
         if self.switch is sw:
             sw.update(state="back", running=self.running())
+
+    def _tell_host(self, usb):
+        """Tell the host this Pi is plugged into that it's about to be USB ID usb. -> "told",
+        "old" (a host from before this: it may not find the Pi), "failed", or None (no host,
+        or no ID)."""
+        s = getattr(self, "session", None)
+        if not usb or not (s and s.peer_alive):
+            return None
+        if not s.peer_has("usb_ids"):
+            log.warning("flavor: the host runs an older audiolink: it may not find the Pi as %s", usb)
+            return "old"
+        try:
+            s.request("usb_ids.add", {"ids": [usb]}, timeout=TELL_WITHIN)
+        except (RuntimeError, TimeoutError, OSError, ValueError) as e:
+            log.warning("flavor: the host didn't take USB ID %s: %s", usb, e)
+            return "failed"
+        log.info("flavor: told the host the Pi is about to be %s", usb)
+        return "told"
 
     def _link_back(self, since):
         """A computer's USB link up again, heard since the new device came up."""
