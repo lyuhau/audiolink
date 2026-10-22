@@ -19,7 +19,7 @@ from audiolink.services import card as card_svc
 from audiolink.services import flavor
 from audiolink.services.flavor import FlavorService
 
-from .helpers import wait
+from .helpers import PI_USB, PI_USB_ID, wait
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -143,7 +143,7 @@ class Listing(Base):
         self.assertTrue(r["switchable"])
         self.assertEqual((r["running"], r["default"], r["chosen"]), ("audiolink", "audiolink", None))
         got = {f["name"]: (f["where"], f["usb"], f["product"]) for f in r["flavors"]}
-        self.assertEqual(got, {"audiolink": ("built in", "1d6b:0104", "AudioPi"),
+        self.assertEqual(got, {"audiolink": ("built in", PI_USB_ID, "AudioPi"),
                                "gamebuds": ("card", "1038:230a", "Arctis GameBuds")})
         self.assertTrue(r["usb_peer"])
 
@@ -166,11 +166,11 @@ class Listing(Base):
 
     def test_plan_info_and_an_image_without_flavors(self):
         p = self.dir / "device.plan"
-        p.write_text("# x\nname device\nwrite idVendor 0x1d6b\nwrite idProduct 0x0104\n"
+        p.write_text("# x\nname device\nwrite idVendor 0x%04x\nwrite idProduct 0x%04x\n" % PI_USB +
                      "write strings/0x409/product AudioPi\n")
-        self.assertEqual(flavor.plan_info(str(p)), ("1d6b:0104", "AudioPi"))
+        self.assertEqual(flavor.plan_info(str(p)), (PI_USB_ID, "AudioPi"))
         with mock.patch.object(flavor, "running_plan", lambda: str(p)):
-            self.assertEqual(flavor.usb_ids(), ["1d6b:0104"])          # the Pi's network record
+            self.assertEqual(flavor.usb_ids(), [PI_USB_ID])          # the Pi's network record
         (self.dir / "flavors.env").unlink()
         svc = FlavorService(self.formats, self.card, card=str(self.dir / "card"), env={}, gadget_sh="gadget.sh",
                             flavors_env=str(self.dir / "flavors.env"), planner=str(self.dir / "planner.py"))
@@ -365,7 +365,7 @@ class Command(Base):
         self.command("add", str(self.dir / "gamebuds.toml"))
         out = self.command()
         self.assertTrue(out.startswith("Flavor: audiolink\n"), out)
-        self.assertRegex(out, r"\* audiolink +AudioPi +1d6b:0104 +\(built in, the default\)")
+        self.assertRegex(out, r"\* audiolink +AudioPi +%s +\(built in, the default\)" % PI_USB_ID)
         self.assertRegex(out, r"  gamebuds +Arctis GameBuds +1038:230a +\(yours\)")
         self.assertTrue(out.endswith("Switch: audiolink flavor use NAME\n"))
 
@@ -450,7 +450,7 @@ class Command(Base):
 
     def test_learned_from_the_record(self):
         from audiolink.client.remote import learn_usb_ids
-        learn_usb_ids({"usb": ["1038:230a", "1d6b:0104"]})            # the built-in one isn't saved
+        learn_usb_ids({"usb": ["1038:230a", PI_USB_ID]})            # the built-in one isn't saved
         learn_usb_ids({"name": "a Pi from before flavors"})
         self.assertEqual(self.saved_ids(), ["1038:230a"])
 

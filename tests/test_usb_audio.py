@@ -7,6 +7,8 @@ import unittest
 
 from audiolink.wire import usb_audio
 
+from .helpers import PI_USB, PI_USB_ID
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -15,7 +17,7 @@ def dev(name, usb=None):
 
 
 class PiDevices(unittest.TestCase):
-    PI = (0x1d6b, 0x0104)
+    PI = PI_USB
 
     def test_by_usb_id_whatever_the_name(self):
         renamed = dev("Speakers (My Link)", self.PI)
@@ -95,7 +97,7 @@ class ExtraIds(unittest.TestCase):
     def test_added_while_running(self):
         """audiolink flavor: the running host finds the Pi as its new flavor too."""
         usb_audio.set_extra_ids(["1209:0001"])
-        self.assertEqual(usb_audio.add_ids(["1209:abcd"]), ["1209:0001", "1209:abcd", "1d6b:0104"])
+        self.assertEqual(usb_audio.add_ids(["1209:abcd"]), sorted(["1209:0001", "1209:abcd", PI_USB_ID]))
         self.save(["1209:0002"])
         self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK, (0x1209, 1), (0x1209, 2)})
 
@@ -106,7 +108,7 @@ class ExtraIds(unittest.TestCase):
         self.assertEqual(svc.handle("add", {"ids": ["1209:ABCD"]}), {"ids": ["1209:abcd"], "saved": ["1209:abcd"]})
         self.assertIn(self.FORK, usb_audio.known_ids())
         self.assertEqual(config.load()["usb_ids"], ["1209:abcd"])
-        self.assertEqual(svc.handle("add", {"ids": ["1d6b:0104"]})["saved"], [])     # built in: not saved
+        self.assertEqual(svc.handle("add", {"ids": [PI_USB_ID]})["saved"], [])     # built in: not saved
         for bad in ({}, {"ids": "1209:abcd"}, {"ids": ["nope"]}, {"ids": ["1209:0001"] * 9}):
             with self.assertRaises(ValueError):
                 svc.handle("add", bad)
@@ -140,12 +142,12 @@ class Mac(unittest.TestCase):
     def test_by_position_then_name(self):
         names = {93: "Playback Inactive", 91: "Capture Inactive", 76: "MacBook Air Speakers",
                  10: "USB Audio", 11: "USB Audio"}
-        ids = {93: (0x1d6b, 0x0104), 91: (0x1d6b, 0x0104), 10: (0x1234, 1), 11: (0x5678, 2)}
+        ids = {93: PI_USB, 91: PI_USB, 10: (0x1234, 1), 11: (0x5678, 2)}
         uids = {93: "AppleUSBAudioEngine:audiolink:AudioPi:audiopi0001:1",
                 91: "AppleUSBAudioEngine:audiolink:AudioPi:audiopi0001:2", 76: "BuiltInSpeakerDevice"}
         lookup = self.lookup(names, ids, uids)
-        self.assertEqual(lookup(dev("Capture Inactive"), 1), ((0x1d6b, 0x0104), "AppleUSBAudioEngine:audiolink:AudioPi:audiopi0001"))
-        self.assertEqual(lookup(dev("Capture Inactive")), ((0x1d6b, 0x0104), None))        # by name
+        self.assertEqual(lookup(dev("Capture Inactive"), 1), (PI_USB, "AppleUSBAudioEngine:audiolink:AudioPi:audiopi0001"))
+        self.assertEqual(lookup(dev("Capture Inactive")), (PI_USB, None))        # by name
         self.assertEqual(lookup(dev("MacBook Air Speakers"), 2), (None, None))
         self.assertEqual(lookup(dev("USB Audio")), (None, None))      # by name, two IDs: can't tell
         self.assertEqual(lookup(dev("USB Audio"), 4), ((0x5678, 2), None))  # by position: can
@@ -183,13 +185,13 @@ class Pairs(unittest.TestCase):
 class Linux(unittest.TestCase):
     def test_cards_by_hw_number(self):
         with tempfile.TemporaryDirectory() as proc:
-            for card, usbid in (("1", "1d6b:0104\n"), ("3", "046d:0a44\n")):
+            for card, usbid in (("1", PI_USB_ID + "\n"), ("3", "046d:0a44\n")):
                 os.makedirs(os.path.join(proc, "card" + card))
                 with open(os.path.join(proc, "card" + card, "usbid"), "w") as f:
                     f.write(usbid)
             os.makedirs(os.path.join(proc, "card0"))            # built-in: no usbid
             ids = usb_audio.linux_ids(proc)
-            self.assertEqual(ids(dev("AudioPi: USB Audio (hw:1,0)")), ((0x1d6b, 0x0104), "card1"))
+            self.assertEqual(ids(dev("AudioPi: USB Audio (hw:1,0)")), (PI_USB, "card1"))
             self.assertEqual(ids(dev("Logitech Headset: USB Audio (hw:3,0)")), ((0x046d, 0x0a44), "card3"))
             self.assertEqual(ids(dev("bcm2835 Headphones: - (hw:0,0)")), (None, None))
             self.assertEqual(ids(dev("default")), (None, None))
