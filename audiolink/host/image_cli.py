@@ -12,7 +12,7 @@ import io
 import time
 import zipfile
 
-from ..services.image import COMMIT_WITHIN, check_image
+from ..services.image import COMMIT_WITHIN, TRYING, check_image
 from ..ui import detail, done, step
 
 CHUNK = 256 * 1024
@@ -60,11 +60,13 @@ def image_command(a, call, port, over_network):
         r = call("image.revert", port=port)
         print("Going back to the version before (%s; rebooting)" % r["slot"].rstrip("/"))
         return
-    name, data = read_image(a.image)
     st = call("image.status", port=port)
     if st.get("slots") is None:
         raise SystemExit("The Pi's card has no image slots yet: put this image on it with audiolink card write "
                          "(once; then images go over the link)")
+    if st.get("trial") and not st.get("committed"):     # the other slot is the one to go back to
+        raise SystemExit(TRYING)
+    name, data = read_image(a.image)
     digest = hashlib.sha256(data).hexdigest()
     running = (st.get("images") or {}).get(st.get("current")) or {}
     if running.get("sha256") == digest:

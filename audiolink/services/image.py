@@ -37,6 +37,8 @@ IMAGE_SLOT = "a/"               # where a built image has its slot (pi-gadget-ki
 FIRMWARE = ("bootcode.bin", "start.elf", "fixup.dat")
 COMMIT_WITHIN = 180             # seconds a trial has to reach its host or relay (the platform's guard: 300)
 INFO = ".image.json"            # in a slot: which image it holds
+TRYING = ("The Pi is trying a version: it keeps it or goes back within a few minutes; "
+          "check: audiolink update --status")
 
 
 def slot_status(run=subprocess.run):
@@ -87,6 +89,7 @@ class ImageService(Service):
         self.reboot = reboot or (lambda: run(["reboot"]))
         self.lock = threading.Lock()
         self.expect = None
+        self.trying = False             # a try is scheduled (slot.sh status says trial only once it's booted)
         if endpoint:
             endpoint.register("image", self._remote, OWNER)
             endpoint.register("image_status", lambda conn, req: {"result": self.status()}, OWNER)
@@ -136,8 +139,10 @@ class ImageService(Service):
                 size, digest = int(args["size"]), str(args["sha256"])
                 if not 0 < size <= MAX_SIZE:
                     raise ValueError("image too big (%d bytes)" % size)
-                if slot_status(self.run_cmd) is None:
+                st = slot_status(self.run_cmd)
+                if st is None:
                     raise ValueError("this Pi's card has no image slots: put the image on it with audiolink card write")
+                self._not_trying(st)
                 with open(self.new, "wb"):
                     pass
                 self.expect = (size, digest, str(args.get("name") or "image"))
@@ -152,6 +157,7 @@ class ImageService(Service):
             if op == "finish":
                 return self._finish()
             if op == "revert":
+                self._not_trying(slot_status(self.run_cmd))
                 return self._revert()
         return super().handle(op, args)
 
@@ -183,8 +189,20 @@ class ImageService(Service):
             if os.path.exists(p):
                 os.remove(p)
         log.info("image: %s in %s; trying it", name, target)
-        self._later(lambda: self.run_cmd(["sh", SLOT_SH, "try", target]))
+        self.trying = True
+        self._later(lambda: self._try(target))
         return {"ok": True, "slot": target, "from": st["current"], "firmware_differs": firmware}
+
+    def _not_trying(self, st):
+        """While a trial is open the other slot is the version to go back to: it stays."""
+        if self.trying or (st and st["trial"] and not st["committed"]):
+            raise ValueError(TRYING)
+
+    def _try(self, target):
+        p = self.run_cmd(["sh", SLOT_SH, "try", target], capture_output=True, text=True)
+        if p.returncode:                # no reboot: nothing on trial after all
+            log.warning("image: can't try %s: %s", target, (p.stderr or p.stdout).strip())
+            self.trying = False
 
     def _install(self, names, target, digest, name):
         """The image's slot into `target` (not running), checked; settings.txt renewed.

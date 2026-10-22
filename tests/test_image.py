@@ -104,12 +104,39 @@ class Service(unittest.TestCase):
 
     def test_revert(self):
         self.send(zipped(IMAGE))
+        self.svc.trying = False                  # (rebooted, the trial committed)
         rebooted = []
         self.svc.reboot = lambda: rebooted.append(True)
         r = self.svc.handle("revert", {})
         self.assertEqual(r["slot"], "b/")
         self.assertEqual(self.slot.calls[-1], ["switch", "b/"])
         self.assertEqual(rebooted, [True])
+
+    def test_nothing_new_while_on_trial(self):
+        self.slot.current, self.slot.trial, self.slot.committed = "b/", True, False
+        (self.card / "b").mkdir()
+        (self.card / "b/config.txt").write_text("trial")
+        for op in ("begin", "revert"):
+            with self.assertRaisesRegex(ValueError, "trying a version"):
+                self.svc.handle(op, {"size": 1, "sha256": "0" * 64})
+        self.assertEqual((self.card / "a/boot/initrd.img").read_text(), "old")          # the good one: untouched
+        self.assertNotIn(["switch", "a/"], self.slot.calls)
+
+    def test_nothing_new_once_a_try_is_scheduled(self):
+        later = []
+        self.svc._later = later.append            # the try: not yet run, not yet booted
+        self.send(zipped(IMAGE))
+        with self.assertRaisesRegex(ValueError, "trying a version"):
+            self.send(zipped(dict(IMAGE, **{"a/boot/initrd.img": "newer"})))
+        with self.assertRaisesRegex(ValueError, "trying a version"):
+            self.svc.handle("revert", {})
+        failed = SimpleNamespace(returncode=1, stdout="", stderr="slot.sh: no python3")
+        self.svc.run_cmd = lambda cmd, **kw: failed if cmd[2:3] == ["try"] else self.slot(cmd)
+        later[0]()                               # the try failed: no reboot, nothing on trial
+        self.assertFalse(self.svc.trying)
+        self.svc.run_cmd = self.slot
+        self.svc._later = lambda fn: fn()
+        self.assertEqual(self.send(zipped(IMAGE))["slot"], "b/")
 
     def test_trial_commits_once_through(self):
         self.slot.trial, self.slot.committed = True, False
@@ -150,6 +177,21 @@ class Status(unittest.TestCase):
 
 
 class Command(unittest.TestCase):
+    def test_refused_while_on_trial(self):
+        calls = []
+
+        def call(op, args=None, port=None):
+            calls.append(op)
+            return {"slots": ["a/", "b/"], "current": "b/", "trial": True, "committed": False, "images": {}}
+        orig = image_cli.read_image
+        image_cli.read_image = lambda p: calls.append("read") or ("x.zip", b"")
+        try:
+            with self.assertRaisesRegex(SystemExit, "trying a version.*update --status"):
+                image_cli.image_command(SimpleNamespace(back=False, image=None), call, None, over_network=False)
+        finally:
+            image_cli.read_image = orig
+        self.assertEqual(calls, ["image.status"])               # nothing downloaded or sent
+
     def test_build_folder_becomes_a_zip(self):
         with tempfile.TemporaryDirectory() as d:
             for p, t in IMAGE.items():
