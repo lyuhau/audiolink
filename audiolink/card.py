@@ -291,6 +291,8 @@ def update(runner, disk, mount, image, sleep=time.sleep, keep_update=False):
         target = "b/" if booted == "a" else "a/"
         image, into = InSlot(image, target), (target, booted + "/")
         kept.add(booted)
+    elif IMAGE_SLOT + "config.txt" in image.names:
+        image = InSlot(image, IMAGE_SLOT)       # a card from before slots: just its name in the slot
     skip = {n for n in image.names if n.split("/")[0] in kept}
     want = [n for n in image.names if n not in skip]
     for rel in _system_files(mount, kept):              # leftovers of an interrupted write

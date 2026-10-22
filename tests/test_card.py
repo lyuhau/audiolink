@@ -212,6 +212,20 @@ class Update(unittest.TestCase):
                              ("b/", "a/"))
             self.assertEqual(Path(mount, "b/boot/initrd.img").read_text(), "new img")
 
+    def test_a_card_from_before_slots(self):
+        slotted = {"config.txt": "os_prefix=a/\ninclude a/config.txt\n", "settings.txt": IMAGE["settings.txt"],
+                   "a/config.txt": "kernel", "a/boot/initrd.img": "new img"}
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp, "card")
+            make_card(mount)                                     # config.txt, boot/: no slots
+            image = image_dir(Path(tmp, "build"), slotted)
+            _, _, _, into = card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)
+            self.assertIsNone(into)
+            self.assertEqual(card.slots(str(mount)), (["a"], "a"))
+            self.assertFalse(Path(mount, "boot/initrd.img").exists())
+            self.assertIn('"name": "build"', Path(mount, "a", card.SLOT_INFO).read_text())   # named in status
+            self.assertEqual(Path(mount, "audiolink/identity.json.a").read_text(), "{}")
+
     def test_keep_update(self):
         with tempfile.TemporaryDirectory() as tmp:
             mount = Path(tmp, "card")
