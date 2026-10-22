@@ -279,8 +279,19 @@ minute, or else goes back to the one it was by itself. A kept `use` is the Pi's
 The computer that adds or switches to a flavor learns its USB ID (`host.json`'s
 `usb_ids`), so it keeps finding the Pi; other computers learn it from the Pi when
 they reach it over the network. A flavor is a TOML file (pi-gadget-kit's README:
-*Hand-written devices*), or one made from a real device's capture
-(`capture_usb.py`, then `capture_to_toml.py capture.json -o x.toml`).
+*Hand-written devices*), written by hand or made from a real device:
+
+1. Capture it with `capture_usb.py` (the usb-capture project) into `capture.json`.
+2. `python3 platform/capture_to_toml.py capture.json -o config/flavors/local/NAME.toml`
+   (`config/flavors/local/` is gitignored: a clone stays yours). It writes
+   `extras = false`, so the clone is exact, and checks that it plans like the capture.
+3. `audiolink flavor try config/flavors/local/NAME.toml`, then `flavor add` it.
+
+A built-in flavor (shipped with every version, generic, never a clone of a product):
+1. `config/flavors/NAME.toml`;
+2. list it in `config/pi-release.toml`'s `[device] flavors`;
+3. add its USB ID to `USB_IDS` in `audiolink/wire/usb_audio.py`, so every computer
+   finds the Pi in it.
 
 ### Where card images come from
 

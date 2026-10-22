@@ -45,6 +45,8 @@ Flavor: audiolink
 Switch: audiolink flavor use NAME
 ```
 
+(`usb-headset` is an example of a later built-in: only `audiolink` ships today.)
+
 - Every `flavor use` (not just the first) is confirm-or-revert, like audio formats and
   updates: the Pi presents the new flavor and keeps it once a computer's USB link
   comes back on it, else goes back. Only USB counts: a flavor changes only USB, so the
@@ -65,15 +67,22 @@ Switch: audiolink flavor use NAME
 
 Built-in flavors are generic (audiolink's own device, a plain USB headset with its
 own ID, ...). Clones of real products are never shipped: they stay user-made and
-user-added (`capture_usb.py` → `capture_to_toml.py` → `flavor add`).
+user-added (`capture_usb.py` → `capture_to_toml.py` → `flavor add`). `capture_usb.py`
+is in the usb-capture project; `capture_to_toml.py` is pi-gadget-kit's
+(`platform/capture_to_toml.py` here).
 
 ## What developers see
 
-1. Describe a flavor: a TOML by hand, or `capture_to_toml.py capture.json -o x.toml`.
+1. Describe a flavor: a TOML by hand, or from a capture (usb-capture's
+   `capture_usb.py`): `platform/capture_to_toml.py capture.json -o
+   config/flavors/local/x.toml` (it writes `extras = false`: an exact clone).
 2. `audiolink flavor try x.toml`: sent to the Pi, planned there (its notes shown,
    e.g. "string 33 not reproduced"), presented, kept only if the link comes back.
-3. Edit and `try` again; `flavor add` to keep it; `flavor use` to make it the default.
-4. Built-in flavors: `config/flavors/NAME.toml` in the repo; the build packages them
+3. Edit and `try` again; `flavor add` to keep it; `flavor use` to make it what the Pi
+   starts as (the default stays the image's).
+4. Built-in flavors: `config/flavors/NAME.toml` in the repo, listed in
+   `config/pi-release.toml`'s `[device] flavors`, with its USB ID in `USB_IDS`
+   (`audiolink/wire/usb_audio.py`) so every computer finds it. The build packages them
    and runs the planner over each as a check (a flavor that doesn't plan fails the
    build). Your own: `config/flavors/local/` (gitignored), next to them, never committed
    (a clone of a real product, say).
@@ -111,8 +120,8 @@ hidden `audiolink update --code PYZ`. The `.pyz` itself stays what computers run
 
 - `flavor.list`, `add` (validated by planning it), `remove`, `use`, `try`: owners
   only, over USB or the network.
-- `use` and `try`: present, then keep once a host or the relay reaches the Pi within
-  a few minutes, else back to the previous flavor (the audio format's
+- `use` and `try`: present, then keep once a computer's USB link comes back on it
+  (about 60 s), else back to the previous flavor (the audio format's
   confirm-or-revert, reused).
 - `wire/gadget.py` reads the plan that's running (`/run/usb-gadget/device.plan`).
 - The Pi's network record carries its current flavor's USB IDs.
