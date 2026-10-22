@@ -17,7 +17,7 @@ from unittest import mock
 from audiolink.__main__ import build_parser
 from audiolink import guide, install
 from audiolink.client import keyring, sshconfig
-from tests.helpers import FakeClock, needs_modes, needs_symlinks
+from tests.helpers import PI_USB, FakeClock, needs_modes, needs_symlinks
 from audiolink.host import config as host_config
 from audiolink.host.autostart import Autostart
 
@@ -321,7 +321,7 @@ class CardUsb(unittest.TestCase):
         self.assertEqual(card.usb_state(runner, "darwin", hints=("audiopi",)), "pi")
         # by its USB ID, whatever its name
         runner = FakeRunner({"ioreg": (0, self.IOREG.replace("BCM2710 Boot", "My Link")
-                                       .replace("10084", "260").replace("2652", "7531"))})
+                                       .replace("10084", str(PI_USB[1])).replace("2652", str(PI_USB[0])))})
         self.assertEqual(card.usb_state(runner, "darwin"), "pi")
 
     def test_disks_from_diskutil(self):

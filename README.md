@@ -736,6 +736,24 @@ clients and Pis first, then swap it.
    sends to a Pi) and `SHA256SUMS`. Unzip the card onto a microSD card and boot a
    Pi from it.
 
+### Forking
+
+What a fork changes (the tests follow the USB ID and the relay from these files):
+- **USB ID** (`1d6b:0104`, the Linux Foundation's generic composite gadget): how hosts
+  find the Pi's sound devices. A device of your own gets its own: your vendor's, or one
+  from [pid.codes](https://pid.codes) for open hardware. Two places, a test keeps them in
+  step: `config/flavors/audiolink.toml` (`idVendor`, `idProduct`) and
+  `audiolink/wire/usb_audio.py` (`USB_IDS`).
+- **Relay**: `audiolink/relay/__init__.py` (`DEFAULT`, `PIN`) and
+  `config/pi-release.toml` (`[app.settings.relay]` default; a test checks it's `DEFAULT`).
+  Your own: its certificate with your host as the CN and its pin (*Keys*);
+  `tools/relay_deploy.sh` deploys to `DEFAULT`'s host. None: `"off"` in both places.
+- **Release images**: nothing to change. A build names the repo it's built from
+  (`GITHUB_REPOSITORY` in the release workflow, else `origin`'s GitHub URL;
+  `audiolink/card.py` `repo()`), and `audiolink setup`, `card write` and `update`
+  download that repo's releases. Publish them with a tag (*Release*).
+- **Keys**: `keys/` is never committed: make your own (*Keys*).
+
 ## License
 
 MIT. Bundles PortAudio (MIT-style license, `audiolink/wire/_lib/PORTAUDIO-LICENSE.txt`).

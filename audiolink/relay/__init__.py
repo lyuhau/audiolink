@@ -9,6 +9,8 @@ Pi's key and proves its own key, as on the LAN (services/relay.py, docs/protocol
 All relay connections are TLS to a self-signed certificate pinned by hash.
 """
 
+# The relay Pis and clients use unless told otherwise, or "off" (a fork without one).
+# config/pi-release.toml's relay default too (a test checks); tools/relay_deploy.sh's host.
 DEFAULT = "relay.lyuhau.com:443"
 # sha256 of the relay certificate (DER); keys/relay.crt, made once and reused on rebuilds
 PIN = "b063132443c34f3074c07ffd69b4a13b74804f867a0104cb0dd2c1de8a26b2a3"

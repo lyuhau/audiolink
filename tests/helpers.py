@@ -1,6 +1,7 @@
 """Shared test helpers: a fake clock, and two link ends joined by an in-memory wire."""
 import os
 import random
+import re
 import sys
 import tempfile
 import time as _time
@@ -8,6 +9,20 @@ import unittest
 from unittest import mock
 
 from audiolink import tls
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _built_in_usb():
+    with open(os.path.join(ROOT, "config", "flavors", "audiolink.toml")) as f:
+        text = f.read()
+    return tuple(int(re.search(r"^%s = (0x[0-9a-fA-F]+)" % k, text, re.M).group(1), 16) for k in ("idVendor", "idProduct"))
+
+
+# The built-in flavor's USB ID (config/flavors/audiolink.toml; usb_audio.USB_IDS has it
+# too, test_usb_audio checks), read rather than copied so a fork can change it.
+PI_USB = _built_in_usb()
+PI_USB_ID = "%04x:%04x" % PI_USB
 
 # For tests that connect to a Pi's endpoint (TLS 1.3 with an Ed25519 key): macOS's
 # /usr/bin/python3 (LibreSSL) can't, and audiolink says so to its users instead.
