@@ -42,6 +42,8 @@ INFO = ".image.json"            # in a slot: which image it holds, and its state
 # (a trial of it began), "kept" (committed), "failed" (its trial fell back). None: from
 # before states (an older Pi, a card write): fine.
 NOT_OFFERED = ("writing", "trying", "failed")
+TRYING = ("The Pi is trying a version: it keeps it or goes back within a few minutes; "
+          "check: audiolink update --status")
 
 
 def slot_status(run=subprocess.run):
@@ -96,6 +98,7 @@ class ImageService(Service):
         self.run_cmd = run
         self.lock = threading.Lock()
         self.expect = None
+        self.trying = False             # a try is scheduled (slot.sh status says trial only once it's booted)
         if endpoint:
             endpoint.register("image", self._remote, OWNER)
             endpoint.register("image_status", lambda conn, req: {"result": self.status()}, OWNER)
@@ -166,9 +169,10 @@ class ImageService(Service):
         before = self._info(slot).get("state")
         self._mark(slot, "trying")
         p = self.run_cmd(["sh", SLOT_SH, "try", slot], capture_output=True, text=True)
-        if p.returncode:                        # still here: no trial
+        if p.returncode:                        # still here: no trial after all
             log.warning("image: can't try %s: %s", slot, (p.stderr or p.stdout).strip())
             self._mark(slot, before or "ready")
+            self.trying = False
 
     def status(self):
         st = slot_status(self.run_cmd)
@@ -184,8 +188,10 @@ class ImageService(Service):
                 size, digest = int(args["size"]), str(args["sha256"])
                 if not 0 < size <= MAX_SIZE:
                     raise ValueError("image too big (%d bytes)" % size)
-                if slot_status(self.run_cmd) is None:
+                st = slot_status(self.run_cmd)
+                if st is None:
                     raise ValueError("this Pi's card has no image slots: put the image on it with audiolink card write")
+                self._not_trying(st)
                 with open(self.new, "wb"):
                     pass
                 self.expect = (size, digest, str(args.get("name") or "image"))
@@ -200,6 +206,7 @@ class ImageService(Service):
             if op == "finish":
                 return self._finish()
             if op == "revert":
+                self._not_trying(slot_status(self.run_cmd))
                 return self._revert()
         return super().handle(op, args)
 
@@ -231,8 +238,14 @@ class ImageService(Service):
             if os.path.exists(p):
                 os.remove(p)
         log.info("image: %s in %s; trying it", name, target)
+        self.trying = True
         self._later(lambda: self._try(target))
         return {"ok": True, "slot": target, "from": st["current"], "firmware_differs": firmware}
+
+    def _not_trying(self, st):
+        """While a trial is open the other slot is the version to go back to: it stays."""
+        if self.trying or (st and st["trial"] and not st["committed"]):
+            raise ValueError(TRYING)
 
     def _install(self, names, target, digest, name):
         """The image's slot into `target` (not running), checked; settings.txt renewed.
@@ -295,6 +308,7 @@ class ImageService(Service):
                 other[0], "was only partly written" if info.get("state") == "writing" else "didn't work"))
         # On trial, like a new version: kept once it gets through, else back to this one
         log.info("image: back to %s; trying it", other[0])
+        self.trying = True
         self._later(lambda: self._try(other[0]))
         return {"ok": True, "slot": other[0], "from": st["current"]}
 
