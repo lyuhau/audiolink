@@ -623,13 +623,21 @@ Code layout: `audiolink/{wire, session.py, services, host, client, relay}`;
 
 `make help` lists the developer commands; each runs one of the scripts below.
 
+First time, in order:
+1. `git submodule update --init` (or clone with `--recursive`): the platform, `platform/`.
+2. `make modules`: its prebuilt gadget kernel modules (once).
+3. `ssh-keygen -t ed25519 -f keys/id_ed25519 -N ''`: the dev card's SSH key
+   (`config/pi.toml` builds `keys/id_ed25519.pub` in).
+4. `make card`: the dev card, `build/card-pi/`. Onto the Pi's card once with
+   `audiolink card write build/card-pi`; after that, the table below.
+
 ```
 make pyz            # dist/audiolink.pyz (python3 build_pyz.py)
 make app            # dist/audiolink-OS-ARCH.zip for this OS (needs pyinstaller)
 make test           # the tests in parallel (tools/test.py); serially: python3 -m unittest discover -s tests -t .
 make card           # the dev card image, build/card-pi/
 make release-card   # the release card image and its zip, as CI makes them
-make deploy         # make card, then onto the running dev Pi
+make deploy         # build/card-pi onto a dev Pi without image slots, over ssh
 ```
 
 Make stops at images and the dev Pi: putting an image on a card is `audiolink card`.
@@ -660,15 +668,22 @@ arguments, after `/etc/audiolink.args` (the build's).
 
 ```
 tools/build_card.sh [config/pi.toml]  # -> build/card-pi/
-tools/deploy.sh [build/card-pi]       # onto a running dev Pi's card over USB ethernet, then reboot
+tools/deploy.sh [build/card-pi]       # a card without slots, or --firmware, over USB ethernet; reboots
 tools/hot.sh                          # just the daemon, no reboot (lost at the next boot)
 tools/smoke.sh                        # end-to-end check of the host daemon and the Pi
 ```
 
-A dev image onto a card: `audiolink card write build/card-pi` (a card reader, or
-through the Pi; the card's `audiolink/` state and `logs/` stay), or over the link,
-tried like a release: `audiolink update build/card-pi`. A running dev Pi takes it over
-ssh instead: `make deploy`.
+Getting code onto a Pi (the card's `audiolink/` state, `logs/` and `settings.txt`
+stay in all of them):
+
+| | changes | after a reboot | when |
+|---|---|---|---|
+| `make hot` | the running Pi's `.pyz` and start scripts (ssh; a dev card) | gone | daemon code, in seconds |
+| `audiolink update --code [PYZ]` | `audiolink/audiolink.pyz` on the card, run instead of the version's own code; no trial | stays, until `--code --back`, a new version or a card write | code on a Pi without ssh (a release card), or to keep it |
+| `audiolink update build/card-pi` | the spare slot, booted on trial: kept once it reaches its computer or relay, else back | stays once kept | anything else: `pi/`, `config/`, the platform |
+| `audiolink card write build/card-pi` | the card (a reader, or through the Pi): the slot not booted, which boots from then on, and the firmware; no trial | stays | the first card, the firmware, a Pi that doesn't boot |
+| `make deploy` | over ssh: the whole build on a card without slots (`a/`, no fallback); `tools/deploy.sh --firmware`: just the firmware | stays | a Pi from before slots; firmware without a reader |
+
 State (identity, saved networks, code updates) is in the card's `audiolink/`; logs
 in `logs/last` and `logs/prev`.
 
@@ -680,8 +695,7 @@ version (`audiolink update`) or deleting that file from the card drop it. `audio
 card write` removes it too, unless `--keep-update`.
 
 **Keys** (`keys/`, never committed):
-- `id_ed25519`: SSH into dev cards. `ssh-keygen -t ed25519 -f keys/id_ed25519 -N ''`
-  before the first dev build.
+- `id_ed25519`: SSH into dev cards (first time, step 3).
 - `relay.crt`, `relay.key`: the relay's certificate, made once:
   `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout keys/relay.key -out keys/relay.crt -days 36500 -subj "/CN=relay.lyuhau.com"`.
   Clients and Pis pin it: `PIN` in `audiolink/relay/__init__.py` is the sha256 of
@@ -710,13 +724,13 @@ clients and Pis first, then swap it.
 **Release:**
 1. Bump `__version__` in `audiolink/__init__.py` (the release workflow refuses a
    tag that doesn't match it).
-2. Run the tests (also under `/usr/bin/python3`); build both cards
-   (`tools/build_card.sh`, `tools/build_card.sh config/pi-release.toml`) and try
-   them on a Pi. The release card has to build without `keys/` (CI has none).
+2. Run the tests (also under `/usr/bin/python3`); build both cards (`make card`,
+   `make release-card`) and try them on a Pi. The release card has to build without `keys/` (CI has none).
    A changed `config/pi-release.packages.lock` goes in a commit first: the release
    workflow refuses a card whose packages differ from it (Alpine moved on; rebuild,
    review the diff, try the card).
-3. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+3. Push the pi-gadget-kit commit `platform/` points at (CI checks the submodule out
+   from GitHub), then `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 4. Check the release's files: the macOS and Windows zips, the `.pyz`, the card
    (`audiolink-pi-VER.zip`, with its `.manifest`: also what `audiolink update`
    sends to a Pi) and `SHA256SUMS`. Unzip the card onto a microSD card and boot a
