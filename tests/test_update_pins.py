@@ -164,9 +164,15 @@ class UpdateCommand(unittest.TestCase):
         st = {"running": "/opt/audiolink/audiolink.pyz", "running_hash": h, "update": True, "set_aside": False}
         self.u.status = lambda: st
         with mock.patch("audiolink.host.update_cli._this_pyz", lambda: path):
-            out = self.run_cmd("--status")
+            out = self.run_cmd("--status", "-v")
+            plain = self.run_cmd("--status")
         self.assertIn("Code:     the image's (%s, the same as this computer's)" % h[:12], out)
         self.assertIn("An update is on the card but isn't running", out)
+        self.assertNotIn("Code:", plain)                         # builds: -v only
+        st["running"] = os.path.join(self.dir, "audiolink.pyz")
+        with mock.patch("audiolink.host.update_cli.PI_STATE_DIR", self.dir):
+            self.assertIn("Running a code update on top (developers): audiolink update --code --back",
+                          self.run_cmd("--status"))
 
     def test_slows_the_link_before_sending(self):
         out = self.run_cmd("--code", self.file(pyz()))

@@ -99,6 +99,15 @@ class Service(unittest.TestCase):
         self.assertTrue(self.send(zipped(IMAGE))["usb_settings"])
         self.assertIn("usb.vendor_id = 0x1234", (self.card / "settings.txt").read_text())     # kept as it was
 
+    def test_version_recorded(self):
+        version = {"version": "0.15.0", "build": "3871eed7e803", "release": False}
+        self.send(zipped(dict(IMAGE, **{"a/" + image_mod.VERSION_FILE: json.dumps(version)})))
+        self.assertEqual({k: self.info("b/")[k] for k in version}, version)
+        # INFO from before versions (an older Pi wrote it): the slot's own file says
+        (self.card / "a" / image_mod.VERSION_FILE).write_text(json.dumps(dict(version, version="0.14.0")))
+        (self.card / "a" / image_mod.INFO).write_text(json.dumps({"name": "card-pi"}))
+        self.assertEqual(self.svc.status()["images"]["a/"]["version"], "0.14.0")
+
     def test_damaged_or_without_slots(self):
         data = zipped(IMAGE)
         self.svc.handle("begin", {"size": len(data), "sha256": "0" * 64})
@@ -254,31 +263,80 @@ class Service(unittest.TestCase):
         self.assertIn("within %d minutes" % image_cli.TRIAL_MINUTES, (repo / "README.md").read_text())
 
 
+class VersionFile(unittest.TestCase):
+    def test_the_build_writes_it(self):
+        repo = Path(__file__).resolve().parent.parent
+        self.assertIn('"%s%s"' % (image_mod.IMAGE_SLOT, image_mod.VERSION_FILE),
+                      (repo / "tools" / "build_card.sh").read_text())
+
+
 class Status(unittest.TestCase):
-    def test_roles_and_letters(self):
+    def show(self, *args, verbose=False):
         import contextlib
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            image_cli.show_image_status({"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
-                                         "images": {"a/": {"name": "clone"}, "b/": {"name": "card-pi"}}})
-            image_cli.show_image_status({"current": "b/", "trial": True, "committed": False, "slots": ["b/"],
-                                         "images": {}})
-            for state in ("failed", "trying", "writing", "kept"):
-                image_cli.show_image_status({"current": "a/", "slots": ["a/", "b/"],
-                                             "images": {"b/": {"name": "x", "state": state}}})
-        self.assertEqual(out.getvalue().splitlines(), [
-            "Running:  clone (a)",
-            "Previous: card-pi (b): audiolink update --back",
-            "Running:  as written (b) on trial: kept once it's back online",
+        from audiolink import ui
+        out, ui.VERBOSE = io.StringIO(), verbose
+        try:
+            with contextlib.redirect_stdout(out):
+                image_cli.show_image_status(*args)
+        finally:
+            ui.VERBOSE = False
+        return out.getvalue().splitlines()
+
+    def test_versions_in_words(self):
+        rel = {"version": "0.14.0", "build": "3871eed7e803", "release": True}
+        self.assertEqual(image_mod.version_name(rel), "0.14.0")
+        self.assertEqual(image_mod.version_name(dict(rel, release=False)), "0.14.0 dev build 3871eed7")
+        self.assertEqual(image_mod.version_name({"version": "0.14.0"}), "0.14.0 dev build")
+        # INFO from before versions: a release zip says its version; else its name
+        self.assertEqual(image_mod.version_name({"name": "audiolink-pi-0.13.2.zip"}), "0.13.2")
+        self.assertEqual(image_mod.version_name({"name": "card-pi"}), "card-pi")
+        self.assertIsNone(image_mod.version_name({}))
+        # ... or what the Pi runs, for its own slot
+        running = {"version": "0.14.0", "build": "d1a5f2b90444"}
+        self.assertEqual(image_mod.version_name({"name": "card-pi"}, running), "0.14.0 dev build d1a5f2b9")
+        self.assertEqual(image_mod.version_name({"name": "audiolink-pi-0.14.0.zip"}, running), "0.14.0")
+        self.assertEqual(image_mod.version_name({}, running), "0.14.0")
+        self.assertEqual(image_mod.version_info(b'{"version": "1", "build": 7, "release": true}'),
+                         {"version": "1", "release": True})
+        self.assertEqual(image_mod.version_info(b"not json"), {})
+
+    def test_roles(self):
+        lines = []
+        lines += self.show({"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
+                            "images": {"a/": {"name": "clone"}, "b/": {"name": "card-pi"}}})
+        lines += self.show({"current": "b/", "trial": True, "committed": False, "slots": ["b/"], "images": {}})
+        for state in ("failed", "trying", "writing", "kept"):
+            lines += self.show({"current": "a/", "slots": ["a/", "b/"],
+                                "images": {"b/": {"version": "0.15.0", "release": True, "state": state}}},
+                               None, "0.14.0")
+        self.assertEqual(lines, [
+            "Running:  clone",
+            "Previous: card-pi (audiolink update --back)",
+            "Running:  the version written to its card on trial: kept once it's back online",
             "Previous: none yet (the next audiolink update keeps this one to go back to)",
-            "Running:  as written (a)",
-            "Previous: x (b): didn't work, not offered",
-            "Running:  as written (a)",
-            "Previous: x (b): audiolink update --back",
-            "Running:  as written (a)",
-            "Previous: x (b): partly written, not offered",
-            "Running:  as written (a)",
-            "Previous: x (b): audiolink update --back"])
+            "Running:  0.14.0",
+            "Previous: 0.15.0: didn't work, not offered",
+            "Running:  0.14.0",
+            "Previous: 0.15.0 (audiolink update --back)",
+            "Running:  0.14.0",
+            "Previous: 0.15.0: partly written, not offered",
+            "Running:  0.14.0",
+            "Previous: 0.15.0 (audiolink update --back)"])
+
+    def test_letters_and_builds_with_v(self):
+        st = {"current": "a/", "slots": ["a/", "b/"],
+              "images": {"a/": {"name": "card-pi", "version": "0.14.0", "build": "3871eed7e803", "state": "kept"},
+                         "b/": {"name": "audiolink-pi-0.13.2.zip"}}}
+        self.assertEqual(self.show(st, verbose=True), [
+            "Running:  0.14.0 dev build 3871eed7  [a/, card-pi, kept, build 3871eed7e803]",
+            "Previous: 0.13.2 (audiolink update --back)  [b/, audiolink-pi-0.13.2.zip]"])
+
+    def test_a_code_update_isnt_the_images_version(self):
+        st = {"current": "a/", "slots": ["a/"], "images": {"a/": {}}}
+        code = {"running": image_mod.PI_STATE_DIR + "/audiolink.pyz", "running_build": "ffff"}
+        self.assertEqual(self.show(st, code, "0.99.0")[0], "Running:  the version written to its card")
+        code = {"running": "/opt/audiolink/audiolink.pyz", "running_build": "d1a5f2b90444"}
+        self.assertEqual(self.show(st, code, "0.14.0")[0], "Running:  0.14.0")
 
 
 class Command(unittest.TestCase):
@@ -355,7 +413,7 @@ class Command(unittest.TestCase):
         def call(op, args=None, port=None):
             calls.append(op)
             return failed
-        with self.assertRaisesRegex(SystemExit, "b/ didn't work: send a new one"):
+        with self.assertRaisesRegex(SystemExit, r"version before \(x\) didn't work: send a new one"):
             image_cli.image_command(SimpleNamespace(back=True), call, None, over_network=False)
         self.assertEqual(calls, ["image.status"])                 # the link left at its speed
 

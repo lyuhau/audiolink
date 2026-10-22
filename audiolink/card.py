@@ -219,7 +219,7 @@ def check_image(path):
 
 
 IMAGE_SLOT = "a/"               # where a built image has its slot (pi-gadget-kit image_initramfs.SLOT)
-SLOT_INFO = ".image.json"       # in a slot: which image it holds (services/image.py)
+SLOT_INFO = ".image.json"       # in a slot: which image it holds, its version (services/image.py)
 
 
 def slot_config(slot):
@@ -245,7 +245,11 @@ class InSlot:
             if self.info is None:       # as an update records it: so the same image isn't sent again
                 path = self.image.path
                 digest = hashlib.sha256(self.image.zipped()).hexdigest() if path.is_dir() else sha256(path)
-                self.info = json.dumps({"name": self.name, "sha256": digest}).encode()
+                from .services.image import VERSION_FILE, version_info
+                info = {"name": self.name, "sha256": digest}
+                if IMAGE_SLOT + VERSION_FILE in self.image.names:
+                    info.update(version_info(self.image.read(IMAGE_SLOT + VERSION_FILE)))
+                self.info = json.dumps(info).encode()
             return self.info
         return self._data(name, self.image.read(self.map[name]))
 
