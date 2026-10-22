@@ -470,6 +470,14 @@ class EndpointThroughTheRelay(unittest.TestCase):
 
 
 class Addresses(unittest.TestCase):
+    def test_default_off(self):
+        """A fork without a relay (DEFAULT = "off"): clients try only the Pi's."""
+        from unittest import mock
+        from audiolink.relay import client
+        with mock.patch.object(client, "DEFAULT", "off"), mock.patch.object(client, "dial", side_effect=AssertionError):
+            with self.assertRaisesRegex(Refused, "no relay"):
+                client.connect(os.urandom(32))
+
     def test_parse_addr(self):
         from audiolink.relay import parse_addr
         for spec, want in (("relay.example:8443", ("relay.example", 8443)), ("relay.example", ("relay.example", 443)),

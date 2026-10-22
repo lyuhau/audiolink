@@ -14,10 +14,12 @@ WAIT = 20           # s for the relay to get the Pi to dial in
 
 def connect(pub, relays=()):
     """A socket carrying the Pi's endpoint, through the first relay that has the Pi
-    (relays first, then the default). Raises Refused with the last relay's reason
+    (relays first, then the default, unless it's off). Raises Refused with the last relay's reason
     ("offline": the Pi isn't on it)."""
     why = "no relay"
     for spec in dict.fromkeys(list(relays) + [DEFAULT]):
+        if spec == "off":
+            continue
         addr, pin = parse_relay(spec)
         try:
             sock = dial(addr, pin, timeout=WAIT)

@@ -2,10 +2,10 @@
 # Put the current code on the relay server (an Ubuntu box reachable as root) and
 # (re)start it. Safe to run again: restarts (dropping every relayed session) only
 # when the code, certificate or systemd unit changed; build_pyz.py is reproducible.
-#   RELAY=root@relay.lyuhau.com tools/relay_deploy.sh
+#   RELAY=root@relay.example.com tools/relay_deploy.sh    (default: audiolink/relay/__init__.py DEFAULT's host)
 set -e
 cd "$(dirname "$0")/.."
-RELAY=${RELAY:-root@relay.lyuhau.com}
+RELAY=${RELAY:-root@$(python3 -c 'from audiolink.relay import DEFAULT, parse_addr; print(parse_addr(DEFAULT.partition("#")[0])[0])')}
 SSH="ssh -i keys/relay_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR"
 python3 build_pyz.py >/dev/null
 # Everything the service runs from: a change to any of it restarts it.
