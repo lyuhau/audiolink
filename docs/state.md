@@ -1,11 +1,13 @@
 # What each machine stores
 
-What each machine keeps, when the data is made, and when it's used. First as it is now,
-then the roles model that replaces it ("Proposed").
+What each machine keeps, when the data is made, and when it's used. First as it was
+before the owners/users model ("Before", historical: the read secret, the DHT, `al1-`
+codes, custody), then that model as it was proposed ("Now"), which audiolink has had
+since: services/access.py, identity.py, pairing.py; README: Access.
 
 Roles: the **Pi**; the **host** (the computer the Pi is plugged into, running
 `audiolink host`); a **client** (any computer that runs `ssh NAME`; a host is usually one
-too); the **relay**; the **DHT**.
+too); the **relay**; before the owners/users model, the **DHT**.
 
 ## How ssh stays unaware
 
@@ -14,7 +16,7 @@ login):
 
 - `ProxyCommand audiolink connect NAME %p`: "give me a byte stream to NAME". ssh never
   sees an address, so `HostName` and `Port` in the block are only labels. Finding a
-  route (the Pi's LAN address, the relay, the DHT) is audiolink's job.
+  route (the Pi's LAN address, mDNS, the relay) is audiolink's job.
 - `HostKeyAlias` (not used yet; proposed): the name ssh files the host key under in
   known_hosts, in place of `[NAME]:PORT`.
 - `KnownHostsCommand` (OpenSSH 8.5+): "which host keys should NAME have?". Not in the
@@ -32,7 +34,11 @@ login):
 `/var/lib/audiolink` (the card's `audiolink/` folder; in RAM without a card), as two
 alternating slots per file (`NAME.a`, `NAME.b`).
 
-## Now
+## Before (historical)
+
+The read-secret model, replaced by the owners/users one ("Now"): kept for the reasoning
+in "What's wrong with it". An identity.json or a client's `al1-` code from then is read
+for its key and name only (services/identity.py, client/keyring.py).
 
 ### Pi
 
@@ -96,6 +102,8 @@ current record. An unclaimed Pi pairs with anyone who reaches it, with no code.
 
 ## What's wrong with it
 
+(With the model before; "Now" answers most of it.)
+
 - The ssh block names a Pi, but ssh treats the name as a computer: `known_hosts` pins
   the host behind the Pi at first contact, and `User` is that host's login. Move the
   Pi and both are wrong.
@@ -114,10 +122,11 @@ current record. An unclaimed Pi pairs with anyone who reaches it, with no code.
   state keeps its identity. Anyone who can read the host's config folder can pose as
   the Pi.
 
-## Proposed
+## Now: owners and users (as proposed)
 
-The first version, cut down after the Mac session's review. Later options are under
-"Not in the first version".
+What audiolink does today, written as the proposal it was: the first version, cut down
+after the Mac session's review; "Getting there" is done. Later options are under "Not
+in the first version". Where this and the code or README: Access differ, they win.
 
 ### Two gates
 
