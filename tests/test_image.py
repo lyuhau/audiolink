@@ -194,6 +194,7 @@ class Command(unittest.TestCase):
                 image_cli.read_image, image_cli.time.sleep = orig_read, orig_sleep
             if expect:
                 self.assertIn(expect, err)
+                self.assertIn("audiolink logs prev/boot.log", err)      # the trial's boot: the one before
             else:
                 self.assertIsNone(err, out.getvalue())
                 self.assertIn("Trying it on the Pi... running it", out.getvalue())

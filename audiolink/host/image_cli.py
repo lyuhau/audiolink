@@ -117,7 +117,7 @@ def image_command(a, call, port, over_network):
     if seen and seen.get("current") == old:
         done("didn't work")
         raise SystemExit("The new image didn't get through to this computer or the relay, so the Pi went back "
-                         "to the one it had (audiolink logs boot.log, audiolink.log)")
+                         "to the one it had (its trial's logs: audiolink logs prev/boot.log, prev/audiolink.log)")
     done("no answer")
     raise SystemExit("The Pi hasn't come back yet; check: audiolink update --status")
 
