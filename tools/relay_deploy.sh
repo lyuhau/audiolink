@@ -7,7 +7,7 @@ set -e
 cd "$(dirname "$0")/.."
 RELAY=${RELAY:-root@relay.lyuhau.com}
 SSH="ssh -i keys/relay_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR"
-python3 build_pyz.py >/dev/null
+"${PYTHON:-python3}" build_pyz.py >/dev/null
 # Everything the service runs from: a change to any of it restarts it.
 STATE='cat /opt/audiolink/*.pyz /etc/audiolink/relay.* /etc/systemd/system/audiolink-relay.service 2>/dev/null | sha256sum'
 before=$($SSH $RELAY "$STATE")

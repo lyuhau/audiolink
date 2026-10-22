@@ -6,6 +6,7 @@
 #   make help
 
 PYTHON ?= python3
+export PYTHON         # the scripts in tools/ use it too
 VERSION = $(shell $(PYTHON) -c "import audiolink; print(audiolink.__version__)")
 
 .PHONY: help pyz app modules card release-card test deploy hot smoke relay-deploy
@@ -35,7 +36,7 @@ test:          ## the test suite, in parallel (no Pi needed; tools/test.py)
 	$(PYTHON) tools/test.py
 
 # ---- dev loops: a dev Pi plugged in (the dev card), reached over USB ethernet
-deploy: card   ## the dev card onto the running dev Pi, then reboot it
+deploy:        ## build/card-pi over ssh onto a dev Pi without image slots (else: says to use audiolink update)
 	tools/deploy.sh
 
 hot:           ## just the current code onto the running Pi, no reboot (lost at the next boot)

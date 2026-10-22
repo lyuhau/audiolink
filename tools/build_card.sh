@@ -3,21 +3,24 @@
 # platform's build_card.py on an audiolink config.
 #   tools/build_card.sh [config/pi.toml | config/pi-release.toml] [build_card.py options]
 # -> build/card-NAME/ and build/card-NAME.manifest (NAME: the config's, e.g. pi).
-# Install it on a running dev Pi with tools/deploy.sh, or on a card in a reader
-# with --install /Volumes/CARD.
+# Onto a Pi: audiolink update build/card-NAME (over the link, into its spare slot,
+# on trial), or audiolink card write build/card-NAME (a card in a reader, or through
+# the Pi).
 #   PLATFORM      pi-gadget-kit's checkout (default: platform/, the submodule;
 #                 `git submodule update --init` fetches it)
 #   PLATFORM_PYTHON  Python for it, 3.11+ or 3.9+ with tomli (default: its .venv,
-#                 then python3)
+#                 then $PYTHON)
+#   PYTHON        Python for audiolink's own steps (default: python3)
 set -e
-case "$1" in -h|--help) sed -n '2,10s/^# \{0,1\}//p' "$0"; exit 0 ;; esac
+PYTHON=${PYTHON:-python3}
+case "$1" in -h|--help) sed -n '2,13s/^# \{0,1\}//p' "$0"; exit 0 ;; esac
 cd "$(dirname "$0")/.."
 CONFIG=${1:-config/pi.toml}
 [ $# -gt 0 ] && shift
 PLATFORM=${PLATFORM:-${USB_PLATFORM:-$PWD/platform}}   # USB_PLATFORM: the old name
 PLATFORM_PYTHON=${PLATFORM_PYTHON:-$USB_PYTHON}
 if [ -z "$PLATFORM_PYTHON" ]; then
-    for p in "$PLATFORM/.venv/bin/python" python3; do
+    for p in "$PLATFORM/.venv/bin/python" "$PYTHON"; do
         command -v "$p" >/dev/null && PLATFORM_PYTHON=$p && break
     done
 fi
@@ -28,7 +31,7 @@ ls "$PLATFORM"/out/modules/*.ko >/dev/null 2>&1 || {
 [ -f "$CONFIG" ] || { echo "no config $CONFIG" >&2; exit 1; }
 CONFIG=$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")
 NAME=$(basename "$CONFIG" .toml)
-python3 build_pyz.py
+"$PYTHON" build_pyz.py
 # The platform names its output after the config's hostname and file name; take
 # the card's path from the manifest line it prints, "... (out/card-X.manifest)".
 LOG=$(mktemp)
@@ -48,11 +51,11 @@ cp "$PLATFORM/$MANIFEST" "build/card-$NAME.manifest"
 # Which audiolink the slot carries, for `audiolink update --status` (services/image.py
 # VERSION_FILE), in the manifest too: a release when built at its version's tag from
 # a clean checkout.
-V=$(python3 -c "import audiolink; print(audiolink.__version__)")
+V=$("$PYTHON" -c "import audiolink; print(audiolink.__version__)")
 RELEASE=false
 [ "${GITHUB_REF_NAME:-$(git describe --tags --exact-match 2>/dev/null)}" = "v$V" ] &&
     [ -z "$(git status --porcelain -- audiolink pi config build_pyz.py)" ] && RELEASE=true
-[ -d "build/card-$NAME/a" ] && python3 - "build/card-$NAME" "$RELEASE" <<'EOF'
+[ -d "build/card-$NAME/a" ] && "$PYTHON" - "build/card-$NAME" "$RELEASE" <<'EOF'
 import hashlib, json, sys
 sys.path.insert(0, "dist/audiolink.pyz")
 import audiolink

@@ -1,10 +1,10 @@
 #!/bin/sh
 # Dev: quick end-to-end check of a running host daemon and the Pi behind it (after
-# tools/hot.sh or tools/deploy.sh). No human needed. Exit status: number of failures.
+# make hot or audiolink update). No human needed. Exit status: number of failures.
 cd "$(dirname "$0")/.."
 PI=${PI:-root@10.55.0.2}
 SSH="ssh -i keys/id_ed25519 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ConnectTimeout=5"
-AL="python3 dist/audiolink.pyz"
+AL="${PYTHON:-python3} dist/audiolink.pyz"
 fails=0
 check() {   # check NAME COMMAND...: run it, show the outcome
     name=$1; shift
