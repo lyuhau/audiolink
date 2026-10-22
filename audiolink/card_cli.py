@@ -6,6 +6,7 @@ The card is opened where it is: already mounted (a card reader, or the Pi alread
 showing it), or through the Pi (rpiboot), which needs the Pi started without its card.
 """
 import datetime
+import os
 import sys
 import time
 from pathlib import Path
@@ -147,13 +148,14 @@ def write(a, runner, usb_state, sleep, clock, wipe):
         from .paths import cache_dir
         step("Downloading the card image (audiolink %s)" % card.__version__)
         try:
-            image = card.Image(card.fetch_image(runner, cache_dir() / "cards"))
+            image = card.Image(card.fetch_image(runner, cache_dir() / "cards", give="audiolink card write FILE"))
         except SystemExit:
             done("failed")
             raise
         done("checked")
         label = "audiolink %s" % card.__version__
     disk, size, mount, via_pi = open_card(a, runner, usb_state, sleep, clock)
+    usb = False
     kind, what = card.classify(runner, disk, mount)
     print("Card: %s, %.1f GB, %s" % (disk, size / 1e9, what))
     if kind == "other" and not wipe:
@@ -163,6 +165,11 @@ def write(a, runner, usb_state, sleep, clock, wipe):
             step("Erasing it and writing %s" % label if kind != "blank" else "Writing %s" % label)
             n, new, removed, into = card.write(runner, disk, image, sleep=sleep), [], False, None
         else:
+            try:
+                with open(os.path.join(mount, "settings.txt"), encoding="utf-8", errors="replace") as f:
+                    usb = card.sets_usb(f.read())
+            except OSError:
+                pass
             step("Writing %s, keeping the Pi's state" % label)
             n, new, removed, into = card.update(runner, disk, mount, image, sleep=sleep, keep_update=a.keep_update)
     except SystemExit:
@@ -174,6 +181,8 @@ def write(a, runner, usb_state, sleep, clock, wipe):
         detail("into %s, kept %s", *into)
     if new:
         print("New settings in its settings.txt: %s" % ", ".join(new))
+    if usb:
+        print(card.USB_GONE)
     if removed:
         print("Removed an earlier update%s from the card, so the Pi runs this image's code "
               "(--keep-update: keep it)" % ("" if removed in (True, "unknown") else " (build %s)" % removed))

@@ -58,6 +58,10 @@ def read_pyz(path):
     return data
 
 
+class NoOp(SystemExit):
+    """The Pi's audiolink doesn't have that service."""
+
+
 class NetCaller:
     """call() for update requests over the network (client/remote.py), reconnecting
     after the Pi restarts."""
@@ -74,7 +78,8 @@ class NetCaller:
                 if action == "status":
                     r = self.remote.ask("%s_status" % service)
                     if "error" in r:
-                        raise SystemExit(self.remote.refusal(r))
+                        unknown = r.get("code") == "unknown" or str(r["error"]).startswith("unknown op")
+                        raise (NoOp if unknown else SystemExit)(self.remote.refusal(r))
                     return r["result"]
                 return self.remote.call(service, dict(args or {}, action=action))["result"]
             except (OSError, ValueError, ConnectionError):
@@ -168,8 +173,7 @@ def update_command(a):
         if "update" not in caps:
             raise SystemExit("The Pi's audiolink can't take updates over the link; put a new image on its card")
         if code is None and not a.status and "image" not in caps:
-            raise SystemExit("The Pi's card is from before versions went over the link: put this one on it "
-                             "once with audiolink card write (it keeps the Pi's state); after that, audiolink update")
+            raise SystemExit(no_images(call, port))
     if a.status:
         try:
             st = call("image.status", port=port)
@@ -178,6 +182,11 @@ def update_command(a):
         from .image_cli import show_image_status
         show_image_status(st or {"slots": None})
         return show_status(call("update.status", port=port))
+    if code is None and a.pi:            # no caps over the network: ask its image service
+        try:
+            call("image.status", port=port)
+        except NoOp:
+            raise SystemExit(no_images(call, port))
     if code is None:
         from .image_cli import image_command
         return image_command(a, call, port, bool(a.pi))
@@ -228,6 +237,21 @@ def update_command(a):
     raise SystemExit("The update didn't start%s; the Pi runs %s (audiolink update --status)" % (
         " (it kept failing and is set aside)" if st.get("set_aside") else "",
         "an earlier update" if _on_card(st) else "its image's code"))
+
+
+def no_images(call, port):
+    """Why a Pi can't take versions: a code update from before them running from its
+    card, or a card from before slots."""
+    try:
+        st = call("update.status", port=port)
+    except (SystemExit, KeyError, ValueError):
+        st = {}
+    if _on_card(st):
+        return ("The Pi runs a code update from its card that can't take versions: drop it with "
+                "audiolink update --code --back, then audiolink update (if it still can't, its card "
+                "needs audiolink card write once)")
+    return ("The Pi's card is from before versions went over the link: put this one on it "
+            "once with audiolink card write (it keeps the Pi's state); after that, audiolink update")
 
 
 def _on_card(st):

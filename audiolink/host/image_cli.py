@@ -30,7 +30,7 @@ def read_image(path, runner=None):
         from ..system import Runner
         step("Downloading the card image (audiolink %s)" % card.__version__)
         try:
-            path = card.fetch_image(runner or Runner(), cache_dir() / "cards")
+            path = card.fetch_image(runner or Runner(), cache_dir() / "cards", give="audiolink update FILE")
         except SystemExit:
             done("failed")
             raise
@@ -86,6 +86,9 @@ def image_command(a, call, port, over_network):
     r = call("image.finish", port=port)
     if r.get("firmware_differs"):
         print("Its firmware differs from the card's and stays as it is (audiolink card write updates it)")
+    if r.get("usb_settings"):
+        from ..card import USB_GONE
+        print(USB_GONE)
     wait_trial(call, port, r["from"], r["slot"], slowed,
                "The new version didn't get through to this computer or the relay, so the Pi went back "
                "to the one it had (its trial's logs: audiolink logs prev/boot.log, prev/audiolink.log)")
