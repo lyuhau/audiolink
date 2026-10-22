@@ -253,7 +253,7 @@ class ImageService(Service):
             names = check_image(self.zip)
             st = slot_status(self.run_cmd)
             target = next(s for s in SLOTS if s != st["current"])
-            firmware = self._install(names, target, digest, name)
+            firmware, usb = self._install(names, target, digest, name)
         except Exception:
             os.remove(self.zip)
             raise
@@ -266,7 +266,8 @@ class ImageService(Service):
         log.info("image: %s in %s; trying it", name, target)
         self.trying = True
         self._later(lambda: self._try(target))
-        return {"ok": True, "slot": target, "from": st["current"], "firmware_differs": firmware}
+        return {"ok": True, "slot": target, "from": st["current"], "firmware_differs": firmware,
+                "usb_settings": usb}
 
     def _not_trying(self, st):
         """While a trial is open the other slot is the version to go back to: it stays."""
@@ -275,8 +276,9 @@ class ImageService(Service):
 
     def _install(self, names, target, digest, name):
         """The image's slot into `target` (not running), checked; settings.txt renewed.
-        -> whether the image's firmware differs from the card's (kept)."""
-        from ..card import merge_settings
+        -> (whether the image's firmware differs from the card's (kept), whether the
+        card's settings.txt sets usb.*, gone)."""
+        from ..card import merge_settings, sets_usb
         dest = os.path.join(self.card, target)
         shutil.rmtree(dest, ignore_errors=True)
         os.makedirs(dest, exist_ok=True)
@@ -299,6 +301,7 @@ class ImageService(Service):
                         if f.read() != z.read(n):
                             raise ValueError("%s didn't write correctly to the card" % n)
             self._mark(target, "ready")
+            usb = False
             if "settings.txt" in names:
                 path = os.path.join(self.card, "settings.txt")
                 try:
@@ -306,6 +309,7 @@ class ImageService(Service):
                         old = f.read()
                 except OSError:
                     old = ""
+                usb = sets_usb(old)
                 text, _ = merge_settings(old, z.read("settings.txt").decode("utf-8", "replace"))
                 if text != old:
                     with open(path + ".new", "w", encoding="utf-8") as f:
@@ -319,7 +323,7 @@ class ImageService(Service):
                 except OSError:
                     pass
         os.sync()
-        return firmware
+        return firmware, usb
 
     def _revert(self):
         st = slot_status(self.run_cmd)

@@ -135,8 +135,9 @@ def sha256(path):
     return h.hexdigest()
 
 
-def fetch_image(runner, folder, version=__version__):
-    """The release's card image for this version, downloaded (once) and checked -> path."""
+def fetch_image(runner, folder, version=__version__, give="audiolink setup --card-image ZIP"):
+    """The release's card image for this version, downloaded (once) and checked -> path.
+    give: how the caller's command takes an image instead (said when there's none)."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     name = image_name(version)
@@ -145,10 +146,10 @@ def fetch_image(runner, folder, version=__version__):
                               release_url("SHA256SUMS", version)], timeout=60)
     if status:
         raise CardError("Couldn't get the card image for audiolink %s from the release (%s); give one: "
-                        "--card-image ZIP" % (version, (out.strip().splitlines() or ["no answer"])[-1]))
+                        "%s" % (version, (out.strip().splitlines() or ["no answer"])[-1], give))
     want = next((ln.split()[0] for ln in sums.read_text().splitlines() if ln.split()[-1:] == [name]), None)
     if not want:
-        raise CardError("audiolink %s's release has no %s; give one: --card-image ZIP" % (version, name))
+        raise CardError("audiolink %s's release has no %s; give one: %s" % (version, name, give))
     if not (zpath.exists() and sha256(zpath) == want):
         status, out = runner.run(["curl", "-fsSL", "--retry", "2", "-o", str(zpath) + ".part",
                                   release_url(name, version)], timeout=900)
@@ -439,6 +440,15 @@ def merge_settings(old, new):
                                     + "\n".join(left) + "\n")
     added = [k for k in dict.fromkeys(SETTING.findall(new)) if k not in set(SETTING.findall(old))]
     return text, added
+
+
+USB_GONE = ("settings.txt sets usb.* (product name, IDs): these no longer apply; to keep a custom "
+            "USB identity, make a flavor (README: Flavors)")
+
+
+def sets_usb(text):
+    """Whether a settings.txt sets usb.* (gone: flavors name the device now)."""
+    return any(m.group(1).startswith("usb.") for m in SET.finditer(text))
 
 
 def eject(runner, disk, sleep=time.sleep):

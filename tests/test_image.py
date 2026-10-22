@@ -78,7 +78,7 @@ class Service(unittest.TestCase):
     def test_into_the_spare_slot_then_tried(self):
         data = zipped(dict(IMAGE, **{"bootcode.bin": "new fw"}))
         r = self.send(data)
-        self.assertEqual((r["slot"], r["from"], r["firmware_differs"]), ("b/", "a/", True))
+        self.assertEqual((r["slot"], r["from"], r["firmware_differs"], r["usb_settings"]), ("b/", "a/", True, False))
         self.assertEqual((self.card / "b/boot/initrd.img").read_text(), "new initrd")
         self.assertEqual((self.card / "a/boot/initrd.img").read_text(), "old")          # the running one: untouched
         self.assertEqual((self.card / "bootcode.bin").read_text(), "fw")                 # firmware: kept
@@ -93,6 +93,11 @@ class Service(unittest.TestCase):
         self.assertEqual(self.slot.calls[-1], ["try", "b/"])
         self.assertEqual(self.svc.status()["images"]["b/"]["name"], "img.zip")
         self.assertEqual(self.svc.status()["images"]["b/"]["state"], "trying")
+
+    def test_says_the_card_sets_usb(self):
+        (self.card / "settings.txt").write_text("#hostname = audiopi\nusb.vendor_id = 0x1234\n")
+        self.assertTrue(self.send(zipped(IMAGE))["usb_settings"])
+        self.assertIn("usb.vendor_id = 0x1234", (self.card / "settings.txt").read_text())     # kept as it was
 
     def test_damaged_or_without_slots(self):
         data = zipped(IMAGE)
@@ -317,7 +322,7 @@ class Command(unittest.TestCase):
                 if op == "image.status":
                     return next(states)
                 if op == "image.finish":
-                    return {"slot": "b/", "from": "a/", "firmware_differs": False}
+                    return {"slot": "b/", "from": "a/", "firmware_differs": False, "usb_settings": True}
                 return {"ok": True}
             a = SimpleNamespace(back=False, image="x.zip")
             orig_read, orig_sleep = image_cli.read_image, image_cli.time.sleep
@@ -340,6 +345,7 @@ class Command(unittest.TestCase):
             else:
                 self.assertIsNone(err, out.getvalue())
                 self.assertIn("Trying it on the Pi (up to 5 minutes)... running it", out.getvalue())
+                self.assertIn("settings.txt sets usb.* (product name, IDs): these no longer apply", out.getvalue())
 
     def test_back_refused_before_slowing(self):
         calls = []

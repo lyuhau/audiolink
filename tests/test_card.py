@@ -360,6 +360,27 @@ class Command(unittest.TestCase):
             self.assertIn("Which backup?", code)
         self.assertEqual(calls, [])
 
+    def test_says_usb_settings_no_longer_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp, "AUDIOPI")
+            mount.mkdir()
+            (mount / "settings.txt").write_text("#hostname = audiopi\n#usb.product = AudioPi\n")
+            out, code, _, _ = self.run_card("write", self.image(tmp), cards=[("/dev/disk7", 31.9e9, str(mount))])
+            self.assertNotIn("usb.*", out)                          # only commented out: nothing to say
+            (mount / "settings.txt").write_text("#hostname = audiopi\nusb.product = Mine\n")
+            out, code, _, _ = self.run_card("write", self.image(tmp), cards=[("/dev/disk7", 31.9e9, str(mount))])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count("settings.txt sets usb.*"), 1)
+        self.assertIn("make a flavor (README: Flavors)", out)
+
+    def test_download_failure_says_how_this_command_takes_a_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = Runner({"curl": (22, "curl: (22) 404")})
+            with self.assertRaisesRegex(SystemExit, "give one: audiolink update FILE"):
+                card.fetch_image(runner, tmp, give="audiolink update FILE")
+            with self.assertRaisesRegex(SystemExit, "--card-image ZIP"):
+                card.fetch_image(runner, tmp)                       # setup's
+
     def test_says_the_other_image_stays(self):
         with tempfile.TemporaryDirectory() as tmp:
             out, code, _, _ = self.run_card("write", self.image(tmp), cards=self.CARD, into=("b/", "a/"))
