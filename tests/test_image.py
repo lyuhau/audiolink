@@ -111,26 +111,63 @@ class Service(unittest.TestCase):
         self.assertEqual(self.slot.calls[-1], ["switch", "b/"])
         self.assertEqual(rebooted, [True])
 
-    def test_trial_commits_once_through(self):
-        self.slot.trial, self.slot.committed = True, False
-        through = iter([False, False, True])
-        self.svc.healthy = lambda: next(through)
+    def watch(self, left):
+        """Runs the trial watcher in this thread on a fake clock -> seconds it watched."""
         t = [0.0]
-        threads = []
         import threading
         real = threading.Thread
 
         class Now(real):                         # run the watcher in this thread
             def start(self):
-                threads.append(self)
                 self.run()
         threading.Thread = Now
         try:
-            self.svc.run(sleep=lambda s: t.__setitem__(0, t[0] + s), clock=lambda: t[0])
+            self.svc.run(sleep=lambda s: t.__setitem__(0, t[0] + s), clock=lambda: t[0], left=lambda: left)
         finally:
             threading.Thread = real
+        return t[0]
+
+    def test_trial_commits_once_through(self):
+        self.slot.trial, self.slot.committed = True, False
+        through = iter([False, False, True])
+        self.svc.healthy = lambda: next(through)
+        self.watch(100)
         self.assertTrue(self.slot.committed)
         self.assertIn(["commit"], self.slot.calls)
+
+    def test_trial_tries_until_the_guard(self):
+        self.slot.trial, self.slot.committed = True, False
+        self.svc.healthy = lambda: False
+        self.assertGreaterEqual(self.watch(250), 250)            # the whole window, not a shorter one
+        self.assertNotIn(["commit"], self.slot.calls)
+
+    def test_trial_left_counts_from_boot(self):
+        with tempfile.NamedTemporaryFile("w", suffix="uptime") as f:
+            f.write("40.50 70.00\n")
+            f.flush()
+            self.assertEqual(image_mod.trial_left({"TRIAL_SECONDS": "300"}, f.name),
+                             300 - 40.5 - image_mod.COMMIT_MARGIN)
+            self.assertEqual(image_mod.trial_left({"TRIAL_SECONDS": "600"}, f.name),
+                             600 - 40.5 - image_mod.COMMIT_MARGIN)
+            self.assertEqual(image_mod.trial_left({}, f.name),                   # an older app.env
+                             image_mod.TRIAL_SECONDS - 40.5 - image_mod.COMMIT_MARGIN)
+
+    def test_one_window_with_the_image(self):
+        """The host's and the daemon's window is the one the release image's guard uses."""
+        try:
+            import tomllib
+        except ImportError:
+            try:
+                import tomli as tomllib
+            except ImportError:
+                self.skipTest("no tomllib (Python 3.11+) or tomli")
+        repo = Path(__file__).resolve().parent.parent
+        with open(repo / "config" / "pi-release.toml", "rb") as f:
+            app = tomllib.load(f)["app"]
+        self.assertIn('app.get("trial_seconds", 300)', (repo / "platform" / "build_card.py").read_text())
+        self.assertEqual(app.get("trial_seconds", 300), image_mod.TRIAL_SECONDS)
+        self.assertEqual(image_cli.TRIAL_MINUTES * 60, image_mod.TRIAL_SECONDS)
+        self.assertIn("within %d minutes" % image_cli.TRIAL_MINUTES, (repo / "README.md").read_text())
 
 
 class Status(unittest.TestCase):
@@ -196,7 +233,7 @@ class Command(unittest.TestCase):
                 self.assertIn(expect, err)
             else:
                 self.assertIsNone(err, out.getvalue())
-                self.assertIn("Trying it on the Pi... running it", out.getvalue())
+                self.assertIn("Trying it on the Pi (up to 5 minutes)... running it", out.getvalue())
 
 
 if __name__ == "__main__":

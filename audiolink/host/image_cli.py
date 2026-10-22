@@ -12,13 +12,13 @@ import io
 import time
 import zipfile
 
-from ..services.image import COMMIT_WITHIN, check_image
+from ..services.image import TRIAL_SECONDS, check_image
 from ..ui import detail, done, step
 
 CHUNK = 256 * 1024
 IN_FLIGHT = 4                   # chunks sent at once over USB: the link carries several requests at a time
-TRIAL_GUARD = 300               # the platform's: an uncommitted trial reboots after this
 BOOT = 90                       # a boot, at most, until the link is back
+TRIAL_MINUTES = TRIAL_SECONDS // 60     # what a new version has to get through, from its boot
 
 
 def read_image(path, runner=None):
@@ -71,8 +71,8 @@ def image_command(a, call, port, over_network):
         print("The Pi already runs this image (%s)" % name)
         return
     if over_network:
-        print("Over the network: if the new image doesn't get back online, the Pi returns to "
-              "this one by itself (within about %d minutes)" % ((TRIAL_GUARD + BOOT) // 60 + 1))
+        print("Over the network: if the new image doesn't get back online within %d minutes, the Pi "
+              "returns to this one by itself" % TRIAL_MINUTES)
     # Sent at the link's speed; only the reboot wants the starting format (update_cli.py)
     step("Sending %s (%.1f MB)" % (name, len(data) / 1e6))
     start = time.monotonic()
@@ -97,8 +97,8 @@ def image_command(a, call, port, over_network):
     if r.get("firmware_differs"):
         print("Its firmware differs from the card's and stays as it is (audiolink card write updates it)")
     old, new = r["from"], r["slot"]
-    step("Trying it on the Pi")
-    end = time.monotonic() + BOOT + COMMIT_WITHIN + TRIAL_GUARD + BOOT
+    step("Trying it on the Pi (up to %d minutes)" % TRIAL_MINUTES)
+    end = time.monotonic() + BOOT + TRIAL_SECONDS + BOOT     # its boot, its window, the boot back
     seen = None
     while time.monotonic() < end:
         time.sleep(3)
