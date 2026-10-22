@@ -1,6 +1,7 @@
 """Which audio devices are the Pi's (wire/usb_audio.py): by USB ID, else by name."""
 import os
 import re
+import shutil
 import tempfile
 import unittest
 
@@ -50,39 +51,67 @@ class PiDevices(unittest.TestCase):
 
 
 class ExtraIds(unittest.TestCase):
-    """A fork's Pi with its own USB ID: host.json's usb_ids, or audiolink host --usb-id."""
+    """A fork's Pi with its own USB ID, or a flavor's: host.json's usb_ids (read again when
+    it changes), audiolink host --usb-id on top, and those added while the host runs."""
     FORK = (0x1209, 0xabcd)
 
-    def tearDown(self):
+    def setUp(self):
+        from unittest import mock
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        p = mock.patch.dict(os.environ, {"AUDIOLINK_CONFIG_DIR": self.dir})
+        p.start()
+        self.addCleanup(p.stop)
         usb_audio.set_extra_ids(None)
+        self.addCleanup(usb_audio.set_extra_ids, None)
+
+    def save(self, ids, mtime=None):
+        import json
+        path = os.path.join(self.dir, "host.json")
+        with open(path, "w") as f:
+            json.dump({"usb_ids": ids}, f)
+        if mtime:
+            os.utime(path, (mtime, mtime))
 
     def test_saved_ids(self):
-        from unittest import mock
-        from audiolink.host import config
         fork = dev("Speakers (My Link)", self.FORK)
-        with mock.patch.object(config, "load", lambda strict=True: {"usb_ids": ["1209:abcd"]}):
-            self.assertIn(self.FORK, usb_audio.known_ids())
-            self.assertEqual(usb_audio.pi_devices([fork, dev("Speakers (USB DAC)", (0x1234, 1))]), [fork])
-        with mock.patch.object(config, "load", lambda strict=True: {}):
-            self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS)       # nothing saved: the built-in ones
+        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS)           # nothing saved: the built-in ones
+        self.save(["1209:abcd"], 1000)
+        self.assertIn(self.FORK, usb_audio.known_ids())
+        self.assertEqual(usb_audio.pi_devices([fork, dev("Speakers (USB DAC)", (0x1234, 1))]), [fork])
+        self.save(["1209:abce"], 2000)                                   # saved by another command since
+        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {(0x1209, 0xabce)})
 
-    def test_flag_wins_over_saved(self):
-        from unittest import mock
+    def test_flag_adds_to_saved(self):
+        from types import SimpleNamespace
         from audiolink.host import config
+        self.save(["1209:0001"])
         usb_audio.set_extra_ids(["1209:abcd"])
-        with mock.patch.object(config, "load", lambda strict=True: {"usb_ids": ["1209:0001"]}):
-            self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK})
+        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK, (0x1209, 1)})
+        a = SimpleNamespace(usb_ids=["1209:abcd", "1209:0001"])
+        self.assertEqual(config.apply(a).usb_ids, ["1209:0001", "1209:abcd"])
+        self.assertEqual(config.apply(SimpleNamespace(usb_ids=None)).usb_ids, ["1209:0001"])
 
     def test_added_while_running(self):
         """audiolink flavor: the running host finds the Pi as its new flavor too."""
-        from unittest import mock
-        from audiolink.host import config
         usb_audio.set_extra_ids(["1209:0001"])
         self.assertEqual(usb_audio.add_ids(["1209:abcd"]), ["1209:0001", "1209:abcd", "1d6b:0104"])
-        usb_audio.set_extra_ids(None)
-        with mock.patch.object(config, "load", lambda strict=True: {"usb_ids": ["1209:0001"]}):
-            usb_audio.add_ids(["1209:abcd"])                     # on top of host.json's
-        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK, (0x1209, 1)})
+        self.save(["1209:0002"])
+        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK, (0x1209, 1), (0x1209, 2)})
+
+    def test_the_pi_says_its_next_id(self):
+        """Before it becomes another device: the host finds it as that, and saves it."""
+        from audiolink.host import config
+        svc = usb_audio.UsbIds()
+        self.assertEqual(svc.handle("add", {"ids": ["1209:ABCD"]}), {"ids": ["1209:abcd"], "saved": ["1209:abcd"]})
+        self.assertIn(self.FORK, usb_audio.known_ids())
+        self.assertEqual(config.load()["usb_ids"], ["1209:abcd"])
+        self.assertEqual(svc.handle("add", {"ids": ["1d6b:0104"]})["saved"], [])     # built in: not saved
+        for bad in ({}, {"ids": "1209:abcd"}, {"ids": ["nope"]}, {"ids": ["1209:0001"] * 9}):
+            with self.assertRaises(ValueError):
+                svc.handle("add", bad)
+        with self.assertRaisesRegex(ValueError, "does not support"):
+            svc.handle("remove", {"ids": ["1209:abcd"]})
 
     def test_flag_and_config_values(self):
         import argparse
