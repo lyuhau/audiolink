@@ -4,8 +4,9 @@ the Pi presents on USB (services/flavor.py; docs/flavors-plan.md).
 `use` and `try` are kept only once a computer's USB link comes back on the new device;
 otherwise the Pi goes back by itself. The command waits and says which happened. This
 computer learns the flavor's USB ID first (the running host, and host.json once kept or
-added), so it keeps finding the Pi. Over the network (--pi) there must be a computer
-plugged into the Pi to confirm a switch. Owners only.
+added), so it keeps finding the Pi; the Pi also tells the host it's plugged into before
+it switches (services/flavor.py), which is how that one learns it over the network (--pi).
+There must be a computer plugged into the Pi to confirm a switch. Owners only.
 """
 import os
 import re
@@ -60,16 +61,20 @@ def flavor_command(a):
         if not net:
             teach_host([r.get("usb")], port)
         warn_accessory()
-        return follow(call, r, net, port, keep=None)
+        return follow(call, r, net, port, keep=r.get("usb"))
     raise SystemExit("audiolink flavor: list, use NAME, add FILE, remove NAME or try FILE")
 
 
 def read_toml(path):
     try:
         with open(path, encoding="utf-8") as f:
-            return f.read()
+            text = f.read()
     except (OSError, UnicodeDecodeError) as e:
         raise SystemExit("Can't read %s (%s)" % (path, e))
+    if path.lower().endswith(".json") or text.lstrip().startswith("{"):     # usb-capture's
+        raise SystemExit("%s is a capture, not a flavor: convert it first: platform/capture_to_toml.py %s -o %s.toml"
+                         % (path, path, name_of(path)))
+    return text
 
 
 def name_of(path):
@@ -86,6 +91,14 @@ def add(a, call, net, port):
     print("%s %s (%s, %s)" % ("Replaced" if r.get("replaced") else "Added", r["name"], r.get("product") or "no name",
                               r.get("usb") or "no USB ID"))
     remember([r.get("usb")], port, net)
+    if r.get("up"):         # no trial: `use` says it's up already
+        print("The Pi is %s now: the new file shows when it next starts, unchecked (to check it first: "
+              "audiolink flavor try %s)" % (r["name"], a.arg))
+        return
+    if r.get("starts"):
+        print("The Pi starts as %s: the new file shows then, unchecked (to check it now: audiolink flavor use %s)"
+              % (r["name"], r["name"]))
+        return
     print("Switch: audiolink flavor use %s" % r["name"])
 
 
@@ -117,7 +130,7 @@ def remember(ids, port, net):
 
 def follow(call, r, net, port, keep):
     """Wait for the switch r (the Pi's reply) to end; say how. keep: the USB ID to
-    remember once kept (None: a try, not kept)."""
+    remember once kept (a try's too: a restarted host still finds the Pi as it)."""
     name = "the tried flavor" if r["name"] == "try" else r["name"]
     if r.get("wait"):
         print("Waiting %ds first: the Pi's USB was re-presented just before" % r["wait"])
@@ -139,14 +152,14 @@ def follow(call, r, net, port, keep):
         done("kept")
         if keep:
             remember([keep], port, net)
-            print("The Pi starts as %s from now on" % name)
-        else:
+        if r["name"] == "try":
             print("Until the Pi restarts (to keep one: audiolink flavor add FILE, then use)")
+        else:
+            print("The Pi starts as %s from now on" % name)
         return
     if state == "back":
         done("went back")
-        raise SystemExit("No computer's link came back on %s, so the Pi went back to %s (audiolink logs)"
-                         % (name, seen.get("running") or r["back"]))
+        raise SystemExit(went_back(name, seen, r, net))
     if state == "refused":
         done("refused")
         raise SystemExit("The Pi couldn't present %s (%s); it's %s now" % (name, seen.get("error") or "?",
@@ -158,16 +171,35 @@ def follow(call, r, net, port, keep):
     raise SystemExit("The Pi hasn't said yet; check: audiolink flavor")
 
 
+def went_back(name, seen, r, net):
+    """Why a switch likely went back: the likeliest first."""
+    usb = seen.get("usb") or r.get("usb") or "its USB ID"
+    pc = "the computer plugged into the Pi" if net else "this computer"
+    told = seen.get("host")             # the Pi told that host the new ID: "told", "old", "failed"
+    host = "%s's audiolink host doesn't find the Pi as %s (%s; or start it with: audiolink host --usb-id %s)" % (
+        pc, usb, {"old": "it's older", "failed": "it didn't take the ID"}.get(told, "an older one?"), usb)
+    accessory = "%s asked to allow the new device and nobody did (macOS: Allow accessory)" % pc
+    audio = "%s has no audio both ways (the link runs over it)" % name
+    causes = ([host, accessory, audio] if told in ("old", "failed") else [accessory, audio] if told == "told"
+              else [accessory, host, audio])
+    return ("No computer's link came back on %s, so the Pi went back to %s. Likely:\n%s\n(audiolink logs)"
+            % (name, seen.get("running") or r["back"], "\n".join("  - " + c for c in causes)))
+
+
 def show(info):
     if not info.get("switchable"):
         print("Flavor: %s (this Pi's image has no others: audiolink update first)"
               % (info.get("running") or info.get("default") or "its own"))
         return
     running, default = info.get("running"), info.get("default")
-    chosen = info.get("chosen") or default
-    print("Flavor: %s%s" % ("the tried flavor" if running == "try" else running,
-                            " (starts as %s)" % chosen if chosen != running else ""))
     flavors = info.get("flavors") or []
+    chosen = info.get("chosen") or default
+    if info.get("chosen") and chosen not in [f["name"] for f in flavors if f["where"] != "tried"]:
+        starts = " (settings.txt's flavor = %s: there's no such flavor, so it starts as %s)" % (chosen, default)
+        chosen = default
+    else:
+        starts = " (starts as %s)" % chosen if chosen != running else ""
+    print("Flavor: %s%s" % ("the tried flavor" if running == "try" else running, starts))
     width = max([len(f["name"]) for f in flavors] + [4])
     pwidth = max([len(f.get("product") or "") for f in flavors] + [4])
     for f in flavors:
