@@ -9,7 +9,8 @@ reboots into the slot that was booting. The Pi's state (audiolink/, settings.txt
 logs/) is shared by the slots; settings.txt is renewed from the new image's, keeping
 what was set, and an earlier code update (audiolink update --code) goes, so the new image
 runs its own code. The firmware files at the top of the card stay: a new firmware needs
-`audiolink card write`.
+`audiolink card write`. Going back (audiolink update --back) is a trial too: the other
+slot, unless its own trial failed or it's half-written (its INFO's state).
 
 Owners only, over USB or the network (endpoint "image"), like code updates.
 """
@@ -36,7 +37,11 @@ SLOTS = ("a/", "b/")
 IMAGE_SLOT = "a/"               # where a built image has its slot (pi-gadget-kit image_initramfs.SLOT)
 FIRMWARE = ("bootcode.bin", "start.elf", "fixup.dat")
 COMMIT_WITHIN = 180             # seconds a trial has to reach its host or relay (the platform's guard: 300)
-INFO = ".image.json"            # in a slot: which image it holds
+INFO = ".image.json"            # in a slot: which image it holds, and its state (below)
+# A slot's state: "writing" (half-written until it's done), "ready" (written), "trying"
+# (a trial of it began), "kept" (committed), "failed" (its trial fell back). None: from
+# before states (an older Pi, a card write): fine.
+NOT_OFFERED = ("writing", "trying", "failed")
 
 
 def slot_status(run=subprocess.run):
@@ -51,6 +56,11 @@ def slot_status(run=subprocess.run):
     slots = p.stdout.split('slots="', 1)[1].split('"', 1)[0].split() if 'slots="' in p.stdout else []
     return {"current": kv.get("current"), "trial": kv.get("trial") == "1",
             "committed": kv.get("committed") == "1", "slots": slots}
+
+
+def offered(info, slot, current):
+    """Whether `slot` (not running) is a version to go back to."""
+    return slot != current and (info or {}).get("state") not in NOT_OFFERED
 
 
 def check_image(path):
@@ -77,14 +87,13 @@ class ImageService(Service):
     caps = ("image",)
 
     def __init__(self, state_dir=PI_STATE_DIR, endpoint=None, healthy=lambda: False, card=None,
-                 run=subprocess.run, reboot=None):
+                 run=subprocess.run):
         self.state_dir = state_dir
         self.zip = os.path.join(state_dir, "image.zip")
         self.new = self.zip + ".new"
         self.card = card or platform_env().get("CARD") or "/media/mmcblk0p1"
         self.healthy = healthy                      # () -> reached the host or the relay
         self.run_cmd = run
-        self.reboot = reboot or (lambda: run(["reboot"]))
         self.lock = threading.Lock()
         self.expect = None
         if endpoint:
@@ -99,6 +108,8 @@ class ImageService(Service):
     # ---- the trial: commit once this image gets through
     def run(self, sleep=time.sleep, clock=time.monotonic):
         st = slot_status(self.run_cmd)
+        if st:
+            self._settle(st)
         if not (st and st["trial"] and not st["committed"]):
             return
         log.info("image: %s is on trial: committing once it reaches its host or relay", st["current"])
@@ -109,24 +120,61 @@ class ImageService(Service):
                 if self.healthy():
                     p = self.run_cmd(["sh", SLOT_SH, "commit"], capture_output=True, text=True)
                     log.info("image: %s", (p.stdout or p.stderr).strip())
+                    if not p.returncode:
+                        self._mark(st["current"], "kept")
                     return
                 sleep(2)
             log.warning("image: %s didn't get through in %ds; the platform reboots into the old slot",
                         st["current"], COMMIT_WITHIN)
         threading.Thread(target=watch, name="image-trial", daemon=True).start()
 
+    def _settle(self, st):
+        """At start: a trial that ended. The slot running committed was kept; one that was
+        "trying" and isn't running fell back: failed."""
+        for s in st["slots"]:
+            state = self._info(s).get("state")
+            if s == st["current"] and not (st["trial"] and not st["committed"]):
+                if state in ("trying", "failed"):
+                    self._mark(s, "kept")
+            elif s != st["current"] and state == "trying":
+                log.warning("image: the trial of %s fell back; not offered to go back to", s)
+                self._mark(s, "failed", failed_at=int(time.time()))
+
+    def _info(self, slot):
+        try:
+            with open(os.path.join(self.card, slot, INFO)) as f:
+                info = json.load(f)
+            return info if isinstance(info, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _mark(self, slot, state, **more):
+        """Record a slot's state in its INFO (renamed into place)."""
+        path = os.path.join(self.card, slot, INFO)
+        info = dict(self._info(slot), state=state, **more)
+        try:
+            with open(path + ".new", "w") as f:
+                json.dump(info, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(path + ".new", path)
+        except OSError as e:
+            log.warning("image: can't mark %s %s: %s", slot, state, e)
+
+    def _try(self, slot):
+        """Boot `slot` once, on trial (slot.sh reboots); "trying" until it's kept."""
+        before = self._info(slot).get("state")
+        self._mark(slot, "trying")
+        p = self.run_cmd(["sh", SLOT_SH, "try", slot], capture_output=True, text=True)
+        if p.returncode:                        # still here: no trial
+            log.warning("image: can't try %s: %s", slot, (p.stderr or p.stdout).strip())
+            self._mark(slot, before or "ready")
+
     def status(self):
         st = slot_status(self.run_cmd)
         if st is None:
             return {"slots": None}
-        info = {}
-        for s in st["slots"]:
-            try:
-                with open(os.path.join(self.card, s, INFO)) as f:
-                    info[s] = json.load(f)
-            except (OSError, ValueError):
-                info[s] = {}
-        return dict(st, images=info)
+        return dict(st, images={s: self._info(s) for s in st["slots"]})
 
     def handle(self, op, args):
         with self.lock:
@@ -183,7 +231,7 @@ class ImageService(Service):
             if os.path.exists(p):
                 os.remove(p)
         log.info("image: %s in %s; trying it", name, target)
-        self._later(lambda: self.run_cmd(["sh", SLOT_SH, "try", target]))
+        self._later(lambda: self._try(target))
         return {"ok": True, "slot": target, "from": st["current"], "firmware_differs": firmware}
 
     def _install(self, names, target, digest, name):
@@ -192,6 +240,9 @@ class ImageService(Service):
         from ..card import merge_settings
         dest = os.path.join(self.card, target)
         shutil.rmtree(dest, ignore_errors=True)
+        os.makedirs(dest, exist_ok=True)
+        with open(os.path.join(dest, INFO), "w") as f:      # never offered until it's all there
+            json.dump({"name": name, "sha256": digest, "state": "writing"}, f)
         with zipfile.ZipFile(self.zip) as z:
             for n in names:
                 if not n.startswith(IMAGE_SLOT):
@@ -208,8 +259,7 @@ class ImageService(Service):
                     with open(os.path.join(dest, *n[len(IMAGE_SLOT):].split("/")), "rb") as f:
                         if f.read() != z.read(n):
                             raise ValueError("%s didn't write correctly to the card" % n)
-            with open(os.path.join(dest, INFO), "w") as f:
-                json.dump({"name": name, "sha256": digest}, f)
+            self._mark(target, "ready")
             if "settings.txt" in names:
                 path = os.path.join(self.card, "settings.txt")
                 try:
@@ -239,11 +289,13 @@ class ImageService(Service):
         other = [s for s in st["slots"] if s != st["current"]]
         if not other:
             raise ValueError("no other image on the card to go back to")
-        p = self.run_cmd(["sh", SLOT_SH, "switch", other[0]], capture_output=True, text=True)
-        if p.returncode:
-            raise ValueError((p.stderr or p.stdout).strip())
-        log.info("image: back to %s; rebooting", other[0])
-        self._later(self.reboot)
+        info = self._info(other[0])
+        if not offered(info, other[0], st["current"]):
+            raise ValueError("the version in %s %s: send a new one instead (audiolink update)" % (
+                other[0], "was only partly written" if info.get("state") == "writing" else "didn't work"))
+        # On trial, like a new version: kept once it gets through, else back to this one
+        log.info("image: back to %s; trying it", other[0])
+        self._later(lambda: self._try(other[0]))
         return {"ok": True, "slot": other[0], "from": st["current"]}
 
     def _later(self, fn):

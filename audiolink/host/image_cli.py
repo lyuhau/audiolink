@@ -3,7 +3,8 @@
 Sends a card image (this version's release image by default, or a zip, or a build
 folder like build/card-pi) over the link or the network; the Pi puts it in its spare
 slot and boots it once on trial, keeping it only if it gets through to its host or
-relay (services/image.py). The command waits and says which happened. Over USB the
+relay (services/image.py). The command waits and says which happened. --back tries
+the version before the same way. Over USB the
 link goes to the baseline audio format first, as for code updates (update_cli.py).
 """
 import base64
@@ -12,7 +13,7 @@ import io
 import time
 import zipfile
 
-from ..services.image import COMMIT_WITHIN, check_image
+from ..services.image import COMMIT_WITHIN, check_image, offered
 from ..ui import detail, done, step
 
 CHUNK = 256 * 1024
@@ -55,11 +56,9 @@ def read_image(path, runner=None):
 
 
 def image_command(a, call, port, over_network):
-    from .update_cli import restore, to_baseline
+    from .update_cli import to_baseline
     if a.back:
-        r = call("image.revert", port=port)
-        print("Going back to the version before (%s; rebooting)" % r["slot"].rstrip("/"))
-        return
+        return back_command(call, port, over_network)
     name, data = read_image(a.image)
     st = call("image.status", port=port)
     if st.get("slots") is None:
@@ -96,7 +95,29 @@ def image_command(a, call, port, over_network):
     r = call("image.finish", port=port)
     if r.get("firmware_differs"):
         print("Its firmware differs from the card's and stays as it is (audiolink card write updates it)")
-    old, new = r["from"], r["slot"]
+    wait_trial(call, port, r["from"], r["slot"], slowed,
+               "The new image didn't get through to this computer or the relay, so the Pi went back "
+               "to the one it had (audiolink logs boot.log, audiolink.log)")
+
+
+def back_command(call, port, over_network):
+    """--back: the version before, on trial like a new one."""
+    from .update_cli import to_baseline
+    if over_network:
+        print("Over the network: if that version doesn't get back online, the Pi returns to "
+              "this one by itself (within about %d minutes)" % ((TRIAL_GUARD + BOOT) // 60 + 1))
+    slowed = False
+    if not over_network:
+        _, slowed = to_baseline(call, port)
+    r = call("image.revert", port=port)
+    wait_trial(call, port, r["from"], r["slot"], slowed,
+               "The version before didn't get through to this computer or the relay, so the Pi went back "
+               "to the one it had (audiolink logs boot.log, audiolink.log)")
+
+
+def wait_trial(call, port, old, new, slowed, fell_back):
+    """Until the trial of `new` is kept or the Pi is back on `old`; says which."""
+    from .update_cli import restore
     step("Trying it on the Pi")
     end = time.monotonic() + BOOT + COMMIT_WITHIN + TRIAL_GUARD + BOOT
     seen = None
@@ -116,8 +137,7 @@ def image_command(a, call, port, over_network):
     detail("%s", seen)
     if seen and seen.get("current") == old:
         done("didn't work")
-        raise SystemExit("The new image didn't get through to this computer or the relay, so the Pi went back "
-                         "to the one it had (audiolink logs boot.log, audiolink.log)")
+        raise SystemExit(fell_back)
     done("no answer")
     raise SystemExit("The Pi hasn't come back yet; check: audiolink update --status")
 
@@ -133,7 +153,11 @@ def show_image_status(st):
     print("Running:  %s%s" % (name(current), " on trial: kept once it's back online"
                              if st.get("trial") and not st.get("committed") else ""))
     for s in st["slots"]:
-        if s != current:
-            print("Previous: %s: audiolink update --back" % name(s))
+        if s == current:
+            continue
+        state = (images.get(s) or {}).get("state")
+        print("Previous: %s: %s" % (name(s), "audiolink update --back" if offered(images.get(s), s, current)
+                                    else "partly written, not offered" if state == "writing"
+                                    else "didn't work, not offered"))
     if len(st["slots"]) < 2:
         print("Previous: none yet (the next audiolink update keeps this one to go back to)")

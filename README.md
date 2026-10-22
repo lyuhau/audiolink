@@ -300,7 +300,9 @@ the link, or the network with `--pi PI`. The card holds two versions (image slot
 `a/`, `b/`); the new one goes in the one that isn't running and boots once on trial.
 It stays if audiolink on it reaches this computer or its relay within 3 minutes;
 otherwise the Pi goes back to the version it had, by itself. `audiolink update --back`
-switches back to the version before; `audiolink update --status` shows both. The Pi's
+goes back to the version before, on trial the same way (kept only once it gets through);
+`audiolink update --status` shows both. A version whose trial failed, or that was only
+partly written, isn't offered to go back to: send a new one. The Pi's
 state, settings and flavors are shared by the two. A card written before image slots
 needs one `audiolink card write` first; the firmware files (`bootcode.bin`,
 `start.elf`) only change with a card write.
@@ -406,7 +408,8 @@ Pi acts when you let go. Shorted while the Pi starts, it runs the image's code.
   "online" with ssh failing means the host isn't running with `--expose 2222:22`, or
   its ssh server is off.
 - **An update broke it.** A new version that doesn't come back online goes back by
-  itself; one that does but misbehaves: `audiolink update --back`. A code update
+  itself; one that does but misbehaves: `audiolink update --back` (tried too: if the
+  version before doesn't come back online either, the Pi stays on this one). A code update
   (developers): `audiolink update --code --back`, or hold the reset pins for 5 s
   (back to the image's code), 15 s to also start over. With a card
   reader, the card's `logs/last` (and `logs/prev`, the boot before) has the Pi's logs,

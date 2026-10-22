@@ -90,6 +90,7 @@ class Service(unittest.TestCase):
         self.assertFalse((self.state / "image.zip").exists())
         self.assertEqual(self.slot.calls[-1], ["try", "b/"])
         self.assertEqual(self.svc.status()["images"]["b/"]["name"], "img.zip")
+        self.assertEqual(self.svc.status()["images"]["b/"]["state"], "trying")
 
     def test_damaged_or_without_slots(self):
         data = zipped(IMAGE)
@@ -102,14 +103,50 @@ class Service(unittest.TestCase):
             self.send(zipped(dict(old, **{"boot/initrd.img": "x"})))
         self.assertNotIn(["try", "b/"], self.slot.calls)
 
-    def test_revert(self):
+    def info(self, slot):
+        return json.loads((self.card / slot / image_mod.INFO).read_text())
+
+    def test_half_written_is_marked(self):
+        fsync, n = os.fsync, []
+
+        def failing(fd):
+            n.append(fd)
+            if len(n) == 2:
+                raise OSError("card gone")
+            fsync(fd)
+        image_mod.os.fsync = failing
+        try:
+            with self.assertRaises(OSError):
+                self.send(zipped(IMAGE))
+        finally:
+            image_mod.os.fsync = fsync
+        self.assertEqual(self.info("b")["state"], "writing")
+        self.assertNotIn(["try", "b/"], self.slot.calls)
+        with self.assertRaisesRegex(ValueError, "partly written: send a new one"):
+            self.svc.handle("revert", {})
+
+    def test_revert_is_a_trial(self):
         self.send(zipped(IMAGE))
-        rebooted = []
-        self.svc.reboot = lambda: rebooted.append(True)
+        self.svc.run()                            # the trial of b/ fell back: a/ runs, committed
+        self.assertEqual(self.info("b")["state"], "failed")
+        self.assertIn("failed_at", self.info("b"))
+        with self.assertRaisesRegex(ValueError, "didn't work: send a new one"):
+            self.svc.handle("revert", {})
+        (self.card / "b" / image_mod.INFO).write_text(json.dumps({"name": "card-pi"}))  # a card write's: fine
         r = self.svc.handle("revert", {})
-        self.assertEqual(r["slot"], "b/")
-        self.assertEqual(self.slot.calls[-1], ["switch", "b/"])
-        self.assertEqual(rebooted, [True])
+        self.assertEqual((r["slot"], r["from"]), ("b/", "a/"))
+        self.assertEqual(self.slot.calls[-1], ["try", "b/"])
+        self.assertNotIn("switch", [c[0] for c in self.slot.calls])
+        self.assertEqual(self.info("b")["state"], "trying")
+
+    def test_trial_of_the_running_one_kept(self):
+        (self.card / "a" / image_mod.INFO).write_text(json.dumps({"name": "x", "state": "trying"}))
+        self.svc.run()                            # committed by /init, or before this daemon
+        self.assertEqual(self.info("a")["state"], "kept")
+        self.slot.trial, self.slot.committed = True, False
+        (self.card / "a" / image_mod.INFO).write_text(json.dumps({"name": "x", "state": "trying"}))
+        self.svc._settle(image_mod.slot_status(self.slot))
+        self.assertEqual(self.info("a")["state"], "trying")    # on trial: left alone
 
     def test_trial_commits_once_through(self):
         self.slot.trial, self.slot.committed = True, False
@@ -131,6 +168,7 @@ class Service(unittest.TestCase):
             threading.Thread = real
         self.assertTrue(self.slot.committed)
         self.assertIn(["commit"], self.slot.calls)
+        self.assertEqual(self.info("a")["state"], "kept")
 
 
 class Status(unittest.TestCase):
@@ -142,11 +180,22 @@ class Status(unittest.TestCase):
                                          "images": {"a/": {"name": "clone"}, "b/": {"name": "card-pi"}}})
             image_cli.show_image_status({"current": "b/", "trial": True, "committed": False, "slots": ["b/"],
                                          "images": {}})
+            for state in ("failed", "trying", "writing", "kept"):
+                image_cli.show_image_status({"current": "a/", "slots": ["a/", "b/"],
+                                             "images": {"b/": {"name": "x", "state": state}}})
         self.assertEqual(out.getvalue().splitlines(), [
             "Running:  clone (a)",
             "Previous: card-pi (b): audiolink update --back",
             "Running:  as written (b) on trial: kept once it's back online",
-            "Previous: none yet (the next audiolink update keeps this one to go back to)"])
+            "Previous: none yet (the next audiolink update keeps this one to go back to)",
+            "Running:  as written (a)",
+            "Previous: x (b): didn't work, not offered",
+            "Running:  as written (a)",
+            "Previous: x (b): didn't work, not offered",
+            "Running:  as written (a)",
+            "Previous: x (b): partly written, not offered",
+            "Running:  as written (a)",
+            "Previous: x (b): audiolink update --back"])
 
 
 class Command(unittest.TestCase):
@@ -197,6 +246,41 @@ class Command(unittest.TestCase):
             else:
                 self.assertIsNone(err, out.getvalue())
                 self.assertIn("Trying it on the Pi... running it", out.getvalue())
+
+    def test_back_waits_for_its_trial(self):
+        from audiolink.host import update_cli
+        for outcome, expect in ((("b/", False, True), None), (("a/", False, True), "version before didn't")):
+            states = iter([{"current": "b/", "trial": True, "committed": False},
+                           dict(zip(("current", "trial", "committed"), outcome))])
+            calls = []
+
+            def call(op, args=None, port=None):
+                calls.append(op)
+                if op == "image.status":
+                    return next(states)
+                return {"ok": True, "slot": "b/", "from": "a/"}
+            orig = update_cli.to_baseline, update_cli.restore, image_cli.time.sleep
+            update_cli.to_baseline = lambda call, port: (calls.append("baseline"), (True, True))[1]
+            update_cli.restore = lambda call, port: calls.append("restore")
+            image_cli.time.sleep = lambda s: None
+            out = io.StringIO()
+            try:
+                import contextlib
+                with contextlib.redirect_stdout(out):
+                    try:
+                        image_cli.image_command(SimpleNamespace(back=True), call, None, over_network=False)
+                        err = None
+                    except SystemExit as e:
+                        err = str(e)
+            finally:
+                update_cli.to_baseline, update_cli.restore, image_cli.time.sleep = orig
+            self.assertEqual(calls[:2], ["baseline", "image.revert"])
+            if expect:
+                self.assertIn(expect, err)
+            else:
+                self.assertIsNone(err, out.getvalue())
+                self.assertIn("Trying it on the Pi... running it", out.getvalue())
+                self.assertEqual(calls[-1], "restore")
 
 
 if __name__ == "__main__":
