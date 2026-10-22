@@ -322,6 +322,7 @@ class Command(unittest.TestCase):
                 image_cli.read_image, image_cli.time.sleep = orig_read, orig_sleep
             if expect:
                 self.assertIn(expect, err)
+                self.assertIn("audiolink logs prev/boot.log", err)      # the trial's boot: the one before
             else:
                 self.assertIsNone(err, out.getvalue())
                 self.assertIn("Trying it on the Pi (up to 5 minutes)... running it", out.getvalue())
@@ -360,6 +361,36 @@ class Command(unittest.TestCase):
                 self.assertIsNone(err, out.getvalue())
                 self.assertIn("Trying it on the Pi (up to 5 minutes)... running it", out.getvalue())
                 self.assertEqual(calls[-1], "restore")
+
+    def test_speeds_the_link_back_up_either_way(self):
+        from audiolink.host import update_cli
+        data = zipped(IMAGE)
+        for landed in ("b/", "a/"):                            # kept, or went back
+            states = iter([{"slots": ["a/"], "current": "a/", "images": {}},
+                           {"current": landed, "trial": False, "committed": True}])
+
+            def call(op, args=None, port=None):
+                if op == "image.status":
+                    return next(states)
+                if op == "image.finish":
+                    return {"slot": "b/", "from": "a/", "firmware_differs": False}
+                return {"ok": True}
+            restored = []
+            saved = (image_cli.read_image, image_cli.time.sleep, update_cli.to_baseline, update_cli.restore)
+            image_cli.read_image = lambda p: ("x.zip", data)
+            image_cli.time.sleep = lambda s: None
+            update_cli.to_baseline = lambda call, port: (True, True)
+            update_cli.restore = lambda call, port: restored.append(port)
+            try:
+                import contextlib
+                with contextlib.redirect_stdout(io.StringIO()):
+                    try:
+                        image_cli.image_command(SimpleNamespace(back=False, image="x.zip"), call, 7, over_network=False)
+                    except SystemExit:
+                        self.assertEqual(landed, "a/")
+            finally:
+                image_cli.read_image, image_cli.time.sleep, update_cli.to_baseline, update_cli.restore = saved
+            self.assertEqual(restored, [7], landed)
 
 
 if __name__ == "__main__":

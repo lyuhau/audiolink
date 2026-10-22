@@ -1,6 +1,8 @@
 """audiolink card backup|restore (card_cli.py) and card.py's backup and card finding."""
 import contextlib
+import hashlib
 import io
+import json
 import os
 import stat
 import tempfile
@@ -207,6 +209,17 @@ class Update(unittest.TestCase):
             self.assertEqual(Path(mount, "bootcode.bin").read_text(), "new fw")
             self.assertFalse(Path(mount, "tryboot.txt").exists())
             self.assertIn('"name": "build"', Path(mount, "a", card.SLOT_INFO).read_text())
+            # the sha256 an update would send it with: the next update of the same image isn't sent
+            from audiolink.host import image_cli
+            sent = image_cli.read_image(str(image.path))[1]
+            self.assertEqual(json.loads(Path(mount, "a", card.SLOT_INFO).read_text())["sha256"],
+                             hashlib.sha256(sent).hexdigest())
+            zpath = Path(tmp, "image.zip")
+            zpath.write_bytes(sent)                              # a zip: its own sha256
+            card.update(Runner({}), "/dev/disk7", str(mount), zpath, sleep=lambda s: None)
+            self.assertEqual(json.loads(Path(mount, "b", card.SLOT_INFO).read_text()),
+                             {"name": "image.zip", "sha256": card.sha256(zpath)})
+            card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)
             # again: into b/ now, a/ kept
             self.assertEqual(card.update(Runner({}), "/dev/disk7", str(mount), image, sleep=lambda s: None)[3],
                              ("b/", "a/"))

@@ -19,6 +19,7 @@ writing it with --wipe.
 macOS only for now (diskutil). Elsewhere: write it by hand (README).
 """
 import hashlib
+import io
 import json
 import os
 import re
@@ -198,6 +199,19 @@ class Image:
             for n in self.names:
                 yield n, z.read(n)
 
+    def zipped(self):
+        """The image as one zip, as `audiolink update` sends it: a zip as it is, a folder
+        zipped (the same bytes every time, so the same sha256)."""
+        if not self.path.is_dir():
+            return self.path.read_bytes()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for name, data in self.files():
+                info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                z.writestr(info, data)
+        return buf.getvalue()
+
 
 def check_image(path):
     return Image(path)
@@ -220,13 +234,18 @@ class InSlot:
         self.image, self.slot, self.name, self.is_backup = image, slot, image.name, image.is_backup
         self.map = {slot + n[len(IMAGE_SLOT):] if n.startswith(IMAGE_SLOT) else n: n for n in image.names}
         self.names = sorted(list(self.map) + [slot + SLOT_INFO])
+        self.info = None
 
     def _data(self, name, data):
         return slot_config(self.slot) if name == "config.txt" else data
 
     def read(self, name):
         if name == self.slot + SLOT_INFO:
-            return json.dumps({"name": self.name}).encode()
+            if self.info is None:       # as an update records it: so the same image isn't sent again
+                path = self.image.path
+                digest = hashlib.sha256(self.image.zipped()).hexdigest() if path.is_dir() else sha256(path)
+                self.info = json.dumps({"name": self.name, "sha256": digest}).encode()
+            return self.info
         return self._data(name, self.image.read(self.map[name]))
 
     def files(self):

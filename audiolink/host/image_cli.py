@@ -11,7 +11,6 @@ import base64
 import hashlib
 import io
 import time
-import zipfile
 
 from ..services.image import TRIAL_SECONDS, TRYING, check_image, offered
 from ..ui import detail, done, step
@@ -37,17 +36,7 @@ def read_image(path, runner=None):
             raise
         done("checked")
     image = card.Image(path)
-    if image.path.is_dir():
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            for name, data in image.files():
-                info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
-                info.compress_type = zipfile.ZIP_DEFLATED
-                z.writestr(info, data)
-        data = buf.getvalue()
-    else:
-        with open(str(image.path), "rb") as f:
-            data = f.read()
+    data = image.zipped()
     try:
         check_image(io.BytesIO(data))
     except ValueError as e:
@@ -98,8 +87,8 @@ def image_command(a, call, port, over_network):
     if r.get("firmware_differs"):
         print("Its firmware differs from the card's and stays as it is (audiolink card write updates it)")
     wait_trial(call, port, r["from"], r["slot"], slowed,
-               "The new image didn't get through to this computer or the relay, so the Pi went back "
-               "to the one it had (audiolink logs boot.log, audiolink.log)")
+               "The new version didn't get through to this computer or the relay, so the Pi went back "
+               "to the one it had (its trial's logs: audiolink logs prev/boot.log, prev/audiolink.log)")
 
 
 def back_command(call, port, over_network):
@@ -114,7 +103,7 @@ def back_command(call, port, over_network):
     r = call("image.revert", port=port)
     wait_trial(call, port, r["from"], r["slot"], slowed,
                "The version before didn't get through to this computer or the relay, so the Pi went back "
-               "to the one it had (audiolink logs boot.log, audiolink.log)")
+               "to the one it had (its trial's logs: audiolink logs prev/boot.log, prev/audiolink.log)")
 
 
 def wait_trial(call, port, old, new, slowed, fell_back):
@@ -139,6 +128,8 @@ def wait_trial(call, port, old, new, slowed, fell_back):
     detail("%s", seen)
     if seen and seen.get("current") == old:
         done("didn't work")
+        if slowed:                      # back and answering: its old speed again
+            restore(call, port)
         raise SystemExit(fell_back)
     done("no answer")
     raise SystemExit("The Pi hasn't come back yet; check: audiolink update --status")
