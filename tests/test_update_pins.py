@@ -97,11 +97,14 @@ class UpdateCommand(unittest.TestCase):
         self.calls = []
         self.answers = True                     # does the Pi answer after the restart?
         self.caps = ["update"]
+        self.starting = False
 
     def call(self, op, args=None, port=None):
         self.calls.append(op)
         if op == "peer":
             return {"connected": True, "peer": {"caps": self.caps}}
+        if op == "image.status" and "image" in self.caps and self.starting:
+            raise SystemExit("Timed out")             # has versions, not answering yet
         if op == "audio.status":
             return {"link": self.link, "running": False, "pi": {}, "remembered": {"best": self.fast}}
         if op == "audio.run":
@@ -173,6 +176,11 @@ class UpdateCommand(unittest.TestCase):
         with mock.patch("audiolink.host.update_cli.PI_STATE_DIR", self.dir):
             self.assertIn("Running a code update on top (developers): audiolink update --code --back",
                           self.run_cmd("--status"))
+
+    def test_status_tells_an_old_pi_from_one_starting(self):
+        self.assertIn("from before image slots", self.run_cmd("--status"))     # no image in its caps
+        self.caps, self.starting = ["update", "image"], True
+        self.refused(["--status"], "it may still be starting")
 
     def test_slows_the_link_before_sending(self):
         out = self.run_cmd("--code", self.file(pyz()))
