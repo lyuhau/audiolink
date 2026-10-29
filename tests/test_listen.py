@@ -98,3 +98,43 @@ class Directions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Silent(unittest.TestCase):
+    """A device with the Pi's USB ID that never sends the link: the reason is said once,
+    at the normal level, not just "Waiting for the Pi"."""
+
+    def test_said_once(self):
+        from unittest import mock
+        from audiolink.wire import portaudio
+
+        class Stop(Exception):
+            pass
+        sleeps = []
+
+        def sleep(s):
+            sleeps.append(s)
+            if len(sleeps) > 5:
+                raise Stop()
+        clock = type("T", (), {"monotonic": staticmethod(lambda: 1000.0 + len(sleeps) * 40), "sleep": sleep})
+        dev = {"name": "AudioPi", "rate": 48000.0, "outputs": 8, "inputs": 8, "hostapi": "Core Audio"}
+        stream = mock.Mock()
+        with mock.patch.object(host_audio, "time", clock), \
+                mock.patch.object(host_audio, "find_pairs", lambda *a: [(dev, dev, "usb1")]), \
+                mock.patch.object(host_audio, "hears_the_link", lambda *a: False), \
+                mock.patch.object(host_audio, "sys", type("S", (), {"platform": "darwin"})), \
+                mock.patch.object(portaudio, "reinit", lambda: None), \
+                mock.patch.object(portaudio, "Stream", lambda *a: stream), \
+                mock.patch.object(host_audio.threading, "Thread",
+                                  lambda target, daemon: type("T", (), {"start": lambda self: target()})()), \
+                self.assertLogs("audiolink", "INFO") as logs:
+            with self.assertRaises(Stop):
+                host_audio.run_portaudio(mock.Mock())
+        said = [r.getMessage() for r in logs.records if r.levelname == "INFO"]
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("AudioPi is plugged in but isn't sending the link", said[0])
+        self.assertIn("Microphone", said[0])
+        self.assertIn("audiolink logs --pi PI", said[0])
+
+    def test_microphone_on_macos_only(self):
+        self.assertNotIn("Microphone", host_audio.silent_note("AudioPi", "linux"))
