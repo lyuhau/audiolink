@@ -259,8 +259,21 @@ class Service(unittest.TestCase):
             app = tomllib.load(f)["app"]
         self.assertIn('app.get("trial_seconds", 300)', (repo / "platform" / "build_card.py").read_text())
         self.assertEqual(app.get("trial_seconds", 300), image_mod.TRIAL_SECONDS)
-        self.assertEqual(image_cli.TRIAL_MINUTES * 60, image_mod.TRIAL_SECONDS)
-        self.assertIn("within %d minutes" % image_cli.TRIAL_MINUTES, (repo / "README.md").read_text())
+        self.assertIn("within %d minutes" % image_cli.minutes(image_mod.TRIAL_SECONDS),
+                      (repo / "README.md").read_text())
+
+    def test_status_tells_the_computer(self):
+        self.assertFalse(self.svc.status()["trying"])
+        later = []
+        self.svc._later = later.append            # the try: scheduled, not run yet
+        self.send(zipped(IMAGE))
+        st = self.svc.status({"TRIAL_SECONDS": "600"})
+        self.assertEqual((st["back"], st["trial_seconds"], st["trying"]), ("trial", 600, True))
+        self.assertEqual(self.svc.status({})["trial_seconds"], image_mod.TRIAL_SECONDS)
+
+    def test_code_update_goes_with_a_new_image(self):
+        self.assertTrue(self.send(zipped(IMAGE))["code_update_gone"])
+        self.assertFalse((self.state / "audiolink.pyz").exists())
 
 
 class VersionFile(unittest.TestCase):
@@ -302,16 +315,19 @@ class Status(unittest.TestCase):
 
     def test_roles(self):
         lines = []
-        lines += self.show({"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
+        lines += self.show({"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"], "back": "trial",
                             "images": {"a/": {"name": "clone"}, "b/": {"name": "card-pi"}}})
         lines += self.show({"current": "b/", "trial": True, "committed": False, "slots": ["b/"], "images": {}})
         for state in ("failed", "trying", "writing", "kept"):
-            lines += self.show({"current": "a/", "slots": ["a/", "b/"],
+            lines += self.show({"current": "a/", "slots": ["a/", "b/"], "back": "trial",
                                 "images": {"b/": {"version": "0.15.0", "release": True, "state": state}}},
                                None, "0.14.0")
+        # v0.14.0's Pi: no "back": "trial"; its --back is for good, whatever b/ holds
+        lines += self.show({"current": "a/", "slots": ["a/", "b/"], "images": {"b/": {"version": "0.15.0"}}},
+                           None, "0.14.0")
         self.assertEqual(lines, [
             "Running:  clone",
-            "Previous: card-pi (audiolink update --back)",
+            "Previous: an earlier dev build (audiolink update --back)",
             "Running:  the version written to its card on trial: kept once it's back online",
             "Previous: none yet (the next audiolink update keeps this one to go back to)",
             "Running:  0.14.0",
@@ -321,15 +337,20 @@ class Status(unittest.TestCase):
             "Running:  0.14.0",
             "Previous: 0.15.0: partly written, not offered",
             "Running:  0.14.0",
-            "Previous: 0.15.0 (audiolink update --back)"])
+            "Previous: 0.15.0 (audiolink update --back)",
+            "Running:  0.14.0",
+            "Previous: 0.15.0 dev build (this Pi's audiolink goes back without a trial: update it first)"])
 
     def test_letters_and_builds_with_v(self):
-        st = {"current": "a/", "slots": ["a/", "b/"],
+        st = {"current": "a/", "slots": ["a/", "b/"], "back": "trial",
               "images": {"a/": {"name": "card-pi", "version": "0.14.0", "build": "3871eed7e803", "state": "kept"},
                          "b/": {"name": "audiolink-pi-0.13.2.zip"}}}
         self.assertEqual(self.show(st, verbose=True), [
             "Running:  0.14.0 dev build 3871eed7  [a/, card-pi, kept, build 3871eed7e803]",
             "Previous: 0.13.2 (audiolink update --back)  [b/, audiolink-pi-0.13.2.zip]"])
+        st["images"]["b/"] = {"name": "card-pi"}
+        self.assertEqual(self.show(st, verbose=True)[1],
+                         "Previous: an earlier dev build (audiolink update --back)  [b/, card-pi]")
 
     def test_a_code_update_isnt_the_images_version(self):
         st = {"current": "a/", "slots": ["a/"], "images": {"a/": {}}}
@@ -370,9 +391,10 @@ class Command(unittest.TestCase):
     def test_waits_for_the_commit_or_the_fall_back(self):
         data = zipped(IMAGE)
         for outcome, expect in ((("b/", False, True), None), (("a/", False, True), "went back")):
-            states = iter([{"slots": ["a/"], "current": "a/", "images": {}},
+            states = iter([{"slots": ["a/"], "current": "a/", "images": {}, "back": "trial", "trial_seconds": 600},
+                           {"current": "a/", "trial": False, "committed": True, "trying": True},  # not yet
                            {"current": "b/", "trial": True, "committed": False},
-                           dict(zip(("current", "trial", "committed"), outcome))])
+                           dict(zip(("current", "trial", "committed"), outcome), trying=False)])
             calls = []
 
             def call(op, args=None, port=None):
@@ -400,30 +422,38 @@ class Command(unittest.TestCase):
             if expect:
                 self.assertIn(expect, err)
                 self.assertIn("audiolink logs prev/boot.log", err)      # the trial's boot: the one before
+                self.assertIn("Allow accessory", err)
             else:
                 self.assertIsNone(err, out.getvalue())
-                self.assertIn("Trying it on the Pi (up to 5 minutes)... running it", out.getvalue())
+                self.assertIn("within 10 minutes", out.getvalue())           # the Pi's window
+                self.assertIn("Trying it on the Pi (up to 13 minutes)... running it", out.getvalue())
                 self.assertIn("settings.txt sets usb.* (product name, IDs): these no longer apply", out.getvalue())
 
     def test_back_refused_before_slowing(self):
         calls = []
-        failed = {"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
-                  "images": {"b/": {"name": "x", "state": "failed"}}}
+        failed = {"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"], "back": "trial",
+                  "images": {"b/": {"version": "0.15.0", "release": True, "state": "failed"}}}
 
         def call(op, args=None, port=None):
             calls.append(op)
             return failed
-        with self.assertRaisesRegex(SystemExit, r"version before \(x\) didn't work: send a new one"):
+        with self.assertRaisesRegex(SystemExit, r"version before \(0.15.0\) didn't work: send a new one.*"
+                                                r"audiolink update audiolink-pi-VER.zip"):
             image_cli.image_command(SimpleNamespace(back=True), call, None, over_network=False)
         self.assertEqual(calls, ["image.status"])                 # the link left at its speed
+        # v0.14.0's Pi: its revert is for good, no trial (and b/ has no state): not without --permanent
+        del failed["back"], failed["images"]["b/"]["state"]
+        with self.assertRaisesRegex(SystemExit, "for good.*--back --permanent"):
+            image_cli.image_command(SimpleNamespace(back=True), call, None, over_network=False)
+        self.assertEqual(calls, ["image.status"] * 2)
 
     def test_back_waits_for_its_trial(self):
         from audiolink.host import update_cli
         for outcome, expect in ((("b/", False, True), None), (("a/", False, True), "version before didn't")):
             states = iter([{"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
-                            "images": {"b/": {"name": "x"}}},
+                            "back": "trial", "images": {"b/": {"name": "x"}}},
                            {"current": "b/", "trial": True, "committed": False},
-                           dict(zip(("current", "trial", "committed"), outcome))])
+                           dict(zip(("current", "trial", "committed"), outcome), trying=False)])
             calls = []
 
             def call(op, args=None, port=None):
@@ -451,15 +481,15 @@ class Command(unittest.TestCase):
                 self.assertIn(expect, err)
             else:
                 self.assertIsNone(err, out.getvalue())
-                self.assertIn("Trying it on the Pi (up to 5 minutes)... running it", out.getvalue())
+                self.assertIn("Trying it on the Pi (up to 8 minutes)... running it", out.getvalue())
                 self.assertEqual(calls[-1], "restore")
 
     def test_speeds_the_link_back_up_either_way(self):
         from audiolink.host import update_cli
         data = zipped(IMAGE)
         for landed in ("b/", "a/"):                            # kept, or went back
-            states = iter([{"slots": ["a/"], "current": "a/", "images": {}},
-                           {"current": landed, "trial": False, "committed": True}])
+            states = iter([{"slots": ["a/"], "current": "a/", "images": {}, "back": "trial"},
+                           {"current": landed, "trial": False, "committed": True, "trying": False}])
 
             def call(op, args=None, port=None):
                 if op == "image.status":
@@ -483,6 +513,94 @@ class Command(unittest.TestCase):
             finally:
                 image_cli.read_image, image_cli.time.sleep, update_cli.to_baseline, update_cli.restore = saved
             self.assertEqual(restored, [7], landed)
+
+    def test_speeds_the_link_back_up_when_finish_fails(self):
+        from audiolink.host import update_cli
+        data = zipped(IMAGE)
+
+        def call(op, args=None, port=None):
+            if op == "image.status":
+                return {"slots": ["a/"], "current": "a/", "images": {}, "back": "trial"}
+            if op == "image.finish":
+                raise SystemExit("the image arrived damaged; nothing changed")
+            return {"ok": True}
+        restored = []
+        saved = (image_cli.read_image, update_cli.to_baseline, update_cli.restore)
+        image_cli.read_image = lambda p: ("x.zip", data)
+        update_cli.to_baseline = lambda call, port: (True, True)
+        update_cli.restore = lambda call, port: restored.append(port)
+        try:
+            import contextlib
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(SystemExit, "damaged"):
+                image_cli.image_command(SimpleNamespace(back=False, image="x.zip"), call, 7, over_network=False)
+        finally:
+            image_cli.read_image, update_cli.to_baseline, update_cli.restore = saved
+        self.assertEqual(restored, [7])
+
+    def wait(self, answers):
+        """wait_trial from a/ to b/ over these answers (an exception: no answer) -> its SystemExit or None."""
+        answers = iter(answers)
+
+        def call(op, args=None, port=None):
+            a = next(answers, None)
+            if a is None or isinstance(a, BaseException):
+                raise a or SystemExit("no Pi")
+            return a
+        orig, clock = image_cli.time.sleep, [0.0]
+        image_cli.time.sleep = lambda s: clock.__setitem__(0, clock[0] + s)
+        orig_mono, image_cli.time.monotonic = image_cli.time.monotonic, lambda: clock[0]
+        try:
+            import contextlib
+            with contextlib.redirect_stdout(io.StringIO()):
+                image_cli.wait_trial(call, None, "a/", "b/", False, "went back")
+        except SystemExit as e:
+            return str(e)
+        finally:
+            image_cli.time.sleep, image_cli.time.monotonic = orig, orig_mono
+
+    def test_an_answer_before_the_try_isnt_went_back(self):
+        old = {"current": "a/", "trial": False, "committed": True}
+        new = {"current": "b/", "trial": False, "committed": True}
+        # This Pi says a try is scheduled; then it isn't
+        self.assertIsNone(self.wait([dict(old, trying=True), dict(new, trying=False)]))
+        self.assertEqual(self.wait([dict(old, trying=True), dict(old, trying=False)]), "went back")
+        # A Pi that doesn't say (v0.14.0): only once it has dropped off
+        self.assertIsNone(self.wait([old, old, SystemExit("rebooting"), new]))
+        self.assertEqual(self.wait([old, SystemExit("rebooting"), old]), "went back")
+        self.assertIn("unplugged and plugged in again", self.wait([old] * 500))
+        self.assertIn("--status --pi NAME", self.wait([]))
+
+    def test_back_for_good_on_an_old_pi(self):
+        from audiolink.host import update_cli
+        states = iter([{"current": "a/", "trial": False, "committed": True, "slots": ["a/", "b/"],
+                        "images": {"b/": {"name": "audiolink-pi-0.13.2.zip"}}},
+                       {"current": "b/", "trial": False, "committed": False},     # switched, not rebooted yet
+                       SystemExit("rebooting"),
+                       {"current": "b/", "trial": False, "committed": True}])
+        calls = []
+
+        def call(op, args=None, port=None):
+            calls.append(op)
+            if op == "image.status":
+                s = next(states)
+                if isinstance(s, BaseException):
+                    raise s
+                return s
+            return {"ok": True, "slot": "b/", "from": "a/"}
+        saved = (update_cli.to_baseline, update_cli.restore, image_cli.time.sleep)
+        update_cli.to_baseline = lambda call, port: (False, False)
+        update_cli.restore = lambda call, port: None
+        image_cli.time.sleep = lambda s: None
+        out = io.StringIO()
+        try:
+            import contextlib
+            with contextlib.redirect_stdout(out):
+                image_cli.image_command(SimpleNamespace(back=True, permanent=True), call, None, over_network=True)
+        finally:
+            update_cli.to_baseline, update_cli.restore, image_cli.time.sleep = saved
+        self.assertIn("Going back to version 0.13.2 for good (no trial)", out.getvalue())
+        self.assertIn("running it", out.getvalue())
+        self.assertIn("image.revert", calls)
 
 
 if __name__ == "__main__":

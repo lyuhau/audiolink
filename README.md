@@ -335,7 +335,10 @@ its relay within 5 minutes of its boot; otherwise the Pi goes back to the versio
 had, by itself. `audiolink update --back` goes back to the version before, on trial
 the same way (kept only once it gets through); `audiolink update --status` shows both.
 A version whose trial failed, or that was only partly written, isn't offered to go
-back to: send a new one. While a trial runs, the Pi takes neither. The Pi's state,
+back to: send a new one (an older release: `audiolink update audiolink-pi-VER.zip`,
+from the project's Releases). While a trial runs, the Pi takes neither. A Pi still on
+v0.14.0 goes back for good, with no trial, and can't tell a failed version from a good
+one: update it first (`--back` there wants `--permanent`). The Pi's state,
 settings and flavors are shared by the two versions. The firmware files at the top of
 the card (`bootcode.bin`, `start.elf`, `fixup.dat`) only change with a card write.
 

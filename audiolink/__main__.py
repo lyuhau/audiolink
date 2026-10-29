@@ -251,6 +251,8 @@ def build_parser():
                      help="the image: a zip, or a build folder like build/card-pi (default: this version's release)")
     upd.add_argument("--back", action="store_true", help="back to the version the Pi ran before")
     upd.add_argument("--status", action="store_true", help="the version the Pi runs, and the one it would go back to")
+    upd.add_argument("--permanent", action="store_true",
+                     help=argparse.SUPPRESS)        # --back on a Pi from before trials (v0.14.0): for good
     upd.add_argument("--code", nargs="?", const="this", metavar="PYZ",
                      help=argparse.SUPPRESS)        # developers: just new code (a .pyz) on the card; --back undoes it
     lg = sub.add_parser("logs", help="the plugged-in Pi's logs (works when USB networking doesn't)")

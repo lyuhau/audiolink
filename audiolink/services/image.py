@@ -7,10 +7,14 @@ once on trial. It stays only if this daemon, running from it, gets through to it
 or its relay within the platform's trial window (TRIAL_SECONDS from boot; it commits
 then); otherwise the platform's guard reboots into the slot that was booting. The Pi's state (audiolink/, settings.txt,
 logs/) is shared by the slots; settings.txt is renewed from the new image's, keeping
-what was set, and an earlier code update (audiolink update --code) goes, so the new image
-runs its own code. The firmware files at the top of the card stay: a new firmware needs
+what was set, and an earlier code update (audiolink update --code) goes when the image
+is written: the start script (pi/start-audiolink.sh) runs a code update on the card
+before an image's own code, so kept through the trial it would be what's tried (and
+what commits). A failed trial leaves the old version without it. The firmware files at the top of the card stay: a new firmware needs
 `audiolink card write`. Going back (audiolink update --back) is a trial too: the other
-slot, unless its own trial failed or it's half-written (its INFO's state).
+slot, unless its own trial failed or it's half-written (its INFO's state). Before slot
+states (v0.14.0) going back was permanent, no trial: status says "back": "trial" so the
+computer can tell.
 
 Owners only, over USB or the network (endpoint "image"), like code updates.
 """
@@ -121,14 +125,19 @@ def check_image(path):
     return names
 
 
+def trial_window(env=None):
+    """The guard's TRIAL_SECONDS (app.env), from boot."""
+    env = platform_env() if env is None else env
+    try:
+        return int(env.get("TRIAL_SECONDS") or TRIAL_SECONDS)
+    except ValueError:
+        return TRIAL_SECONDS
+
+
 def trial_left(env=None, uptime="/proc/uptime"):
     """Seconds this boot's trial has left to commit: the guard's TRIAL_SECONDS counted
     from boot, less COMMIT_MARGIN."""
-    env = platform_env() if env is None else env
-    try:
-        window = int(env.get("TRIAL_SECONDS") or TRIAL_SECONDS)
-    except ValueError:
-        window = TRIAL_SECONDS
+    window = trial_window(env)
     try:
         with open(uptime) as f:
             up = float(f.read().split()[0])
@@ -234,11 +243,14 @@ class ImageService(Service):
             self._mark(slot, before or "ready")
             self.trying = False
 
-    def status(self):
+    def status(self, env=None):
+        """slot.sh status, each slot's INFO, and for the computer: going back is a trial
+        (v0.14.0's was permanent), the trial window, a try scheduled (not booted yet)."""
         st = slot_status(self.run_cmd)
         if st is None:
             return {"slots": None}
-        return dict(st, images={s: self._described(s) for s in st["slots"]})
+        return dict(st, images={s: self._described(s) for s in st["slots"]}, back="trial",
+                    trial_seconds=trial_window(env), trying=self.trying)
 
     def _described(self, slot):
         """Its INFO, with the version its slot carries if INFO is from before versions."""
@@ -303,16 +315,19 @@ class ImageService(Service):
             os.remove(self.zip)
             raise
         os.remove(self.zip)
-        # An earlier code update (audiolink update --code) would run instead of the new image's code
+        # An earlier code update (audiolink update --code) would run instead of the new image's
+        # code, on trial too (the docstring): it goes now
+        code = False
         for p in ("audiolink.pyz", "audiolink.pyz.bad", "audiolink.pyz.new"):
             p = os.path.join(self.state_dir, p)
             if os.path.exists(p):
+                code = code or p.endswith(".pyz")
                 os.remove(p)
         log.info("image: %s in %s; trying it", name, target)
         self.trying = True
         self._later(lambda: self._try(target))
         return {"ok": True, "slot": target, "from": st["current"], "firmware_differs": firmware,
-                "usb_settings": usb}
+                "usb_settings": usb, "code_update_gone": code}
 
     def _not_trying(self, st):
         """While a trial is open the other slot is the version to go back to: it stays."""
@@ -380,7 +395,8 @@ class ImageService(Service):
             raise ValueError("no other image on the card to go back to")
         info = self._info(other[0])
         if not offered(info, other[0], st["current"]):
-            raise ValueError("the version before (%s) %s: send a new one instead (audiolink update)" % (
+            raise ValueError("the version before (%s) %s: send a new one instead (audiolink update; an older "
+                             "release: audiolink update audiolink-pi-VER.zip, from the project's Releases)" % (
                 version_name(info) or other[0], "was only partly written" if info.get("state") == "writing"
                 else "didn't work"))
         # On trial, like a new version: kept once it gets through, else back to this one
