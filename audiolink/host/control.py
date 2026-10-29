@@ -115,11 +115,18 @@ CONNECT = 3         # s: a host is on this computer or not (WSL's mirrored netwo
                     # rather than refuses, a connection to a localhost port nobody listens on)
 
 
+def not_running(port=DEFAULT_PORT):
+    """No host on this port: how to start one (on the same port), or reach a Pi elsewhere."""
+    flag = "" if port == DEFAULT_PORT else " --control-port %d" % port
+    return ("audiolink host isn't running (start it: audiolink host%s; or reach a Pi over the network: "
+            "--pi PI)" % flag)
+
+
 def call(op, args=None, port=DEFAULT_PORT, timeout=120):
     try:
         conn = socket.create_connection(("127.0.0.1", port), timeout=min(timeout, CONNECT))
     except OSError:
-        raise SystemExit("audiolink host isn't running (start it: audiolink host)")
+        raise SystemExit(not_running(port))
     conn.settimeout(timeout)
     try:
         with conn:
@@ -135,6 +142,7 @@ def call(op, args=None, port=DEFAULT_PORT, timeout=120):
     if not reply.get("ok"):
         msg = reply.get("error") or "Failed"
         if msg == NOT_YOURS:
-            msg = "audiolink host here is another user's (it runs as a different login)"
+            msg = ("audiolink host here is another user's (it runs as a different login), or this audiolink "
+                   "is older than the running host's: update it")
         raise SystemExit(msg[:1].upper() + msg[1:])
     return reply["result"]

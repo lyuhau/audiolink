@@ -537,3 +537,25 @@ class Output(unittest.TestCase):
         from audiolink import ui
         with mock.patch.object(sys, "stdout", None), mock.patch.object(sys, "stderr", None):
             ui.safe_output()
+
+
+class ControlMessages(unittest.TestCase):
+    def test_not_running_keeps_the_port(self):
+        from audiolink.host import control
+        self.assertIn("start it: audiolink host;", control.not_running())
+        self.assertIn("audiolink host --control-port 47811;", control.not_running(47811))
+        self.assertIn("--pi PI", control.not_running())
+
+    def test_refused_token_may_be_an_older_audiolink(self):
+        import socket
+        from audiolink.host import control
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        self.addCleanup(srv.close)
+        control.serve(None, srv, token="theirs")
+        with mock.patch.object(control, "read_token", lambda: "mine"):
+            with self.assertRaises(SystemExit) as e:
+                control.call("peer", port=srv.getsockname()[1], timeout=5)
+        self.assertIn("another user's", str(e.exception.code))
+        self.assertIn("older than the running host's: update it", str(e.exception.code))
