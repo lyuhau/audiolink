@@ -250,9 +250,12 @@ def no_images(call, port):
     except (SystemExit, KeyError, ValueError):
         st = {}
     if _on_card(st):
-        return ("The Pi runs a code update from its card that can't take versions: drop it with "
-                "audiolink update --code --back, then audiolink update (if it still can't, its card "
-                "needs audiolink card write once)")
+        # --code --back first would drop it to its card's code, which may be older still
+        # (before 0.13) and unable to take this update at all: card write is the safe way
+        return ("The Pi runs a code update from its card that can't take versions: put this version "
+                "on its card once with audiolink card write (it keeps the Pi's state); after that, "
+                "audiolink update. Only if its card is already 0.14 or newer: audiolink update --code "
+                "--back, then audiolink update")
     return ("The Pi's card is from before versions went over the link: put this one on it "
             "once with audiolink card write (it keeps the Pi's state); after that, audiolink update")
 

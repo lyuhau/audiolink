@@ -14,7 +14,7 @@ LOG_DIR = "/var/log"
 LEGACY_PREV_DIR = "/boot/logs/prev"     # the older image's
 FILES = ("audiolink.log", "audiolink.log.1", "audiolink.log.2", "audiolink.log.3",
          "app.log", "boot.log", "wifi-up.log", "wifi.log", "ntp.log", "fsck.log", "messages",
-         "dropbear.log")
+         "dropbear.log", "settings.log")    # settings.log: the card's settings.txt, why a value was ignored
 
 
 def prev_dir(env=None):

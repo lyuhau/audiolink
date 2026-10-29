@@ -81,6 +81,12 @@ class Logs(unittest.TestCase):
             self.s.handle("tail", {"file": "prev/../../etc/shadow"})
         self.assertEqual(self.s.handle("list", {})["files"], ["audiolink.log"])
 
+    def test_settings_log(self):               # the README sends people to it
+        with open(os.path.join(self.dir, "settings.log"), "w") as f:
+            f.write("settings: audiolink.relay = x isn't HOST:PORT\n")
+        self.assertIn("settings.log", self.s.handle("list", {})["files"])
+        self.assertIn("relay", self.s.handle("tail", {"file": "settings.log"})["text"])
+
     def test_unknown_name_says_where_to_look(self):
         with self.assertRaisesRegex(ValueError, r"No log called nope \(see: audiolink logs --list\)"):
             self.s.handle("tail", {"file": "nope"})

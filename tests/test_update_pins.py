@@ -191,6 +191,7 @@ class UpdateCommand(unittest.TestCase):
         self.refused([], "card write")                  # a card from before slots
         self.u.status = lambda: {"running": "/var/lib/audiolink/audiolink.pyz"}
         self.refused([], "audiolink update --code --back")      # an old code update runs instead
+        self.refused([], "can't take versions: put this version on its card once with audiolink card write")
         self.assertNotIn("image.status", self.calls)
 
     def test_over_the_network_asks_the_pi_before_the_image(self):

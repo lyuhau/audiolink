@@ -9,8 +9,9 @@
   4. "Register this computer as a client?" ssh NAME from here (no code: USB is the trust).
      Either, both or neither: setting the Pi up here and plugging it in at its host later
      is no host, yes client.
-  Without it: this computer is a client: find the Pi on this network (or take its connect
-  code), then 4 without asking.
+  Without it: this computer is a client: find the Pi on this network (or through its
+  relay: --code), join it with an invite code (audiolink invite on an owner computer),
+  then 4 without asking. --invite with the Pi on USB: join it (2) with the code.
 `audiolink setup host`: just this computer's host part (3).
 
 The only questions are the Pi's name, its Wi-Fi, and whether this computer is its host
@@ -237,7 +238,8 @@ class Guide:
             if self.end_note:
                 print(self.end_note)
             if host:
-                print("Next, on your other computers: audiolink setup")
+                print("Next, for each of your other computers: here, audiolink invite NAME (--owner to let it "
+                      "manage %s); there, audiolink setup --invite CODE" % self.name)
             return
         self.client_part()
 
@@ -339,7 +341,7 @@ class Guide:
         step("Writing the card")
         card.write(self.runner, dev, image, sleep=self.sleep)
         done("done")
-        print("Unplug the Pi and plug it back in")
+        card.replug(self.platform)
         self.wait_usb("pi", "Waiting for the Pi to start", 300)
         self.sleep(3)                   # its sound device, a moment after the USB device
 
@@ -444,10 +446,16 @@ class Guide:
             print("%s: added here" % name)
         if no_state:
             print("%s keeps nothing across restarts (no SD card?): its list lasts until it restarts" % name)
-        if not first and entry.get("role") != "owner":
+        if self.a.invite is not None and not first:
+            if entry.get("role") == "owner":
+                print("This computer is an owner of %s already: the invite isn't needed" % name)
+            else:
+                self.join(entry)
+        elif not first and entry.get("role") != "owner":
             from .client.computer import this_computer
             print("This computer isn't an owner of %s, so it can be its host but not change it (Wi-Fi, name). "
-                  "On an owner computer: audiolink invite %s --owner" % (name, this_computer()))
+                  "On an owner computer: audiolink invite %s --owner; then here: audiolink setup --invite CODE"
+                  % (name, this_computer()))
         wanted = self.a.name
         if not wanted and created:
             wanted = self.ask.text_default("Name", name).strip().lower()
@@ -457,6 +465,19 @@ class Guide:
             self.entry = keyring.lookup(wanted, known=True)
         self.name = self.entry["alias"]
         self.wifi_part()
+
+    def join(self, entry):
+        """Redeem --invite for the Pi on USB here (over the network: client/pairing.py), then
+        wait for the link to have the new role (the Pi tells the host its list changed)."""
+        from .client.pairing import add_known
+        print("Joining %s with the invite code given" % entry["alias"])
+        self.entry = add_known(entry, SimpleNamespace(invite=self.a.invite, at=self.a.at, name=entry["alias"]))
+        role = self.entry.get("role")
+        for _ in range(20):
+            if ((self.peer(connected=True) or {}).get("link") or {}).get("role") == role:
+                return
+            self.sleep(0.5)
+        detail("the link doesn't have the new role yet")
 
     def wifi_part(self):
         from .host import wifi_cli

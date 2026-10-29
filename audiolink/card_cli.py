@@ -128,7 +128,10 @@ def backup(a, runner, usb_state, sleep, clock, now):
               "diskutil eject %s" % disk)
         return 0
     card.eject(runner, disk, sleep)
-    print("Unplug the Pi and plug it back in" if via_pi else "Put the card back in the Pi")
+    if via_pi:
+        card.replug()
+    else:
+        print("Put the card back in the Pi")
     return 0
 
 
@@ -186,7 +189,10 @@ def write(a, runner, usb_state, sleep, clock, wipe):
     if removed:
         print("Removed an earlier update%s from the card, so the Pi runs this image's code "
               "(--keep-update: keep it)" % ("" if removed in (True, "unknown") else " (build %s)" % removed))
-    print("Unplug the Pi and plug it back in" if via_pi else "Put the card back in the Pi")
+    if via_pi:
+        card.replug()
+    else:
+        print("Put the card back in the Pi")
     return 0
 
 

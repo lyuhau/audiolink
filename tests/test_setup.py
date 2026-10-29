@@ -17,6 +17,7 @@ from unittest import mock
 from audiolink.__main__ import build_parser
 from audiolink import guide, install
 from audiolink.client import keyring, sshconfig
+from audiolink.client.computer import this_computer
 from tests.helpers import PI_USB, FakeClock, needs_modes, needs_symlinks
 from audiolink.host import config as host_config
 from audiolink.host.autostart import Autostart
@@ -418,6 +419,7 @@ class FakeHost:
         self.ident = new_identity()
         self.ident_name, self.claimed = "green-rowan", False
         self.ssid, self.calls = None, []
+        self.role = None                # the link's role, once claimed by another computer
         self.expose = None              # what the running host exposes (None: it doesn't say)
 
     def call(self, op, args=None, port=None, timeout=None):
@@ -427,7 +429,7 @@ class FakeHost:
         if op == "peer":
             return {"connected": self.connected, "peer": {"caps": ["identity", "wifi", "proxy"],
                                                           "identity": {"name": self.ident_name}},
-                    "link": {"role": "owner" if self.claimed else None}, "expose": self.expose}
+                    "link": {"role": self.role or ("owner" if self.claimed else None)}, "expose": self.expose}
         if op == "audio.status":
             return {"running": False}
         if not self.connected:
@@ -526,7 +528,7 @@ class Setup(TempConfig):
                      "Make this computer green-rowan's host? yes",
                      "Register this computer as a client (ssh green-rowan)? yes", "ssh green-rowan: set up",
                      "Trying ssh green-rowan... works", "Done: ssh green-rowan",
-                     "Next, on your other computers: audiolink setup"):
+                     "Next, for each of your other computers: here, audiolink invite NAME"):
             self.assertIn(line, out)
         self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
         self.assertTrue(self.plist().exists())
@@ -559,7 +561,7 @@ class Setup(TempConfig):
         self.assertFalse(self.plist().exists())              # not started at login unless asked
         self.assertIn("Checking that ssh kitchen reaches this computer... yes", out)
         self.assertIn("Done\nTo reach kitchen through this computer, keep audiolink host running", out)
-        self.assertIn("Next, on your other computers: audiolink setup", out)
+        self.assertIn("Next, for each of your other computers: here, audiolink invite NAME", out)
         self.assertEqual(host_config.load(), {"expose": ["2222:22"]})
         self.assertFalse((self.home / ".ssh" / "config").exists())
         self.assertEqual(self.banners, [("kitchen", 2222)])
@@ -572,7 +574,7 @@ class Setup(TempConfig):
         self.assertIn("ssh green-rowan: set up", out)
         self.assertIn("ssh green-rowan works once green-rowan is plugged into a host set up with "
                       "audiolink setup", out)
-        self.assertNotIn("Next, on your other computers", out)
+        self.assertNotIn("Next, for each of your other computers", out)
         self.assertEqual(host_config.load(), {})
         self.assertFalse((self.home / "Library").exists())
         self.assertEqual(self.banners, [])
@@ -655,6 +657,34 @@ class Setup(TempConfig):
         self.host.expose = []
         out, code = self.setup("host", "--expose", "2222:22", "--expose", "8080:80", "--no-autostart")
         self.assertIn("Restart audiolink host for the new settings", out)
+
+    def test_not_an_owner_says_how(self):              # claimed on another computer
+        self.host.claimed, self.host.role = True, "user"
+        out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client")
+        self.assertIsNone(code, out)
+        self.assertIn("audiolink invite %s --owner; then here: audiolink setup --invite CODE" % this_computer(), out)
+
+    def test_invite_with_the_pi_plugged_in(self):
+        self.host.claimed, self.host.role = True, "user"
+        joined = []
+
+        def add_known(entry, a):
+            joined.append((entry["alias"], a.invite))
+            self.host.role = "owner"                    # the Pi tells the host its list changed
+            keyring.update(keyring.pub_of(entry["code"]), role="owner")
+            return keyring.lookup(entry["alias"], known=True)
+        with mock.patch("audiolink.client.pairing.add_known", add_known):
+            out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client", "--invite", "123456")
+        self.assertIsNone(code, out)
+        self.assertEqual(joined, [("green-rowan", "123456")])
+        self.assertIn("Joining green-rowan with the invite code given", out)
+        self.assertNotIn("isn't an owner", out)
+        self.assertEqual(keyring.lookup("green-rowan")["role"], "owner")
+
+        with mock.patch("audiolink.client.pairing.add_known", add_known):     # an owner already
+            out, code = self.setup("--yes", "--no-wifi", "--no-host", "--no-client", "--invite", "123456")
+        self.assertIn("an owner of green-rowan already", out)
+        self.assertEqual(len(joined), 1)
 
     def test_second_computer(self):
         self.host.running = False

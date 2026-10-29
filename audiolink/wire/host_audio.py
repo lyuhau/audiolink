@@ -13,6 +13,25 @@ LISTEN = 5.0                   # s to hear the Pi's link on a device's input bef
 NOT_THE_PI = 30.0              # s before listening again to a device that wasn't the Pi
 
 
+class Silent(LookupError):
+    """A device that may be the Pi (its USB ID) is there, but nothing on it is the link."""
+
+    def __init__(self, why, name):
+        super().__init__(why)
+        self.name = name
+
+
+def silent_note(name, platform=None):
+    """What to tell someone whose Pi is plugged in but silent (once: a cloned pair of
+    headphones is silent too, so it says "if")."""
+    causes = ["the Pi's audiolink isn't running (audiolink logs --pi PI, over the network)",
+              "it's still starting, or stuck: unplug it and plug it back in"]
+    if (platform or sys.platform) == "darwin":
+        causes.insert(0, "macOS hasn't let this program use the microphone: System Settings > Privacy & "
+                         "Security > Microphone, allow the terminal (or app) audiolink host runs in")
+    return "%s is plugged in but isn't sending the link. If it's the Pi: %s" % (name, "; or ".join(causes))
+
+
 def host_buffer_frames(fmt, output):
     """PortAudio's frames per buffer. On macOS its output latency follows it: a whole
     chunk (10 ms) gave ~53 ms (96 kHz x8), 256 frames ~14 ms, about 40 ms less on every
@@ -108,10 +127,11 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
 
     def open_streams():
         portaudio.reinit()
-        why = None
+        why = silent = None
         for out_dev, in_dev, key in find_pairs(out_name, in_name):
             if time.monotonic() - not_the_pi.get(key, -NOT_THE_PI) < NOT_THE_PI:
                 why = why or "%s isn't sending the link (listening again shortly)" % in_dev["name"]
+                silent = silent or in_dev["name"]
                 continue
             ofmt, ifmt = device_formats(out_dev, in_dev)
             # Input first, and only then output, once the Pi is heard on it (hears_the_link)
@@ -122,6 +142,7 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
                     log.debug("audio: %s (%s) isn't sending the link: not the Pi, nothing played to it",
                               in_dev["name"], key)
                     why = "%s isn't sending the link: not the Pi, so nothing is played to it" % in_dev["name"]
+                    silent = silent or in_dev["name"]
                     inp.close()
                     continue
                 out = portaudio.Stream(out_dev, True, ofmt.rate, ofmt.channels, host_buffer_frames(ofmt, True))
@@ -130,6 +151,8 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
                 raise
             break
         else:
+            if silent:
+                raise Silent(why, silent)
             raise LookupError(why or "no Pi audio device found")
         link.set_format(ofmt)               # what this side sends in
         log.debug("audio out: %s [%s], %r", out_dev["name"], out_dev["hostapi"], ofmt)
@@ -213,11 +236,14 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
                 pass
 
     def supervisor():
-        waiting = False
+        waiting = told_silent = False
         while True:
             try:
                 out, inp, fmts = open_streams()
             except (LookupError, portaudio.PortAudioError) as e:
+                if isinstance(e, Silent) and not told_silent and not expected():
+                    log.info("%s", silent_note(e.name))     # the real reason, once (-v has each try)
+                    told_silent = waiting = True
                 if not waiting:
                     log.debug("audio: %s", e)
                     if out_name or in_name:
@@ -227,7 +253,7 @@ def run_portaudio(link, out_name=None, in_name=None, expected=lambda: False):
                     waiting = True
                 time.sleep(2)
                 continue
-            waiting = False
+            waiting = told_silent = False
             run_session(out, inp, fmts)
             link.stats["audio_restarts"] += 1
             time.sleep(1)
