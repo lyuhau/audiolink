@@ -1,10 +1,15 @@
 """audiolink command line.
 
+Start here:
+  audiolink setup                            set up this computer (and the Pi, if it's plugged in)
+  audiolink setup host                       just this computer's host part (exposed ports, autostart)
+  audiolink host                             run the link for the Pi plugged in here (setup can start it at login)
+  audiolink invite NAME [--owner]            a one-use code for another computer: there, audiolink setup --invite CODE
+  audiolink update [IMAGE|--back|--status]   a new version for the plugged-in Pi, over the link
+
 On the computer the Pi is plugged into (the host):
   audiolink host --expose 2222:22            the Pi listens on 2222; connections reach this computer's sshd
   audiolink host --wifi NAME --expose ...    same, after first putting the Pi on Wi-Fi NAME
-  audiolink host --allow 22                  let the Pi's own --forward streams reach local sshd
-  audiolink host --forward 8080:pi-lan:80    tunnel local :8080 to a host on the Pi's side
   audiolink list-devices                     show audio devices (* = the Pi's)
   audiolink wifi                             pick a network for the Pi from a list
   audiolink wifi join NAME                   join (detects the security type, asks only if needed)
@@ -13,22 +18,16 @@ On the computer the Pi is plugged into (the host):
   audiolink wifi check                       exit 0 = Pi online, 3 = sign-in page, 4 = no internet
   audiolink wifi ap [on|off|auto]            the Pi's own setup network (normally automatic)
   audiolink audio [status|sweep|set F|forget] the link's audio format (faster formats = more throughput)
-  audiolink update [IMAGE|--back|--status]   a new version for the plugged-in Pi, over the link
   audiolink logs [FILE] [-n N] [--list]      the plugged-in Pi's logs, over the link
   audiolink shell [-- CMD]                   root shell on the plugged-in Pi (or run CMD there)
-
-Start here:
-  audiolink setup                            set up this computer (and the Pi, if it's plugged in)
-  audiolink setup host                       just this computer's host part (exposed ports, autostart)
+  audiolink settings [KEY=VALUE ...]         the plugged-in Pi's card settings (--pi PI: over the network)
+  audiolink flavor [use NAME]                what the Pi presents on USB, and what it could (add, remove, try)
   audiolink card write [IMAGE] [--wipe]      audiolink onto the Pi's card, keeping its state (macOS)
   audiolink card backup [FILE]               the Pi's whole card to a zip
   audiolink card restore FILE                erase the card and put a backup (card backup) on it
-  audiolink settings [KEY=VALUE ...]         the plugged-in Pi's card settings (--pi PI: over the network)
-  audiolink flavor [use NAME]                what the Pi presents on USB, and what it could (add, remove, try)
 
 Any computer:
   audiolink pis [PI]                         the Pis this computer knows (PI: online?, its list)
-  audiolink invite NAME [--owner]            a one-use code that lets NAME through (or own) your Pi
   audiolink remove NAME                      take NAME off every Pi this computer owns
   audiolink forget PI                        drop a Pi here, and this computer from its list
   audiolink rename PI NEW [--on-pi]          rename here (or on the Pi itself)
@@ -41,7 +40,9 @@ Any computer:
   audiolink update ... --pi PI               over the network (owners)
   audiolink shell PI [-- CMD]                root shell on PI over the network (owners)
 
-Elsewhere:
+Development and the link's own flags:
+  audiolink host --allow 22                  let the Pi's own --forward streams reach local sshd
+  audiolink host --forward 8080:pi-lan:80    tunnel local :8080 to a host on the Pi's side
   audiolink pi --forward 2222:22             (the Pi, started at boot) expose the host's port 22 as Pi port 2222
   audiolink relay --listen HOST:PORT         (a server) the relay Pis and clients meet at
 
@@ -106,10 +107,12 @@ def build_parser():
     stp = sub.add_parser("setup", help="start here: set up this computer (and the Pi, if it's plugged in)",
                          formatter_class=argparse.RawDescriptionHelpFormatter, description=(
                              "Set up this computer, and the Pi if it's plugged in here.\n"
-                             "The Pi plugged in here: adds it, puts it on Wi-Fi, and offers to make this\n"
-                             "computer its host (its ssh reachable through the Pi; --autostart: audiolink host\n"
-                             "started at login) and register it as a client (ssh NAME). Not plugged in here: a client: finds the Pi\n"
-                             "on this network (or takes its connect code) and sets up ssh NAME.\n"
+                             "The Pi plugged in here: claims it (or joins it: --invite), puts it on Wi-Fi, and\n"
+                             "offers to make this computer its host (its ssh reachable through the Pi;\n"
+                             "--autostart: audiolink host started at login) and register it as a client (ssh NAME).\n"
+                             "Not plugged in here: a client: finds the Pi on this network (or through its relay:\n"
+                             "--code), joins it with an invite code (audiolink invite NAME on an owner computer)\n"
+                             "and sets up ssh NAME.\n"
                              "Run it again any time: it shows what's set. Each question has a flag below."))
     stp.add_argument("part", nargs="?", choices=["host"],
                      help="host: only this computer's host part (what it exposes, starting at login)")
@@ -141,8 +144,8 @@ def build_parser():
                     help="don't start audiolink host at login (removes it if set up)")
     stp.add_argument("--code", metavar="CODE", help="the Pi's code (al2-...), if it isn't on this network: "
                      "join through its relay")
-    stp.add_argument("--invite", metavar="CODE", help="the 6-digit invite code (from audiolink invite on an owner "
-                     "computer)")
+    stp.add_argument("--invite", metavar="CODE", help="the 6-digit invite code (from audiolink invite NAME on an owner "
+                     "computer); works with the Pi plugged in here too")
     stp.add_argument("--at", action="append", metavar="ADDRESS", help="the Pi's address, if not found")
     stp.add_argument("--pi", help="which Pi this computer already knows to set up ssh for (see: audiolink pis)")
     stp.add_argument("--card-image", metavar="ZIP",
