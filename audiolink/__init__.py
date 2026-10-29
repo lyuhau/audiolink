@@ -4,7 +4,7 @@ Pure standard-library Python (3.9+). The only native code is the bundled
 PortAudio library, loaded with ctypes on the host side.
 """
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 PROTOCOL_VERSION = 3
 
 # Which build: a hash of the package's files, which build_pyz.py writes into the .pyz
