@@ -77,6 +77,25 @@ class List(unittest.TestCase):
         self.assertFalse(self.id.claimed())
         self.assertEqual(changed, [1])
 
+    def test_identity_deleted_from_the_card_starts_over_like_the_pins(self):   # README: Lost the owner computer
+        import glob
+        self.id.claim(self.desktop, "desktop")
+        self.id.rename("kitchen")
+        pub, name = self.id.public(), self.id.data["name"]
+        self.id.start_over()
+        pins = (self.id.data["name"], self.id.members())
+        self.id.claim(self.desktop, "desktop")
+        self.id.rename("kitchen")
+        for f in glob.glob(str(self.id.path) + "*"):        # identity.json.a, .b (identity.json: older)
+            os.remove(f)
+        from unittest import mock
+        with mock.patch("audiolink.services.identity.board_serial", lambda: self.id.serial):
+            again = IdentityService(self.dir)               # the next boot, on the same board
+        self.assertNotIn(again.public(), (pub, self.id.public()))
+        self.assertEqual((again.data["name"], again.members()), pins)
+        self.assertNotEqual(name, again.data["name"])
+        self.assertFalse(again.claimed())
+
     def test_rename(self):
         self.id.handle("rename", {"name": "Kitchen"})
         self.assertEqual(self.id.pi_name(), "kitchen")

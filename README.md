@@ -34,14 +34,15 @@ client ──Wi-Fi/LAN──► Pi Zero 2 W ──USB audio──► host (audio
 
 ## Quick start: got a ready Pi? Start here
 
-**Start here: `audiolink setup`.** Get audiolink (step 1 below), plug the Pi in, and
+**One command: `audiolink setup`.** Get audiolink (step 1 below), plug the Pi in, and
 run `audiolink setup` on that computer: it installs audiolink somewhere permanent,
 claims the Pi (this computer becomes its first owner), puts it on Wi-Fi, and offers to
 make that computer its host (its ssh reachable through the Pi; then keep `audiolink
 host` running) and to set up `ssh NAME` there. For each other computer, run `audiolink
 invite NAME` on an owner computer (NAME: what to call the other computer; `--owner`
-to make it an owner too): it gives a one-use 6-digit code. Then `audiolink setup` on
-the other computer finds the Pi on the network and asks for the code. Run setup again
+to make it an owner too): it gives a one-use 6-digit code. Then `audiolink setup
+--invite CODE` on the other computer finds the Pi on the network and joins it (plain
+`audiolink setup` asks for the code). Run setup again
 any time to see what's set or change it; `audiolink setup --help` lists a flag for each
 question. The steps below are what it does, by hand.
 
@@ -70,7 +71,7 @@ permanent: the ssh entries from `audiolink ssh-config` run the program from wher
 On a Mac:
 
 ```
-cd ~/Downloads && unzip audiolink-*-macos-*.zip                     # or double-click it (Safari may have)
+cd ~/Downloads && unzip audiolink-VER-macos-arm64.zip               # the file you downloaded; or double-click it
 mkdir -p ~/Applications && mv audiolink ~/Applications/
 xattr -dr com.apple.quarantine ~/Applications/audiolink             # not code-signed yet
 mkdir -p ~/bin && ln -s ~/Applications/audiolink/audiolink ~/bin/   # ~/bin on your PATH, or use the full path
@@ -80,8 +81,9 @@ Without the `xattr`, macOS blocks the first run; allowing it in System Settings 
 Privacy & Security works too. The first run takes a few seconds (macOS checks the new
 files); later ones start at once. To update, replace the folder; the link stays.
 
-On Windows, extract it (Extract All) and run `audiolink.exe setup` from the extracted
-folder: it copies itself to `%LOCALAPPDATA%\Programs\audiolink`. Add that folder to
+On Windows, extract it (Extract All), open PowerShell in the extracted folder
+(right-click it → Open in Terminal, or `cd` there) and run
+`.\audiolink.exe setup`: it copies itself to `%LOCALAPPDATA%\Programs\audiolink`. Add that folder to
 your PATH (Settings: search "environment variables" → Edit environment variables for
 your account → Path), or run `%LOCALAPPDATA%\Programs\audiolink\audiolink.exe`. If
 SmartScreen warns about an unknown publisher, choose "Run anyway".
@@ -103,12 +105,12 @@ comes in from the Pi. The computer has to stay awake (on a Mac:
 `caffeinate -i audiolink host`).
 
 **3. Claim the Pi and put it on Wi-Fi.** A new Pi has no owner. Claiming happens
-only over USB, through `audiolink setup` on the computer it's plugged into (`setup
---no-wifi --no-host --no-client` does just that, and asks for the Pi's name). Then, in another
-terminal on the same computer:
+only over USB, through `audiolink setup` on the computer it's plugged into. Leave
+`audiolink host` running in its window and, in a second terminal on that computer:
 
 ```
-audiolink wifi                     # pick a network from a list; asks for its password
+audiolink setup --no-wifi --no-host --no-client    # claims it, and asks for the Pi's name
+audiolink wifi                                     # pick a network from a list; asks for its password
 ```
 
 The Pi uses 2.4 GHz networks. If a network needs a sign-in page (hotels, cafés),
@@ -123,7 +125,7 @@ audiolink invite desktop --owner   # an owner too: manages the Pi, invites other
 
 Each gives a one-use 6-digit code (5 minutes, 3 tries). On the other computer, on the
 same network as the Pi (or on its setup network, see *Troubleshooting*): `audiolink
-setup`, which finds the Pi and asks for the code. Not on the same network: `audiolink
+setup --invite CODE`, which finds the Pi and joins it. Not on the same network: `audiolink
 setup --code al2-...`, with the Pi's code from `audiolink pis NAME` on a computer that
 has it; it joins through the relay. The Pi's code only finds and identifies the Pi:
 without an invite it lets nobody in.
@@ -359,6 +361,12 @@ put a version on them ("the Pi's card has no image slots yet"). Once, per Pi:
      $HOME\settings.txt`, then `Expand-Archive -Force audiolink-pi-VER.zip
      -DestinationPath E:\`, then `Copy-Item $HOME\settings.txt E:\settings.txt`.
 
+   If the card already has image slots (folders `a/` and `b/`: written by v0.14 or
+   later), delete its `a/` folder first: the zip's version goes in `a/` and boots
+   from then on, and unzipping over an `a/` that's there would mix the two versions'
+   files (the Pi may be running that one, with nothing to fall back to) and leave its
+   old `a/.image.json` naming the old version.
+
    Then delete `audiolink/audiolink.pyz` from the card if it's there (code sent by an
    older `audiolink update`, which would run instead of the new version's). The card's
    `config.txt` now boots `a/` (`os_prefix=a/`); the old version's files at the top
@@ -413,7 +421,8 @@ blank one in a reader.
 **Elsewhere than macOS**, by hand with a card reader: to back the card up, copy its
 files to a folder (the over-the-link backup above works on any OS); to write a blank
 card, *Where card images come from*; to put a new version on a used card keeping its
-state, the by-hand steps in *Upgrading from v0.13.1 or earlier*; to restore, format the
+state, the by-hand steps in *Upgrading from v0.13.1 or earlier* (on a card with
+image slots, delete its `a/` first, as they say); to restore, format the
 card and copy the files back.
 
 ## Commands
@@ -493,8 +502,9 @@ acts when you let go. Shorted while the Pi starts, it runs the version's own cod
 - **"Only an owner of NAME can do that."** This computer is a user, or not on the
   list (a host that isn't an owner still carries the link and its exposed ports). On
   an owner computer: `audiolink invite NAME --owner`; then `audiolink setup --invite
-  CODE` here, with the Pi on its network rather than plugged in here (setup redeems
-  invites over the network only).
+  CODE` here. That works with the Pi plugged in here too, but the invite still goes
+  over the network: the Pi has to be on this computer's network, its setup network,
+  or reachable through its relay.
 - **Lost the owner computer.** Another owner can take it off: `audiolink remove NAME`.
   If it was the only owner, the Pi still lets everyone on its list through, but nobody
   can manage it any more (`audiolink pis PI` warns while there's only one: invite a
@@ -503,7 +513,11 @@ acts when you let go. Shorted while the Pi starts, it runs the version's own cod
   plugged into, put it on Wi-Fi, and invite the others again; on each of them,
   `audiolink forget OLDNAME` first. ssh asks once more about the host key (the entry
   is filed under the Pi's new key); remove the old block from `~/.ssh/config` if setup
-  points one out.
+  points one out. Instead of the pins, with the card in a card reader: delete
+  `audiolink/identity.json.a` and `audiolink/identity.json.b` (and
+  `audiolink/identity.json`, if there) from the card. The Pi starts over the same way
+  (new key and code, no owner, its default name), but keeps its saved Wi-Fi, flavor
+  and code.
 - **A new version broke it.** One that doesn't reach its computer or relay within 5
   minutes goes back by itself (its logs: `audiolink logs prev/audiolink.log`). One that
   does but misbehaves: `audiolink update --back` (tried too: if the version before
