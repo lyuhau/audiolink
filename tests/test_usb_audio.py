@@ -90,9 +90,12 @@ class ExtraIds(unittest.TestCase):
         self.save(["1209:0001"])
         usb_audio.set_extra_ids(["1209:abcd"])
         self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS | {self.FORK, (0x1209, 1)})
-        a = SimpleNamespace(usb_ids=["1209:abcd", "1209:0001"])
-        self.assertEqual(config.apply(a).usb_ids, ["1209:0001", "1209:abcd"])
-        self.assertEqual(config.apply(SimpleNamespace(usb_ids=None)).usb_ids, ["1209:0001"])
+        a = SimpleNamespace(usb_ids=["1209:abcd"])                      # only the flag's: host.json's are read live
+        self.assertEqual(config.apply(a).usb_ids, ["1209:abcd"])
+        self.assertEqual(config.apply(SimpleNamespace(usb_ids=None)).usb_ids, [])
+        usb_audio.set_extra_ids(config.apply(SimpleNamespace(usb_ids=None)).usb_ids)
+        self.save([])                                                   # removed from host.json: gone, no restart
+        self.assertEqual(usb_audio.known_ids(), usb_audio.USB_IDS)
 
     def test_added_while_running(self):
         """audiolink flavor: the running host finds the Pi as its new flavor too."""
@@ -114,6 +117,21 @@ class ExtraIds(unittest.TestCase):
                 svc.handle("add", bad)
         with self.assertRaisesRegex(ValueError, "does not support"):
             svc.handle("remove", {"ids": ["1209:abcd"]})
+
+    def test_saved_ones_are_capped(self):
+        """A Pi can't grow host.json without end: the most recently told stay."""
+        from audiolink.host import config
+        svc = usb_audio.UsbIds()
+        for n in range(config.MAX_USB_IDS + 4):
+            svc.handle("add", {"ids": ["1209:%04x" % n]})
+        svc.handle("add", {"ids": ["1209:0004"]})                       # told again: the most recent now
+        saved = config.load()["usb_ids"]
+        self.assertEqual(len(saved), config.MAX_USB_IDS)
+        self.assertEqual(saved[0], "1209:0005")
+        self.assertEqual(saved[-2:], ["1209:%04x" % (config.MAX_USB_IDS + 3), "1209:0004"])
+        mtime = os.stat(config.path()).st_mtime_ns
+        self.assertEqual(config.remember_usb_ids(["1209:0004"]), [])     # nothing new, same order: not written
+        self.assertEqual(os.stat(config.path()).st_mtime_ns, mtime)
 
     def test_flag_and_config_values(self):
         import argparse

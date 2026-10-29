@@ -297,6 +297,8 @@ def build_parser():
                      help="see above")
     flv.add_argument("arg", nargs="?", metavar="NAME|FILE", help="the flavor (use, remove) or its file (add, try)")
     flv.add_argument("--name", help="add: its name on the Pi (default: the file's)")
+    flv.add_argument("--anyway", action="store_true",
+                     help="use, try: even if the computer the Pi is plugged into runs an older audiolink")
     crd.add_argument("--pi", help="backup: over the network, from this Pi (name, code or address)")
     for p in (upd, lg, sh, stg, crd, flv):
         if p is not sh and p is not crd:

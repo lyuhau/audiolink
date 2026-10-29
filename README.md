@@ -275,18 +275,25 @@ the Pi keeps the new flavor once this computer's link comes back on it, within a
 minute, or else goes back to the one it was by itself. A kept `use` is the Pi's
 `flavor` setting from then on; `try` lasts until the Pi restarts. Over the network
 (`--pi PI`) a computer must be plugged into the Pi to confirm a switch; without one,
-`audiolink settings flavor=NAME --pi PI --reboot` changes it unchecked. The reset pins
-(5 s) bring the default flavor back.
+`audiolink settings flavor=NAME --pi PI --reboot` changes it unchecked (to one the Pi
+has). The reset pins (5 s) bring the default flavor back.
 
-The computer that adds or switches to a flavor learns its USB ID (`host.json`'s
-`usb_ids`), so it keeps finding the Pi; other computers learn it from the Pi when
-they reach it over the network. A flavor is a TOML file (pi-gadget-kit's README:
+The Pi tells the computer it's plugged into a flavor's USB ID before switching to it,
+and every flavor's whenever that computer's link comes up or a flavor is added, so it
+finds the Pi as whichever it starts as. The computer saves them at once in `host.json`'s
+`usb_ids` (the 32 most recent; a switch that goes back leaves its ID there), and a
+running `audiolink host` reads that again when it changes. The computer that adds a
+flavor saves its ID too; others learn the one the Pi is in when they reach it over the
+network. A computer with an older audiolink can't be told: `use` and `try` refuse then
+(update it first, or `--anyway` if it finds the Pi already). A flavor is a TOML file (pi-gadget-kit's README:
 *Hand-written devices*), written by hand or made from a real device:
 
 1. Capture it with `capture_usb.py` (the usb-capture project) into `capture.json`.
 2. `python3 platform/capture_to_toml.py capture.json -o config/flavors/local/NAME.toml`
-   (`config/flavors/local/` is gitignored: a clone stays yours). It writes
-   `extras = false`, so the clone is exact, and checks that it plans like the capture.
+   (pi-gadget-kit's, here at `platform/`; `config/flavors/local/` is gitignored: a clone
+   stays yours). It needs Python 3.11+ or `tomli` (macOS's `/usr/bin/python3` is 3.9:
+   `pip install tomli` for it, or use a newer Python). It writes `extras = false`, so
+   the clone is exact, and checks that it plans like the capture.
 3. `audiolink flavor try config/flavors/local/NAME.toml`, then `flavor add` it.
 
 A built-in flavor (shipped with every version, generic, never a clone of a product):

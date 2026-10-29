@@ -2,11 +2,13 @@
 the Pi presents on USB (services/flavor.py; docs/flavors-plan.md).
 
 `use` and `try` are kept only once a computer's USB link comes back on the new device;
-otherwise the Pi goes back by itself. The command waits and says which happened. This
-computer learns the flavor's USB ID first (the running host, and host.json once kept or
-added), so it keeps finding the Pi; the Pi also tells the host it's plugged into before
-it switches (services/flavor.py), which is how that one learns it over the network (--pi).
-There must be a computer plugged into the Pi to confirm a switch. Owners only.
+otherwise the Pi goes back by itself. The command waits and says which happened. The
+host the Pi is plugged into learns the flavor's USB ID before it switches: this command
+tells it when that's this computer's, and the Pi tells it too (services/flavor.py), which
+is how it learns it over the network (--pi). It saves it in host.json then, whether the
+switch is kept or not. A host from before that can't be told: use and try refuse then,
+unless --anyway. `add` saves the ID here (and the Pi tells its host). There must be a
+computer plugged into the Pi to confirm a switch. Owners only.
 """
 import os
 import re
@@ -46,16 +48,22 @@ def flavor_command(a):
         entry = next((f for f in info["flavors"] if f["name"] == a.arg), None)
         if entry is None:
             raise SystemExit("No flavor %s on the Pi (audiolink flavor lists them)" % a.arg)
+        older_host(a, info, net, a.arg, entry["usb"])
         if not net:
             teach_host([entry["usb"]], port)
         warn_accessory()
         r = call("flavor.use", {"name": a.arg})
         if r.get("unchanged"):
             print("The Pi is %s already" % a.arg)
+            if r.get("unsaved"):
+                raise SystemExit(unsaved(a.arg, r["unsaved"], net))
             return
         return follow(call, r, net, port, keep=entry["usb"])
     if action == "try":
-        r = call("flavor.try", {"toml": read_toml(a.arg)})
+        toml = read_toml(a.arg)
+        from ..services.flavor import describe
+        older_host(a, info, net, "the tried flavor", describe(a.arg)["usb"])
+        r = call("flavor.try", {"toml": toml})
         for n in r.get("notes") or []:
             print("Note: %s" % n)
         if not net:
@@ -65,6 +73,25 @@ def flavor_command(a):
     raise SystemExit("audiolink flavor: list, use NAME, add FILE, remove NAME or try FILE")
 
 
+def older_host(a, info, net, name, usb):
+    """A host from before usb_ids can't be told the new ID, so it likely won't find the Pi
+    as it, and the switch goes back a minute later: refuse, unless --anyway."""
+    from ..wire.usb_audio import USB_IDS, parse_id
+    if (getattr(a, "anyway", False) or not info.get("usb_peer") or info.get("usb_learns", True) or not usb
+            or parse_id(usb) in USB_IDS):
+        return
+    who = ("The computer the Pi is plugged into runs an older audiolink" if net else
+           "This computer's audiolink host is older than this command")
+    raise SystemExit("%s: it may not find the Pi as %s (USB %s), and the Pi would go back. %s first; or, if "
+                     "it finds it anyway (audiolink host --usb-id %s): add --anyway"
+                     % (who, name, usb, "Update it" if net else "Restart it (audiolink host)", usb))
+
+
+def unsaved(name, why, net):
+    return ("The Pi is %s until it restarts: it couldn't save that in settings.txt (%s). To keep it: "
+            "audiolink settings flavor=%s%s" % (name, why, name, " --pi PI" if net else ""))
+
+
 def read_toml(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -72,8 +99,9 @@ def read_toml(path):
     except (OSError, UnicodeDecodeError) as e:
         raise SystemExit("Can't read %s (%s)" % (path, e))
     if path.lower().endswith(".json") or text.lstrip().startswith("{"):     # usb-capture's
-        raise SystemExit("%s is a capture, not a flavor: convert it first: platform/capture_to_toml.py %s -o %s.toml"
-                         % (path, path, name_of(path)))
+        raise SystemExit("%s is a capture, not a flavor: convert it first with pi-gadget-kit's capture_to_toml.py "
+                         "(in audiolink's repo: platform/capture_to_toml.py; Python 3.11+ or tomli): "
+                         "capture_to_toml.py %s -o %s.toml" % (path, path, name_of(path)))
     return text
 
 
@@ -130,7 +158,8 @@ def remember(ids, port, net):
 
 def follow(call, r, net, port, keep):
     """Wait for the switch r (the Pi's reply) to end; say how. keep: the USB ID to
-    remember once kept (a try's too: a restarted host still finds the Pi as it)."""
+    remember here once kept (over the network, this computer isn't the one plugged in;
+    a try's too: a restarted host still finds the Pi as it)."""
     name = "the tried flavor" if r["name"] == "try" else r["name"]
     if r.get("wait"):
         print("Waiting %ds first: the Pi's USB was re-presented just before" % r["wait"])
@@ -154,6 +183,8 @@ def follow(call, r, net, port, keep):
             remember([keep], port, net)
         if r["name"] == "try":
             print("Until the Pi restarts (to keep one: audiolink flavor add FILE, then use)")
+        elif seen.get("unsaved"):
+            raise SystemExit(unsaved(name, seen["unsaved"], net))
         else:
             print("The Pi starts as %s from now on" % name)
         return
