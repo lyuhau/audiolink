@@ -181,6 +181,30 @@ class AddOverNetwork(unittest.TestCase):
         self.assertEqual(sum(m["key"] == self.key.pub.hex() for m in self.identity.members()), 1)
 
 
+    def test_plugged_in_the_invite_goes_over_the_network(self):    # setup --invite with the Pi on USB
+        entry, _ = keyring.upsert(keyring.code_for(self.identity.public()), name="green-rowan", seen=True)
+        port = self.ep.port
+
+        def reach(e, at=(), busy=None):
+            self.assertEqual(e["code"], entry["code"])
+            c = PiConn("127.0.0.1", port=port)
+            return c, c.hello()
+        a = argparse.Namespace(at=None, invite=self.svc.invite("pc", "owner")["code"], name="green-rowan")
+        with mock.patch.object(pairing, "reach", reach), contextlib.redirect_stdout(io.StringIO()):
+            got = pairing.add_known(entry, a)
+        self.assertEqual(got["role"], "owner")
+        self.assertEqual(self.my_entry()["role"], "owner")
+
+    def test_plugged_in_but_on_no_network(self):
+        entry, _ = keyring.upsert(keyring.code_for(self.identity.public()), name="green-rowan", seen=True)
+        a = argparse.Namespace(at=None, invite="123456", name="green-rowan")
+        with mock.patch.object(pairing, "reach", lambda e, at=(): (None, None)), \
+                mock.patch("audiolink.client.remote.over_relay", lambda pub: (None, "no relay set")):
+            with self.assertRaisesRegex(SystemExit, "Couldn't reach green-rowan over a network to use the "
+                                                    "invite .*setup network"):
+                pairing.add_known(entry, a)
+
+
 class FakeConn:
     """The Pi's view of one pairing attempt; plays the client's part with `code`, and
     offers the key of `seed`."""

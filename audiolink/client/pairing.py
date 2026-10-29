@@ -5,7 +5,8 @@ connection: the reply has its role and the Pi's record), then requests, or `open
 the connection into a stream to a port on the Pi's host.
 Finding Pis: mDNS on the local network, the Pi's setup network (SETUP_ADDR).
 Invites: setup without a Pi on USB finds one here and redeems a 6-digit invite code
-(from `audiolink invite` on an owner computer), carrying this computer's key in.
+(from `audiolink invite` on an owner computer), carrying this computer's key in; with
+the Pi on USB (`setup --invite`), add_known redeems it over the network the same way.
 """
 import hmac
 import json
@@ -325,7 +326,7 @@ def pair(conn, code, key, client_name="audiolink"):
     try:
         ke, ours, theirs = a.finish(bytes.fromhex(str(r["msg"])))
     except (KeyError, ValueError):
-        raise SystemExit("Pairing failed (bad reply from the Pi); retry")
+        raise SystemExit("Joining failed (bad reply from the Pi); retry")
     sealed_key = seal(ke, json.dumps({"key": key.pub.hex()}).encode())
     r = conn.ask({"confirm": ours.hex(), "key": sealed_key.hex()})
     if "error" in r:
@@ -335,13 +336,13 @@ def pair(conn, code, key, client_name="audiolink"):
     except (KeyError, ValueError):
         confirm, sealed = b"", b""
     if not hmac.compare_digest(confirm, theirs):
-        raise SystemExit("Pairing stopped: the other side didn't know the code (wrong Pi, or someone in between)")
+        raise SystemExit("Joining stopped: the other side didn't know the invite code (wrong Pi, or someone in between)")
     payload = open_sealed(ke, sealed)
     if payload is None:
-        raise SystemExit("Pairing failed (unreadable reply); retry")
+        raise SystemExit("Joining failed (unreadable reply); retry")
     result = json.loads(payload)
     if result.get("pub") != conn.pub.hex():
-        raise SystemExit("Pairing stopped: the Pi named another key than its certificate's")
+        raise SystemExit("Joining stopped: the Pi named another key than its certificate's")
     return result
 
 
@@ -461,6 +462,32 @@ def add_through_relay(pi_code, a, ask, key=None):
         result = pair(conn, code, key, client_name=socket.gethostname())
     except (OSError, ValueError):
         raise SystemExit("Lost the Pi while joining; retry")
+    finally:
+        conn.close()
+    return _joined(result, a)
+
+
+def add_known(entry, a, key=None):
+    """Redeem an invite (a.invite) to a Pi this computer has already: the one plugged in
+    here, which USB added without the role the invite gives. Invites go over the network
+    (the Pi's endpoint), so: the Pi on this network or its setup network, else its relay."""
+    from .computer import key as computer_key
+    key = key or computer_key()
+    name = entry["alias"]
+    code = invite_code(a.invite, name)
+    conn, _ = reach(entry, a.at or [])
+    if conn is None:
+        try:
+            return add_through_relay(entry["code"], a, None, key)
+        except SystemExit as e:
+            detail("relay: %s", e.code)
+            raise SystemExit("Couldn't reach %s over a network to use the invite (invites go over the network, "
+                             "not USB): join the network it's on, or its setup network (audiopi-...), and run "
+                             "audiolink setup --invite CODE again" % name)
+    try:
+        result = pair(conn, code, key, client_name=socket.gethostname())
+    except (OSError, ValueError):
+        raise SystemExit("Lost %s (at %s) while joining; retry" % (name, conn.ip))
     finally:
         conn.close()
     return _joined(result, a)
