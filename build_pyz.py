@@ -12,6 +12,7 @@ GitHub repo it's built from (a fork's own), whose releases it downloads (card.re
 """
 import hashlib
 import os
+import sys
 import zipfile
 from pathlib import Path
 
@@ -42,6 +43,10 @@ def stamp(bid):
     """audiolink/_build.py's text: the build id, and the repo (GITHUB_REPOSITORY, else origin's)."""
     from audiolink.card import checkout_repo
     repo = checkout_repo(ROOT)
+    if not repo:
+        from audiolink.card import UPSTREAM
+        print("warning: no GitHub repo for this build (no GITHUB_REPOSITORY, origin isn't a GitHub URL):"
+              " it will download %s's release images" % UPSTREAM, file=sys.stderr)
     return 'BUILD = "%s"\n' % bid + ('REPO = "%s"\n' % repo if repo else "")
 
 

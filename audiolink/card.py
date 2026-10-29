@@ -173,16 +173,16 @@ def fetch_image(runner, folder, version=__version__, give="audiolink setup --car
     status, out = runner.run(["curl", "-fsSL", "--retry", "2", "-o", str(sums),
                               release_url("SHA256SUMS", version)], timeout=60)
     if status:
-        raise CardError("Couldn't get the card image for audiolink %s from the release (%s); give one: "
-                        "%s" % (version, (out.strip().splitlines() or ["no answer"])[-1], give))
+        raise CardError("Couldn't get the card image for audiolink %s from %s's release (%s); give one: "
+                        "%s" % (version, repo(), (out.strip().splitlines() or ["no answer"])[-1], give))
     want = next((ln.split()[0] for ln in sums.read_text().splitlines() if ln.split()[-1:] == [name]), None)
     if not want:
-        raise CardError("audiolink %s's release has no %s; give one: %s" % (version, name, give))
+        raise CardError("%s's audiolink %s release has no %s; give one: %s" % (repo(), version, name, give))
     if not (zpath.exists() and sha256(zpath) == want):
         status, out = runner.run(["curl", "-fsSL", "--retry", "2", "-o", str(zpath) + ".part",
                                   release_url(name, version)], timeout=900)
         if status:
-            raise CardError("Couldn't download %s: %s" % (name, out.strip()))
+            raise CardError("Couldn't download %s from %s's release: %s" % (name, repo(), out.strip()))
         os.replace(str(zpath) + ".part", str(zpath))
         if sha256(zpath) != want:
             zpath.unlink()

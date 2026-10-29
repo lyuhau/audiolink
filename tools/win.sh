@@ -8,6 +8,8 @@
 #   tools/win.sh sync                   copy only
 # Windows folder: AUDIOLINK_WIN_DIR (default %USERPROFILE%\dev\audiolink-win).
 set -e
+case "${1:-}" in sync|test|build|run) ;; -h|--help) sed -n '2,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    *) sed -n '2,9s/^# \{0,1\}//p' "$0" >&2; exit 2 ;; esac
 cd "$(dirname "$0")/.."
 WINHOME=$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')")
 DIR=${AUDIOLINK_WIN_DIR:-$WINHOME/dev/audiolink-win}
@@ -27,5 +29,4 @@ case "${1:-}" in
         "$UV" run $PY --with pyinstaller python build_bin.py
         mkdir -p "$OLDPWD/dist" && cp dist/audiolink-windows-x64.zip "$OLDPWD/dist/" ;;
     run) shift; exec "$UV" run $PY python -m audiolink "$@" ;;
-    *) sed -n '2,9p' "$OLDPWD/tools/win.sh" >&2; exit 2 ;;
 esac

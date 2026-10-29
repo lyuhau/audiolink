@@ -626,22 +626,39 @@ Code layout: `audiolink/{wire, session.py, services, host, client, relay}`;
 
 `make help` lists the developer commands; each runs one of the scripts below.
 
+`audiolink` from the checkout (Python 3.9+, no install): `python3 . ARGS` in its
+root (`python3 PATH/TO/audiolink ARGS` from elsewhere), `python3 -m audiolink ARGS`
+in its root, or `python3 dist/audiolink.pyz ARGS` after `make pyz`. Below,
+`audiolink` means any of them.
+
 First time, in order:
 1. `git submodule update --init` (or clone with `--recursive`): the platform, `platform/`.
-2. `make modules`: its prebuilt gadget kernel modules (once).
-3. `ssh-keygen -t ed25519 -f keys/id_ed25519 -N ''`: the dev card's SSH key
+2. Python 3.11+ for card builds (the platform reads TOML), or 3.9+ with `tomli`
+   (macOS's `/usr/bin/python3` is 3.9): `PYTHON=python3.12 make card`, or
+   `PLATFORM_PYTHON=`, or a `platform/.venv` (used first).
+3. `make modules`: its prebuilt gadget kernel modules (once).
+4. `ssh-keygen -t ed25519 -f keys/id_ed25519 -N ''`: the dev card's SSH key
    (`config/pi.toml` builds `keys/id_ed25519.pub` in).
-4. `make card`: the dev card, `build/card-pi/`. Onto the Pi's card once with
-   `audiolink card write build/card-pi`; after that, the table below.
+5. `make card`: the dev card, `build/card-pi/`. Onto the Pi's card once with
+   `python3 . card write build/card-pi`; after that, the table below.
 
 ```
 make pyz            # dist/audiolink.pyz (python3 build_pyz.py)
 make app            # dist/audiolink-OS-ARCH.zip for this OS (needs pyinstaller)
 make test           # the tests in parallel (tools/test.py); serially: python3 -m unittest discover -s tests -t .
+make check-push     # before every push: platform/'s pinned commit is on GitHub
 make card           # the dev card image, build/card-pi/
 make release-card   # the release card image and its zip, as CI makes them
 make deploy         # build/card-pi onto a dev Pi without image slots, over ssh
+make hot            # just the current code onto the running dev Pi, no reboot
+make smoke          # end-to-end check of the host daemon and the Pi
+make relay-deploy   # the current code onto the relay server
 ```
+
+**Push pi-gadget-kit first, every time.** `platform/` pins a pi-gadget-kit commit; if
+audiolink reaches GitHub before it, fresh clones, CI (`platform-pin`) and the release
+workflow's card can't fetch it. Push the platform's commit, then audiolink
+(`make check-push` checks).
 
 Make stops at images and the dev Pi: putting an image on a card is `audiolink card`.
 
@@ -698,7 +715,7 @@ version (`audiolink update`) or deleting that file from the card drop it. `audio
 card write` removes it too, unless `--keep-update`.
 
 **Keys** (`keys/`, never committed):
-- `id_ed25519`: SSH into dev cards (first time, step 3).
+- `id_ed25519`: SSH into dev cards (first time, step 4).
 - `relay.crt`, `relay.key`: the relay's certificate, made once:
   `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout keys/relay.key -out keys/relay.crt -days 36500 -subj "/CN=relay.lyuhau.com"`.
   Clients and Pis pin it: `PIN` in `audiolink/relay/__init__.py` is the sha256 of
@@ -732,8 +749,8 @@ clients and Pis first, then swap it.
    A changed `config/pi-release.packages.lock` goes in a commit first: the release
    workflow refuses a card whose packages differ from it (Alpine moved on; rebuild,
    review the diff, try the card).
-3. Push the pi-gadget-kit commit `platform/` points at (CI checks the submodule out
-   from GitHub), then `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+3. Push the pi-gadget-kit commit `platform/` points at first (`make check-push`), then
+   `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 4. Check the release's files: the macOS and Windows zips, the `.pyz`, the card
    (`audiolink-pi-VER.zip`, with its `.manifest`: also what `audiolink update`
    sends to a Pi) and `SHA256SUMS`. Unzip the card onto a microSD card and boot a
@@ -750,12 +767,18 @@ What a fork changes (the tests follow the USB ID and the relay from these files)
 - **Relay**: `audiolink/relay/__init__.py` (`DEFAULT`, `PIN`) and
   `config/pi-release.toml` (`[app.settings.relay]` default; a test checks it's `DEFAULT`).
   Your own: its certificate with your host as the CN and its pin (*Keys*);
-  `tools/relay_deploy.sh` deploys to `DEFAULT`'s host. None: `"off"` in both places.
+  `tools/relay_deploy.sh` deploys to `DEFAULT`'s host and port. None: `"off"` in both
+  places.
 - **Release images**: nothing to change. A build names the repo it's built from
   (`GITHUB_REPOSITORY` in the release workflow, else `origin`'s GitHub URL;
   `audiolink/card.py` `repo()`), and `audiolink setup`, `card write` and `update`
-  download that repo's releases. Publish them with a tag (*Release*).
+  download that repo's releases (a build that finds none warns, and falls back to
+  upstream's). Publish them with a tag (*Release*).
 - **Keys**: `keys/` is never committed: make your own (*Keys*).
+- **The platform**, if you fork pi-gadget-kit too: `.gitmodules` (`url`, then
+  `git submodule sync`) and, for your own prebuilt modules, its
+  `alpine-module/fetch.sh` (the default `MODULES_URL`: the release it downloads the
+  prebuilt modules from, upstream's; `MODULES_URL=` overrides it once).
 
 ## License
 

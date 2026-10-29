@@ -18,6 +18,7 @@ CARD=build/card-pi
 RELEASE= REBOOT=1 MODE=all
 for a in "$@"; do
     case "$a" in
+    -h|--help) sed -n '2,13s/^# \{0,1\}//p' "$0"; exit 0 ;;
     --release) RELEASE=1 ;;
     --firmware) MODE=firmware ;;
     --no-reboot) REBOOT= ;;
