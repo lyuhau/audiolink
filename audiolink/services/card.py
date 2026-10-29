@@ -7,7 +7,7 @@ are ~85 MB), and the host reads it in pieces; it's removed when the host is done
 by the next backup. Settings: settings.txt on the card, as anyone with the card could
 edit it; the platform reads it at boot, so changes take effect then. Values are
 checked like the platform does (pi-gadget-kit image/settings.sh), against the keys
-the image has (/etc/usb-gadget/settings.keys).
+the image has (/etc/usb-gadget/settings.keys); `flavor` against the flavors the Pi has.
 
 Owners only, over USB or the network (endpoint "card").
 """
@@ -68,6 +68,7 @@ class CardService(Service):
         self.reboot = reboot or (lambda: subprocess.run(["reboot"]))
         self.lock = threading.Lock()
         self.job = {"state": "none"}                # the backup being made: running, done (its size, sha256) or error
+        self.flavors = None                         # -> the flavors there are (services/flavor.py sets it)
         if endpoint:
             endpoint.register("card", lambda conn, req: {"result": self.handle(req.get("action"), req)}, OWNER)
 
@@ -174,6 +175,9 @@ class CardService(Service):
                 clean[key] = None if value is None else check(kinds[key], str(value))
             except ValueError as e:
                 raise ValueError("%s: %s" % (key, e))
+            there = self.flavors() if kinds[key] == "flavor" and clean[key] and self.flavors else None
+            if there and clean[key] not in there:       # the Pi would start as the default instead
+                raise ValueError("%s: no flavor %s on the Pi; there's %s" % (key, clean[key], ", ".join(there)))
         lines = self._text().splitlines()
         for key, value in clean.items():
             mine = [i for i, l in enumerate(lines) if (LINE.match(l) or [None] * 3)[2] == key and not l.startswith("#")]

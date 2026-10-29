@@ -224,6 +224,8 @@ class Switching(Base):
     def setUp(self):
         super().setUp()
         self.svc.handle("add", {"name": "gamebuds", "toml": CLONE})
+        self.assertEqual(self.told, [("usb_ids.add", {"ids": ["1038:230a"]}, 0)])    # added: its host learns it
+        self.told.clear()
 
     def test_kept_once_the_link_comes_back(self):
         self.link_comes_back()
@@ -322,6 +324,67 @@ class Switching(Base):
         time.sleep(2)                                               # past the confirm time: no second revert
         self.assertEqual(self.uses, ["gamebuds", "audiolink"])
 
+    def test_reset_pins_while_a_switch_waits_for_the_device(self):
+        """The pins take formats.lock while the switch waits for it: whichever goes first,
+        the default is up after, with no switch file left."""
+        self.formats.lock.acquire()
+        self.svc.handle("use", {"name": "gamebuds"})
+        sw = self.svc.switch
+        self.assertTrue(wait(lambda: (self.dir / "switch.json").exists()))
+        time.sleep(0.2)                                             # at formats.lock
+        pins = threading.Thread(target=self.svc.to_default)
+        pins.start()
+        time.sleep(0.2)
+        self.formats.lock.release()
+        pins.join(5)
+        time.sleep(2)                                               # past the confirm time
+        self.assertEqual(sw["state"], "cancelled")
+        self.assertEqual(self.svc.running(), "audiolink")
+        self.assertIn(self.uses, ([], ["gamebuds", "audiolink"]))
+        self.assertFalse((self.dir / "switch.json").exists())
+
+    def test_try_isnt_a_name_to_use(self):
+        with self.assertRaisesRegex(ValueError, "try is a tried flavor's"):
+            self.svc.handle("use", {"name": "try"})
+
+    def test_kept_but_not_saved(self):
+        set_ = self.card.handle
+        self.card.handle = lambda op, args: (_ for _ in ()).throw(OSError("read-only")) if op == "set" else set_(op, args)
+        self.link_comes_back()
+        sw = self.finished(self.svc.handle("use", {"name": "gamebuds"}))
+        self.assertEqual((sw["state"], sw["unsaved"]), ("kept", "read-only"))
+
+
+class LinkUp(Base):
+    """Whenever a host's link comes up, the Pi tells it every flavor's USB ID."""
+
+    def test_told_every_flavor(self):
+        for n in range(flavor.TELL_MAX + 2):
+            (self.dir / "card" / "flavors").mkdir(exist_ok=True)
+            (self.dir / "card" / "flavors" / ("f%02d.toml" % n)).write_text(CLONE.replace("0x230a", "0x%04x" % n))
+        self.card.handle("set", {"changes": {"flavor": "f05"}})
+        self.svc.on_peer_hello({"role": "host"})
+        self.assertTrue(wait(lambda: self.told))
+        ids = self.told[0][1]["ids"]
+        self.assertEqual(len(ids), flavor.TELL_MAX)
+        self.assertEqual(ids[:2], ["1038:0005", "1038:0000"])            # its choice first; never the built-in one
+        self.assertEqual(self.svc.listing()["usb_learns"], True)
+
+    def test_a_host_from_before(self):
+        self.host_caps = []
+        self.svc.handle("add", {"name": "gamebuds", "toml": CLONE})
+        self.svc.on_peer_hello({"role": "host"})
+        time.sleep(0.2)
+        self.assertEqual(self.told, [])
+        self.assertEqual(self.svc.listing()["usb_learns"], False)
+
+    def test_the_card_setting_is_one_there_is(self):
+        self.svc.handle("add", {"name": "gamebuds", "toml": CLONE})
+        with self.assertRaisesRegex(ValueError, "flavor: no flavor nope on the Pi; there's audiolink, gamebuds"):
+            self.card.handle("set", {"changes": {"flavor": "nope"}})
+        self.card.handle("set", {"changes": {"flavor": "gamebuds"}})
+        self.assertIn("flavor = gamebuds", self.settings())
+
 
 class Command(Base):
     """`audiolink flavor` (host/flavor_cli.py) against the service above."""
@@ -347,9 +410,10 @@ class Command(Base):
         except ValueError as e:                 # as control.call and NetCaller say it
             raise SystemExit(str(e))
 
-    def command(self, action=None, arg=None, name=None):
+    def command(self, action=None, arg=None, name=None, anyway=False):
         out = io.StringIO()
-        a = SimpleNamespace(action=action, arg=arg, name=name, pi="kitchen" if self.net else None, control_port=None)
+        a = SimpleNamespace(action=action, arg=arg, name=name, pi="kitchen" if self.net else None, control_port=None,
+                            anyway=anyway)
         with contextlib.redirect_stdout(out):
             try:
                 self.cli.flavor_command(a)
@@ -402,7 +466,7 @@ class Command(Base):
         self.assertIn("  - gamebuds has no audio both ways (the link runs over it)\n(audiolink logs)", out)
         self.host_caps = []                                         # a host from before: likeliest first
         self.assertIn("Likely:\n  - this computer's audiolink host doesn't find the Pi as 1038:230a (it's older",
-                      self.command("use", "gamebuds"))
+                      self.command("use", "gamebuds", anyway=True))
         self.assertIn("EXIT No flavor nope", self.command("use", "nope"))
         self.assertIn("The Pi is audiolink already", self.command("use", "audiolink"))
 
@@ -420,12 +484,13 @@ class Command(Base):
         cap = str(self.dir / "GameBuds.json")
         Path(cap).write_text('{"devices": []}')
         for action in ("add", "try"):
-            self.assertIn("EXIT %s is a capture, not a flavor: convert it first: platform/capture_to_toml.py %s "
-                          "-o gamebuds.toml" % (cap, cap), self.command(action, cap))
+            self.assertIn("EXIT %s is a capture, not a flavor: convert it first with pi-gadget-kit's "
+                          "capture_to_toml.py (in audiolink's repo: platform/capture_to_toml.py; Python 3.11+ or "
+                          "tomli): capture_to_toml.py %s -o gamebuds.toml" % (cap, cap), self.command(action, cap))
         self.assertEqual(self.uses, [])
 
     def test_a_chosen_flavor_that_isnt_there(self):
-        self.card.handle("set", {"changes": {"flavor": "typo"}})
+        (self.dir / "card" / "settings.txt").write_text("flavor = typo\n")         # edited by hand
         self.assertIn("Flavor: audiolink (settings.txt's flavor = typo: there's no such flavor, so it starts as "
                       "audiolink)", self.command())
 
@@ -440,6 +505,28 @@ class Command(Base):
         self.assertIn("The Pi is gamebuds now: the new file shows when it next starts, unchecked (to check it "
                       "first: audiolink flavor try %s)" % (self.dir / "gamebuds.toml"), out)
         self.assertNotIn("Switch:", out)
+
+    def test_an_older_host_cant_be_told(self):
+        self.command("add", str(self.dir / "gamebuds.toml"))
+        self.net, self.host_caps = True, []
+        out = self.command("use", "gamebuds")
+        self.assertIn("EXIT The computer the Pi is plugged into runs an older audiolink: it may not find the Pi as "
+                      "gamebuds (USB 1038:230a), and the Pi would go back. Update it first; or, if it finds it "
+                      "anyway (audiolink host --usb-id 1038:230a): add --anyway", out)
+        self.assertIn("EXIT The computer the Pi is plugged into runs an older", self.command("try", str(self.dir / "gamebuds.toml")))
+        self.assertEqual(self.uses, [])
+        self.link_comes_back()
+        self.assertIn("... kept", self.command("use", "gamebuds", anyway=True))
+        self.link_comes_back()
+        self.assertIn("... kept", self.command("use", "audiolink"))     # built in: every host finds it
+
+    def test_kept_but_not_saved(self):
+        self.command("add", str(self.dir / "gamebuds.toml"))
+        set_ = self.card.handle
+        self.card.handle = lambda op, args: (_ for _ in ()).throw(OSError("read-only")) if op == "set" else set_(op, args)
+        self.link_comes_back()
+        self.assertIn("EXIT The Pi is gamebuds until it restarts: it couldn't save that in settings.txt (read-only). "
+                      "To keep it: audiolink settings flavor=gamebuds", self.command("use", "gamebuds"))
 
     def test_over_the_network_without_a_computer(self):
         self.net = True

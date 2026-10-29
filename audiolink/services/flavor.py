@@ -7,20 +7,25 @@ setting `flavor`, else the image's default) and switches live with `gadget.sh us
 (its README: Flavors).
 
   flavor.list               the flavors; which is up, the default, the card's choice; the
-                            switch under way (or the last one) and whether a computer's
-                            USB link is up to confirm one
+                            switch under way (or the last one); whether a computer's USB
+                            link is up to confirm one, and whether its host can be told a
+                            new USB ID (usb_learns: a host from before can't)
   flavor.add {name, toml}   onto the card, once it plans (the image's planner and options);
                             over the one that's up or chosen: unchecked, from the next start
   flavor.remove {name}      off the card (not the one that's up)
   flavor.use {name}         present it; kept (the card's setting) once a computer's USB link
                             comes back on it within CONFIRM_WITHIN, else back to the one before
+                            (not "try": that's flavor.try's)
   flavor.try {toml}         the same for a file that isn't kept (developers): on the card as
                             try.toml while it's up, never the card's setting
 
 Before it becomes the new device, the Pi tells the host it's plugged into the new USB ID
-(usb_ids.add: wire/usb_audio.py UsbIds; the host saves it), so that host finds it again,
-whoever asked for the switch. A host from before that refuses it, and the switch goes on
-(it may then go back; the switch says so: "host").
+(usb_ids.add: wire/usb_audio.py UsbIds; the host saves it at once, kept or not), so that
+host finds it again, whoever asked for the switch. A host from before that refuses it, and
+the switch goes on (it may then go back; the switch says so: "host"). Changes without a
+switch (the card's setting `flavor`, a flavor added over the one that's up or chosen) are
+covered too: whenever a host's link comes up, and after an add, the Pi tells it every
+flavor's ID (at most TELL_MAX), so it finds the Pi as whichever it starts as next.
 
 Only USB confirms: a flavor changes only USB, so the relay or Wi-Fi coming back proves
 nothing about it. A switch stops the audio, re-presents the device and reads it again
@@ -58,6 +63,7 @@ SWITCH = "/run/audiolink-flavor-switch"         # the switch under way: {name, b
 CONFIRM_WITHIN = 60             # s for a computer's USB link to come back on a new flavor
 REPLY_FIRST = 0.5               # s: let the reply reach the computer before USB goes
 TELL_WITHIN = 5                 # s for the host to take the new USB ID
+TELL_MAX = 8                    # flavors' IDs told at once (wire/usb_audio.py UsbIds.MAX)
 TRY = "try"                     # a tried file's name on the card while it's up
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 MAX_SIZE = 64 * 1024
@@ -159,6 +165,8 @@ class FlavorService(Service):
         self.lock = threading.Lock()
         self.switch = None                      # the switch under way, or the last one
         self.ids = 0
+        if card_settings is not None:           # the card's setting `flavor`: one there is
+            card_settings.flavors = self.names
         if endpoint:
             endpoint.register("flavor", lambda conn, req: {"result": self.handle(req.get("action"), req)}, OWNER)
 
@@ -218,8 +226,12 @@ class FlavorService(Service):
             flavors.append(dict(describe(self.find(TRY)[0]), name=TRY, where="tried"))
         return {"switchable": self.switchable(), "running": running, "default": self.default,
                 "chosen": self.chosen(), "flavors": flavors, "switch": self.switch,
-                "usb_peer": bool(getattr(self, "session", None) and self.session.peer_alive),
+                "usb_peer": self._peer(), "usb_learns": self._peer() and self.session.peer_has("usb_ids"),
                 "confirm_within": self.within}
+
+    def _peer(self):
+        s = getattr(self, "session", None)
+        return bool(s and s.peer_alive)
 
     # ---- requests
     def handle(self, op, args):
@@ -230,7 +242,10 @@ class FlavorService(Service):
         if op == "remove":
             return self.remove(args.get("name"))
         if op == "use":
-            return self.use(check_name(args.get("name")))
+            name = check_name(args.get("name"))
+            if name == TRY:
+                raise ValueError("%s is a tried flavor's: audiolink flavor try FILE" % TRY)
+            return self.use(name)
         if op == "try":
             return self.try_(args.get("toml"))
         return super().handle(op, args)
@@ -287,6 +302,7 @@ class FlavorService(Service):
             existed = bool(self.find(name))
             self._write(name, toml)
         log.info("flavor: %s %s (%s)", "replaced" if existed else "added", name, info["usb"])
+        self.teach_host()                   # whichever it starts as next: its host finds it
         # Replacing the one that's up, or the one it starts as: no trial; it shows at the next start
         return dict(info, name=name, replaced=existed, up=existed and name == self.running(),
                     starts=existed and name == self.chosen())
@@ -327,9 +343,12 @@ class FlavorService(Service):
                 raise ValueError("a switch to %s is under way: wait for it" % self.switch["name"])
             running = self.running()
             if name == running and not tried:
+                out = {"name": name, "unchanged": True}
                 if self.chosen() != (None if name == self.default else name):
-                    self._choose(name)
-                return {"name": name, "unchanged": True}
+                    err = self._choose(name)
+                    if err:
+                        out["unsaved"] = err
+                return out
             back = running if running and running != TRY else (self.chosen() or self.default)
             self.ids += 1
             wait = self.wait()
@@ -352,8 +371,10 @@ class FlavorService(Service):
         return self.use(TRY, tried=info)
 
     # ---- the switch, and its confirmation
-    def _present(self, name):
-        """gadget.sh use NAME, the audio stopped around it -> (exit status, what it said)."""
+    def _present(self, name, still=None):
+        """gadget.sh use NAME, the audio stopped around it -> (exit status, what it said);
+        None if still() (asked under formats.lock, which the reset pins' present takes
+        too) says it's not wanted any more."""
         def change():
             try:
                 p = self.run_cmd(["sh", self.gadget_sh, "use", name], capture_output=True, text=True, timeout=120)
@@ -362,20 +383,35 @@ class FlavorService(Service):
             said = (p.stderr or p.stdout or "").strip().splitlines()
             return p.returncode, said[-1] if said else ""
         with self.formats.lock:
+            if still and not still():
+                return None
             st, said = self.formats.replace_device(change)
         log.log(logging.INFO if st == 0 else logging.WARNING, "flavor: gadget.sh use %s: %s", name,
                 said or "exit status %d" % st)
         return st, said
 
     def _note(self, sw):
-        try:
-            if sw is None:
-                os.remove(self.switch_file)
-            else:
+        """The switch file, for a restarted daemon: sw's, if it's still the switch."""
+        with self.lock:
+            if self.switch is not sw:
+                return
+            try:
                 with open(self.switch_file, "w") as f:
-                    json.dump({"name": sw["name"], "back": sw["back"]}, f)
-        except OSError:
-            pass
+                    json.dump({"id": sw["id"], "name": sw["name"], "back": sw["back"]}, f)
+            except OSError:
+                pass
+
+    def _unnote(self, sw=None):
+        """No switch file (sw: if it's sw's; another switch's stays)."""
+        with self.lock:
+            try:
+                if sw is not None:
+                    with open(self.switch_file) as f:
+                        if json.load(f).get("id") != sw["id"]:
+                            return
+                os.remove(self.switch_file)
+            except (OSError, ValueError, AttributeError):
+                pass
 
     def _run(self, sw, wait, sleep=time.sleep, clock=time.monotonic):
         sleep(max(REPLY_FIRST, wait))
@@ -385,9 +421,14 @@ class FlavorService(Service):
         sw["host"] = self._tell_host(sw.get("usb"))
         log.info("flavor: switching to %s (back to %s unless a computer's USB link comes back on it in %ds)",
                  sw["name"], sw["back"], self.within)
-        st, said = self._present(sw["name"])
+        mine = lambda: self.switch is sw            # noqa: E731
+        done = self._present(sw["name"], still=mine)
+        if done is None:                    # the pins came first: the default's up
+            self._unnote(sw)
+            return
+        st, said = done
         if st != 0:
-            self._note(None)
+            self._unnote(sw)
             self._tidy()
             sw.update(state="refused", error=said or "exit status %d" % st, running=self.running())
             return
@@ -402,17 +443,18 @@ class FlavorService(Service):
             return
         if self._link_back(since):
             if not sw["tried"]:
-                self._choose(sw["name"])
-            self._note(None)
+                err = self._choose(sw["name"])
+                if err:
+                    sw["unsaved"] = err             # kept until it restarts
+            self._unnote(sw)
             self._tidy()
             sw.update(state="kept", running=sw["name"])             # done: tidied first
             log.info("flavor: %s kept: a computer's USB link came back on it", sw["name"])
             return
         log.warning("flavor: no computer's USB link on %s in %ds; back to %s", sw["name"], self.within, sw["back"])
         sleep(self.wait())
-        if self.switch is sw:
-            self._present(sw["back"])
-        self._note(None)
+        self._present(sw["back"], still=mine)
+        self._unnote(sw)
         self._tidy()
         if self.switch is sw:
             sw.update(state="back", running=self.running())
@@ -435,17 +477,54 @@ class FlavorService(Service):
         log.info("flavor: told the host the Pi is about to be %s", usb)
         return "told"
 
+    def ids_to_tell(self):
+        """Every flavor's USB ID but the built-in USB_IDS, the likeliest first: the one
+        that's up, the card's choice, the default, then the rest by name. At most TELL_MAX."""
+        from ..wire.usb_audio import USB_IDS, parse_id         # those every host knows
+        names = [self.running(), self.chosen(), self.default] + self.names()
+        out = []
+        for name in names:
+            found = name and self.find(name)
+            usb = found and describe(found[0])["usb"]
+            if usb and usb not in out and parse_id(usb) not in USB_IDS:
+                out.append(usb)
+        return out[:TELL_MAX]
+
+    def teach_host(self):
+        """Tell the host this Pi is plugged into every flavor's USB ID, so it finds the Pi
+        as whichever it starts as next (a host from before: nothing to tell it)."""
+        s = getattr(self, "session", None)
+        if not (s and s.peer_alive and s.peer_has("usb_ids")):
+            return None
+        ids = self.ids_to_tell()
+        if not ids:
+            return None
+        try:
+            s.request("usb_ids.add", {"ids": ids}, timeout=TELL_WITHIN)
+        except (RuntimeError, TimeoutError, OSError, ValueError) as e:
+            log.warning("flavor: the host didn't take the flavors' USB IDs: %s", e)
+            return "failed"
+        log.debug("flavor: told the host the flavors' USB IDs %s", ", ".join(ids))
+        return "told"
+
+    def on_peer_hello(self, info):
+        if info.get("role") == "host":
+            threading.Thread(target=self.teach_host, name="flavor-teach", daemon=True).start()
+
     def _link_back(self, since):
         """A computer's USB link up again, heard since the new device came up."""
         s = getattr(self, "session", None)
         return bool(s and s.peer_alive and s.link.last_rx > since)
 
     def _choose(self, name):
-        """The card's setting: the Pi starts as NAME (the default: no setting)."""
+        """The card's setting: the Pi starts as NAME (the default: no setting). -> None, or
+        why it couldn't."""
         try:
             self.card_settings.handle("set", {"changes": {"flavor": None if name == self.default else name}})
         except (OSError, ValueError) as e:
             log.warning("flavor: can't keep %s in settings.txt: %s", name, e)
+            return str(e) or type(e).__name__
+        return None
 
     def _tidy(self):
         """A tried file goes once something else is up."""
@@ -464,16 +543,14 @@ class FlavorService(Service):
         except (OSError, ValueError):
             self._tidy()
             return
-        self._note(None)
+        self._unnote()
         if was.get("name") == self.running() and was.get("back") and self.find(str(was["back"])):
             log.warning("flavor: restarted during the switch to %s; back to %s", was["name"], was["back"])
 
             def back():
                 time.sleep(self.wait())
-                with self.lock:
-                    if self._busy():
-                        return
-                self._present(str(was["back"]))
+                # unless a switch or the pins came since
+                self._present(str(was["back"]), still=lambda: self.switch is None and self.running() == was["name"])
                 self._tidy()
             threading.Thread(target=back, name="flavor-back", daemon=True).start()
         else:
@@ -487,10 +564,10 @@ class FlavorService(Service):
             sw, self.switch = self.switch, None
             if sw and sw["state"] in ("waiting", "switching"):
                 sw["state"] = "cancelled"
-        self._note(None)
+        self._unnote()                      # a switch can't write it now: it isn't the switch
         if self.chosen():
             self._choose(self.default)
-        if self.running() != self.default:
+        # Asked under formats.lock: a switch that got there first is up by then
+        if self._present(self.default, still=lambda: self.running() != self.default) is not None:
             log.warning("flavor: the reset pins: back to %s", self.default)
-            self._present(self.default)
         self._tidy()
