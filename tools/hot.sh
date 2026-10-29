@@ -5,6 +5,8 @@
 # need a card (make card; audiolink update build/card-pi). Over Wi-Fi:
 # PI=root@ADDRESS tools/hot.sh
 set -e
+case "$1" in -h|--help) sed -n '2,6s/^# \{0,1\}//p' "$0"; exit 0 ;; esac
+[ $# = 0 ] || { echo "usage: tools/hot.sh (no arguments; PI=root@ADDRESS for another Pi)" >&2; exit 2; }
 PYTHON=${PYTHON:-python3}
 cd "$(dirname "$0")/.."
 PI=${PI:-root@10.55.0.2}

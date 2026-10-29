@@ -1,6 +1,8 @@
 #!/bin/sh
 # Dev: quick end-to-end check of a running host daemon and the Pi behind it (after
 # make hot or audiolink update). No human needed. Exit status: number of failures.
+case "$1" in -h|--help) sed -n '2,3s/^# \{0,1\}//p' "$0"; exit 0 ;; esac
+[ $# = 0 ] || { echo "usage: tools/smoke.sh (no arguments; PI=root@ADDRESS for another Pi)" >&2; exit 2; }
 cd "$(dirname "$0")/.."
 PI=${PI:-root@10.55.0.2}
 SSH="ssh -i keys/id_ed25519 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ConnectTimeout=5"

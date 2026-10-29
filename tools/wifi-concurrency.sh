@@ -15,6 +15,11 @@
 # usual Wi-Fi rather than follow the AP to the new channel. Don't rely on the drag:
 # restart the AP on the new channel, and expect clients to have left.
 # Note: udhcpc on wlan1 overwrites /etc/resolv.conf.
+case "$1" in
+ap_up|ap_down|sta2_up|sta2_start|sta2_down|savekey|drag|monitor|report) ;;
+-h|--help) sed -n '2,17s/^# \{0,1\}//p' "$0"; exit 0 ;;
+*) sed -n '2,9s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+esac
 L=/tmp/exp
 mkdir -p $L
 case "$1" in

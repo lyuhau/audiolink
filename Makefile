@@ -9,7 +9,7 @@ PYTHON ?= python3
 export PYTHON         # the scripts in tools/ use it too
 VERSION = $(shell $(PYTHON) -c "import audiolink; print(audiolink.__version__)")
 
-.PHONY: help pyz app modules card release-card test deploy hot smoke relay-deploy
+.PHONY: help pyz app modules card release-card test check-push deploy hot smoke relay-deploy
 
 help:          ## list the targets
 	@grep -E '^[a-z-]+: .*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | expand -t 16
@@ -34,6 +34,9 @@ release-card:  ## the release card image, as CI builds it: build/card-pi-release
 # ---- test
 test:          ## the test suite, in parallel (no Pi needed; tools/test.py)
 	$(PYTHON) tools/test.py
+
+check-push:    ## before pushing: is platform/'s pinned pi-gadget-kit commit on GitHub? (else push it first)
+	tools/check_push.sh
 
 # ---- dev loops: a dev Pi plugged in (the dev card), reached over USB ethernet
 deploy:        ## build/card-pi over ssh onto a dev Pi without image slots (else: says to use audiolink update)
