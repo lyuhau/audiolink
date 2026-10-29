@@ -11,6 +11,13 @@ log = logging.getLogger("audiolink")
 
 RETRY = 0.5                     # s between restarts
 IDLE_RETRY = 2.0                # at most, for aplay while the host isn't streaming
+
+
+def idle_wait(idle):
+    """The wait before aplay's next restart, after `idle` in a row without the host
+    streaming: doubling from RETRY up to IDLE_RETRY. (Uncapped, 2 ** idle outgrew a float
+    after a few days idle and the player thread died: the Pi went quiet until restarted.)"""
+    return min(IDLE_RETRY, RETRY * 2 ** min(idle - 1, 16))
 WAKE_CHECK = 0.1
 # ALSA buffer and period (µs). aplay's buffer is a queue every byte to the host waits
 # through: short. arecord's only needs room for a late read (its delay is the period).
@@ -104,7 +111,7 @@ class AlsaAudio:
                 time.sleep(RETRY)
             else:
                 idle += 1
-                self._wait_for_host(gen, min(IDLE_RETRY, RETRY * 2 ** (idle - 1)))
+                self._wait_for_host(gen, idle_wait(idle))
 
     def _wait_for_host(self, gen, timeout):
         """Sleep up to timeout, less if arecord starts hearing the host (or stop())."""

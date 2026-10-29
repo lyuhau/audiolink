@@ -93,5 +93,12 @@ class Loops(unittest.TestCase):
         self.assertEqual((stats["aplay_restarts"], stats["arecord_restarts"]), (1, 1))
 
 
+class IdleWait(unittest.TestCase):
+    def test_doubles_up_to_the_cap_and_never_overflows(self):
+        from audiolink.wire.alsa import IDLE_RETRY, RETRY, idle_wait
+        self.assertEqual([idle_wait(n) for n in (1, 2, 3, 4)], [RETRY, RETRY * 2, min(IDLE_RETRY, RETRY * 4), IDLE_RETRY])
+        self.assertEqual(idle_wait(10 ** 6), IDLE_RETRY)       # days idle: still a number
+
+
 if __name__ == "__main__":
     unittest.main()
