@@ -561,6 +561,18 @@ def new_disk(runner, before, seconds, sleep=time.sleep, clock=time):
         sleep(1)
 
 
+def allow_accessory(platform=sys.platform):
+    """macOS asks before it lets a new USB device in (the Pi in boot mode, its card, the Pi
+    started again); nothing comes through until someone allows it."""
+    if platform == "darwin":
+        print("If macOS asks to allow an accessory: allow it")
+
+
+def replug(platform=sys.platform):
+    print("Unplug the Pi and plug it back in")
+    allow_accessory(platform)
+
+
 def open_through_pi(runner, usb_state, again, platform=sys.platform, sleep=time.sleep, clock=time):
     """The Pi waiting in its USB boot mode: show its card as a disk -> (device, bytes).
     again: how to try again, for the messages ("run audiolink setup again"). clock: what
@@ -571,6 +583,7 @@ def open_through_pi(runner, usb_state, again, platform=sys.platform, sleep=time.
     if not cmd:
         raise CardError("Opening the card through the Pi needs rpiboot: %s; then %s" % (install_hint(platform), again))
     before = external_disks(runner)
+    allow_accessory(platform)
     step("Opening the card")
     status, out = runner.run(cmd, timeout=90)
     if status:
