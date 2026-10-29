@@ -6,7 +6,7 @@ on names ties detection to whatever the gadget is called. Instead, each OS is
 asked which USB device (vendor:product ID) a sound device belongs to, and the
 Pi's are the ones with a known ID: USB_IDS, plus the host's usb_ids (host.json, read again
 when it changes, and `audiolink host --usb-id`) for Pis that present others: a fork's, or
-a flavor's (the Pi says which before it becomes one: UsbIds). Where that
+a flavor's (the Pi says which: UsbIds). Where that
 can't be told (Windows, for now), or no device has a known ID (a card's settings.txt
 can change them), detection falls back to the name hints.
 """
@@ -68,9 +68,11 @@ def known_ids():
 
 
 class UsbIds(Service):
-    """Host: the Pi tells it the USB ID it's about to become (services/flavor.py), so this
-    host still finds it, now and after a restart (host.json usb_ids). A host without this
-    refuses the request, and the Pi carries on."""
+    """Host: the Pi tells it the USB IDs it may present (services/flavor.py): the one it's
+    about to become, and every flavor's when the link comes up, so this host finds it as
+    any of them, now and after a restart (host.json usb_ids, saved at once: a switch that
+    goes back leaves its ID there; the most recent config.MAX_USB_IDS stay). A host
+    without this refuses the request, and the Pi carries on."""
     name = "usb_ids"
     caps = ("usb_ids",)
     MAX = 8
@@ -90,8 +92,9 @@ class UsbIds(Service):
             raise ValueError("ids: %s" % e)
         add_ids(ids)
         saved = config.remember_usb_ids(ids)
-        log.info("the Pi is about to be USB %s: found as that too%s", ", ".join(ids),
-                 " (saved to host.json)" if saved else "")
+        (log.info if saved else log.debug)("the Pi may present USB %s: found as %s too%s", ", ".join(ids),
+                                           "that" if len(ids) == 1 else "those",
+                                           " (saved to host.json: %s)" % ", ".join(saved) if saved else "")
         return {"ids": ids, "saved": saved}
 
 
