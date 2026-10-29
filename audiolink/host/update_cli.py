@@ -156,7 +156,7 @@ def update_command(a):
         raise SystemExit("--code goes alone (or with --back)")
     if a.at and not a.pi:
         raise SystemExit("--at goes with --pi PI (over the network)")
-    data = path = peer_version = None
+    data = path = peer_version = caps = None
     if code is not None and not a.back:
         path = _this_pyz() if code == "this" else code
         if not path:
@@ -179,8 +179,14 @@ def update_command(a):
     if a.status:
         try:
             st = call("image.status", port=port)
-        except (SystemExit, KeyError, ValueError):
+        except NoOp:
             st = None                           # a Pi from before image updates
+        except (SystemExit, KeyError, ValueError) as e:
+            if caps is not None and "image" not in caps:
+                st = None                       # the same, over USB: it says so in its caps
+            else:                               # it has them, but didn't answer (still starting?)
+                raise SystemExit("The Pi didn't say which versions it has (%s): it may still be starting; "
+                                 "try again in a moment" % e)
         code_st = call("update.status", port=port)
         from .image_cli import show_image_status
         show_image_status(st or {"slots": None}, code_st, peer_version)
